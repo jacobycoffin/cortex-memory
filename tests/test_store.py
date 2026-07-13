@@ -73,6 +73,63 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIn(first, ids)
         self.assertIn(second, ids)
 
+    def test_guided_conflict_review_archives_superseded_memory(self) -> None:
+        first, _ = self.store.add_memory(
+            "The service listens on port 3000.",
+            subject="service",
+            predicate="port",
+            object_value="3000",
+        )
+        second, _ = self.store.add_memory(
+            "The service listens on port 3001.",
+            subject="service",
+            predicate="port",
+            object_value="3001",
+        )
+        snapshot = self.store.dashboard_snapshot()
+        self.assertEqual(snapshot["contradiction_count"], 1)
+        self.assertEqual(len(snapshot["health_reviews"]["contradictions"]), 1)
+
+        self.assertTrue(self.store.resolve_contradiction(first, second, "keep_second"))
+        self.assertEqual(self.store.get_memory(first)["state"], "archived")
+        self.assertEqual(self.store.get_memory(second)["state"], "active")
+        reviewed = self.store.dashboard_snapshot()
+        self.assertEqual(reviewed["contradiction_count"], 0)
+        self.assertTrue(self.store.superseded_ids([first]))
+
+    def test_guided_conflict_review_can_keep_both_contexts(self) -> None:
+        first, _ = self.store.add_memory("Kaya runs locally during development.")
+        second, _ = self.store.add_memory("Kaya runs on the VPS in production.")
+        self.store.add_edge(first, second, "contradicts", weight=0.8)
+
+        self.assertTrue(self.store.resolve_contradiction(first, second, "both_valid"))
+        with self.store.transaction() as conn:
+            relations = {
+                row["relation"]
+                for row in conn.execute(
+                    "SELECT relation FROM edges WHERE src_id IN (?,?) AND dst_id IN (?,?)",
+                    (first, second, first, second),
+                ).fetchall()
+            }
+        self.assertIn("contextual", relations)
+        self.assertNotIn("contradicts", relations)
+        self.assertEqual(self.store.get_memory(first)["state"], "active")
+        self.assertEqual(self.store.get_memory(second)["state"], "active")
+
+    def test_guided_inference_review_confirms_or_archives(self) -> None:
+        confirmed_id, _ = self.store.add_memory("The user probably prefers concise answers.")
+        archived_id, _ = self.store.add_memory("The user probably wants daily status emails.")
+        self.assertTrue(self.store.review_inference(confirmed_id, "confirm"))
+        self.assertTrue(self.store.review_inference(archived_id, "archive"))
+
+        confirmed = self.store.get_memory(confirmed_id)
+        self.assertEqual(confirmed["source_category"], "USER_EXPLICIT")
+        self.assertEqual(confirmed["confirmed_count"], 1)
+        self.assertEqual(self.store.get_memory(archived_id)["state"], "archived")
+        snapshot = self.store.dashboard_snapshot()
+        self.assertNotIn(confirmed_id, snapshot["unsupported_inference_ids"])
+        self.assertNotIn(archived_id, snapshot["unsupported_inference_ids"])
+
     def test_maintenance_is_reversible_and_shadowed(self) -> None:
         memory_id, _ = self.store.add_memory("A temporary operational setting.", kind="operational", importance=0.2)
         old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()

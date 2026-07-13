@@ -99,7 +99,17 @@ systemctl --user restart cortex-dashboard
 
 Use the same username chosen during installation if it is not `cortex`.
 
-## 5. Verify the boundary
+## 5. Optionally enable guided review
+
+The dashboard starts in read-only mode. To let an authenticated operator resolve one conflict or unsupported inference at a time, add the following line to `$HOME/.hermes/cortex/dashboard.env`:
+
+```bash
+CORTEX_DASHBOARD_REVIEWS=1
+```
+
+Restart the service after changing the environment. These controls require an explicit browser confirmation, preserve prior memory versions and lifecycle history, and write audit records. They never hard-delete a memory. Leave the variable absent or set it to `0` if the site should remain observational only.
+
+## 6. Verify the boundary
 
 The sign-in page itself is public, but the memory data must not be:
 

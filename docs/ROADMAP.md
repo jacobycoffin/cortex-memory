@@ -84,14 +84,15 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 ## Dashboard feedback controls
 
-Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. Cortex 0.2 intentionally exposes read-only memory endpoints. A future opt-in write surface must therefore include:
+Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. The `testing` branch now includes a deliberately smaller opt-in surface for resolving one contradiction or unsupported inference at a time. It includes:
 
 - authenticated signed sessions and same-origin request verification;
-- explicit confirmation for archive, correction, or protection changes;
-- an append-only audit record with actor, action, target, and timestamp;
-- rate limiting and request-size bounds;
-- no hard-delete operation;
-- a global switch that leaves the dashboard read-only by default.
+- explicit confirmation before an archive, confirmation, supersession, or contextual relationship;
+- preserved versions, lifecycle events, provenance, and maintenance-log audit records;
+- request-size bounds and no hard-delete operation;
+- `CORTEX_DASHBOARD_REVIEWS=1` as an explicit switch that leaves the dashboard read-only by default.
+
+Broader helpful/wrong/important controls, actor identity in audit rows, write-specific rate limits, and a dashboard undo flow remain future work.
 
 ## Stable non-goals
 

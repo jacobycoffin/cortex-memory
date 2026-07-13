@@ -1,4 +1,4 @@
-"""Read-only local web dashboard for Cortex memory data."""
+"""Local Cortex dashboard with authenticated, auditable memory reviews."""
 
 from __future__ import annotations
 
@@ -67,6 +67,12 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     if auth_user and auth_password:
         auth.ensure(auth_user, auth_password)
     auth_enabled = auth.configured
+    reviews_enabled = os.environ.get("CORTEX_DASHBOARD_REVIEWS", "").strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     failed_logins: dict[str, list[float]] = {}
     failed_logins_lock = threading.RLock()
 
@@ -115,7 +121,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not self._require_auth(complete=True):
                 return
             if parsed.path == "/api/snapshot":
-                self._json(HTTPStatus.OK, store.dashboard_snapshot())
+                snapshot = store.dashboard_snapshot()
+                snapshot["review_writes_enabled"] = reviews_enabled
+                self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/memory":
                 raw_id = parse_qs(parsed.query).get("id", [""])[0]
@@ -129,7 +137,14 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
-            if parsed.path not in {"/api/auth/login", "/api/auth/change-password", "/api/auth/logout"}:
+            allowed_paths = {
+                "/api/auth/login",
+                "/api/auth/change-password",
+                "/api/auth/logout",
+                "/api/review/conflict",
+                "/api/review/inference",
+            }
+            if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             if self.headers.get("X-Cortex-Request") != "1":
@@ -138,12 +153,39 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/login":
                 self._login()
                 return
-            if not self._require_auth(complete=False):
+            if not self._require_auth(complete=parsed.path.startswith("/api/review/")):
                 return
             if parsed.path == "/api/auth/logout":
                 self._json(HTTPStatus.OK, {"success": True}, set_cookie=self._expired_cookie())
                 return
-            self._change_password()
+            if parsed.path == "/api/auth/change-password":
+                self._change_password()
+                return
+            if not reviews_enabled:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            try:
+                if parsed.path == "/api/review/conflict":
+                    changed = store.resolve_contradiction(
+                        str(payload.get("first_id") or ""),
+                        str(payload.get("second_id") or ""),
+                        str(payload.get("resolution") or ""),
+                    )
+                else:
+                    changed = store.review_inference(
+                        str(payload.get("memory_id") or ""),
+                        str(payload.get("resolution") or ""),
+                    )
+            except ValueError as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            if not changed:
+                self._json(HTTPStatus.CONFLICT, {"error": "This review item is no longer active. Refresh and try again."})
+                return
+            self._json(HTTPStatus.OK, {"success": True})
 
         def _login(self) -> None:
             if not auth_enabled:
@@ -297,8 +339,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Cortex Brain dashboard: {url}")
-    print("Read-only and bound to localhost. Press Ctrl-C to stop.")
+    print("Bound to localhost; review changes require an authenticated session. Press Ctrl-C to stop.")
     print(f"Browser authentication: {'form + signed session' if auth_enabled else 'disabled'}")
+    print(f"Guided review changes: {'enabled' if reviews_enabled else 'disabled (read-only)'}")
     if open_browser:
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()
     try:

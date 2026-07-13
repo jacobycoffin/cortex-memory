@@ -32,7 +32,7 @@ Most agent memory systems optimize only for storing and finding text. Cortex als
 - Which tool sequence has worked across multiple distinct tasks?
 - Can a stale-memory decision be reversed?
 
-The result is a bounded evidence layer that an agent harness can call, plus a read-only Brain dashboard that makes its behavior inspectable.
+The result is a bounded evidence layer that an agent harness can call, plus a Brain dashboard that makes its behavior inspectable and can optionally enable narrowly scoped, confirmed memory reviews.
 
 ## What 0.2 adds
 
@@ -144,16 +144,18 @@ cortex-memory --db ./cortex.db dashboard --no-open --port 8765
 
 For the Hermes plugin database, use `PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard --no-open --port 8765`.
 
-Open `http://127.0.0.1:8765`. The dashboard is read-only and includes:
+Open `http://127.0.0.1:8765`. The dashboard is read-only by default and includes:
 
 - a draggable 2D physics map and orbitable 3D constellation;
 - timeline, source, use-through, and tool-learning insights;
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
 - a Cortex Sleep view for offline replay, maintenance proposals, safety mode, and optional reflection-token use;
-- plain-language health guidance and an inspectable memory index;
+- plain-language health guidance, an inspectable memory index, and a one-decision-at-a-time reviewer for conflicts and unsupported inferences;
 - six characterful themes with responsive text wrapping.
 
 For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
+
+Guided review changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable the confirmed choices. Conflict review can archive one superseded memory or keep both as contextual; inference review can explicitly confirm or archive one unsupported claim. Every action preserves history and writes an audit record. There is no hard-delete action.
 
 If the password is lost, generate a new one and restart the dashboard:
 

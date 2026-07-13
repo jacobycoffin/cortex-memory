@@ -594,7 +594,7 @@ class CortexStore:
             CREATE TEMP TRIGGER cortex_local_revision_memory_delete
             AFTER DELETE ON main.memories BEGIN SELECT cortex_bump_revision(); END;
             CREATE TEMP TRIGGER cortex_local_revision_memory_material_update
-            AFTER UPDATE OF kind,content,valid_from,valid_to,subject,predicate,object_value,
+            AFTER UPDATE OF kind,content,source_category,valid_from,valid_to,subject,predicate,object_value,
               confidence,currentness_confidence,importance,uniqueness,volatility,trust,state,
               pinned,protected,supersedes_id,quarantine_reason,used_count,success_count,
               confirmed_count,validated_count,helpful_count,harmful_count,correction_count,
@@ -1303,6 +1303,195 @@ class CortexStore:
                 (src_id, dst_id, relation, _clamp(weight), now, now),
             )
             return True
+
+    def resolve_contradiction(self, first_id: str, second_id: str, resolution: str) -> bool:
+        """Resolve one contradictory pair while preserving an auditable history."""
+        if resolution not in {"keep_first", "keep_second", "both_valid"}:
+            raise ValueError("invalid contradiction resolution")
+        if not first_id or not second_id or first_id == second_id:
+            raise ValueError("two different memory IDs are required")
+        now = utc_now()
+        with self.transaction() as conn:
+            edge = conn.execute(
+                """SELECT * FROM edges WHERE relation='contradicts'
+                   AND ((src_id=? AND dst_id=?) OR (src_id=? AND dst_id=?))""",
+                (first_id, second_id, second_id, first_id),
+            ).fetchone()
+            rows = conn.execute(
+                "SELECT * FROM memories WHERE id IN (?,?)",
+                (first_id, second_id),
+            ).fetchall()
+            memories = {str(row["id"]): row for row in rows}
+            if not edge or len(memories) != 2:
+                return False
+            if any(memories[memory_id]["state"] not in {"active", "cold"} for memory_id in memories):
+                return False
+
+            conn.execute(
+                """DELETE FROM edges WHERE relation='contradicts'
+                   AND ((src_id=? AND dst_id=?) OR (src_id=? AND dst_id=?))""",
+                (first_id, second_id, second_id, first_id),
+            )
+            if resolution == "both_valid":
+                edge_src, edge_dst = sorted((first_id, second_id))
+                conn.execute(
+                    """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                       VALUES(?,?,'contextual',?,?,?,?)
+                       ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                         weight=MAX(edges.weight,excluded.weight),
+                         evidence_count=MAX(edges.evidence_count,excluded.evidence_count),
+                         last_reinforced_at=excluded.last_reinforced_at""",
+                    (
+                        edge_src,
+                        edge_dst,
+                        min(1.0, max(0.25, float(edge["weight"]))),
+                        int(edge["evidence_count"]),
+                        str(edge["created_at"]),
+                        now,
+                    ),
+                )
+            else:
+                winner_id = first_id if resolution == "keep_first" else second_id
+                loser_id = second_id if resolution == "keep_first" else first_id
+                loser = memories[loser_id]
+                conn.execute(
+                    "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+                    (now, loser_id),
+                )
+                conn.execute(
+                    """INSERT INTO memory_versions(memory_id,content,confidence,state,valid_from,valid_to,
+                       system_from,reason,source_ref) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        loser_id,
+                        loser["content"],
+                        loser["confidence"],
+                        "archived",
+                        loser["valid_from"],
+                        loser["valid_to"],
+                        now,
+                        "dashboard conflict review: superseded",
+                        loser["source_ref"],
+                    ),
+                )
+                conn.execute("UPDATE memories SET state='archived', updated_at=? WHERE id=?", (now, loser_id))
+                conn.execute(
+                    """INSERT INTO lifecycle_events(
+                       memory_id,from_state,to_state,reason,retention_score,created_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (
+                        loser_id,
+                        loser["state"],
+                        "archived",
+                        "dashboard conflict review: superseded",
+                        None,
+                        now,
+                    ),
+                )
+                self._mark_dependents_dirty_tx(conn, loser_id, "evidence superseded in dashboard conflict review")
+                conn.execute(
+                    """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                       VALUES(?,?,'supersedes',1.0,1,?,?)
+                       ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                         weight=1.0,evidence_count=edges.evidence_count+1,last_reinforced_at=excluded.last_reinforced_at""",
+                    (winner_id, loser_id, now, now),
+                )
+
+            conn.executemany(
+                "INSERT INTO access_log(memory_id,event,query,created_at) VALUES(?,?,?,?)",
+                [
+                    (first_id, "conflict_reviewed", resolution, now),
+                    (second_id, "conflict_reviewed", resolution, now),
+                ],
+            )
+            conn.execute(
+                "INSERT INTO maintenance_log(action,details,dry_run,created_at) VALUES(?,?,0,?)",
+                (
+                    "dashboard_conflict_review",
+                    json.dumps(
+                        {"first_id": first_id, "second_id": second_id, "resolution": resolution},
+                        sort_keys=True,
+                    ),
+                    now,
+                ),
+            )
+        return True
+
+    def review_inference(self, memory_id: str, resolution: str) -> bool:
+        """Confirm or archive one unsupported inference from the Health reviewer."""
+        if resolution not in {"confirm", "archive"}:
+            raise ValueError("invalid inference resolution")
+        now = utc_now()
+        with self.transaction() as conn:
+            memory = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if not memory or memory["source_category"] not in {"AGENT_INFERENCE", "REFLECTION"}:
+                return False
+            if memory["state"] not in {"active", "cold"}:
+                return False
+            supported = conn.execute(
+                "SELECT 1 FROM memory_dependencies WHERE memory_id=? AND active=1 LIMIT 1",
+                (memory_id,),
+            ).fetchone()
+            if supported:
+                return False
+
+            if resolution == "confirm":
+                conn.execute(
+                    """UPDATE memories SET source_category='USER_EXPLICIT',
+                       confidence=MAX(confidence,0.85),trust=MAX(trust,0.85),
+                       confirmed_count=confirmed_count+1,protected=1,updated_at=? WHERE id=?""",
+                    (now, memory_id),
+                )
+                event = "confirmed"
+            else:
+                conn.execute(
+                    "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+                    (now, memory_id),
+                )
+                conn.execute(
+                    """INSERT INTO memory_versions(memory_id,content,confidence,state,valid_from,valid_to,
+                       system_from,reason,source_ref) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    (
+                        memory_id,
+                        memory["content"],
+                        memory["confidence"],
+                        "archived",
+                        memory["valid_from"],
+                        memory["valid_to"],
+                        now,
+                        "dashboard inference review: not retained",
+                        memory["source_ref"],
+                    ),
+                )
+                conn.execute("UPDATE memories SET state='archived', updated_at=? WHERE id=?", (now, memory_id))
+                conn.execute(
+                    """INSERT INTO lifecycle_events(
+                       memory_id,from_state,to_state,reason,retention_score,created_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (
+                        memory_id,
+                        memory["state"],
+                        "archived",
+                        "dashboard inference review: not retained",
+                        None,
+                        now,
+                    ),
+                )
+                self._mark_dependents_dirty_tx(conn, memory_id, "inference archived in dashboard review")
+                event = "archived"
+
+            conn.execute(
+                "INSERT INTO access_log(memory_id,event,query,created_at) VALUES(?,?,?,?)",
+                (memory_id, event, "dashboard health review", now),
+            )
+            conn.execute(
+                "INSERT INTO maintenance_log(action,details,dry_run,created_at) VALUES(?,?,0,?)",
+                (
+                    "dashboard_inference_review",
+                    json.dumps({"memory_id": memory_id, "resolution": resolution}, sort_keys=True),
+                    now,
+                ),
+            )
+        return True
 
     def add_dependency(
         self,
@@ -2046,11 +2235,36 @@ class CortexStore:
                    ORDER BY a.id DESC LIMIT 80"""
             ).fetchall()
             version_count = self._conn.execute("SELECT COUNT(*) count FROM memory_versions").fetchone()["count"]
+            contradiction_rows = self._conn.execute(
+                """SELECT e.src_id,e.dst_id,e.weight,e.evidence_count,e.created_at,e.last_reinforced_at,
+                          src.content src_content,src.kind src_kind,src.source_category src_source_category,
+                          src.source_ref src_source_ref,src.observed_at src_observed_at,
+                          src.valid_from src_valid_from,src.valid_to src_valid_to,
+                          src.confidence src_confidence,src.subject src_subject,src.predicate src_predicate,
+                          src.object_value src_object_value,
+                          dst.content dst_content,dst.kind dst_kind,dst.source_category dst_source_category,
+                          dst.source_ref dst_source_ref,dst.observed_at dst_observed_at,
+                          dst.valid_from dst_valid_from,dst.valid_to dst_valid_to,
+                          dst.confidence dst_confidence,dst.subject dst_subject,dst.predicate dst_predicate,
+                          dst.object_value dst_object_value
+                   FROM edges e
+                   JOIN memories src ON src.id=e.src_id
+                   JOIN memories dst ON dst.id=e.dst_id
+                   WHERE e.relation='contradicts'
+                     AND src.state IN ('active','cold') AND dst.state IN ('active','cold')
+                   ORDER BY e.last_reinforced_at DESC LIMIT 500"""
+            ).fetchall()
             contradiction_count = self._conn.execute(
-                "SELECT COUNT(*) count FROM edges WHERE relation='contradicts'"
+                """SELECT COUNT(*) count FROM edges e
+                   JOIN memories src ON src.id=e.src_id
+                   JOIN memories dst ON dst.id=e.dst_id
+                   WHERE e.relation='contradicts'
+                     AND src.state IN ('active','cold') AND dst.state IN ('active','cold')"""
             ).fetchone()["count"]
             unsupported_inference_rows = self._conn.execute(
-                """SELECT m.id FROM memories m
+                """SELECT m.id,m.content,m.kind,m.source_category,m.source_ref,m.observed_at,
+                          m.valid_from,m.valid_to,m.confidence,m.subject,m.predicate,m.object_value
+                   FROM memories m
                    WHERE m.source_category IN ('AGENT_INFERENCE','REFLECTION')
                    AND m.state IN ('active','cold')
                    AND NOT EXISTS(
@@ -2155,6 +2369,10 @@ class CortexStore:
             "version_count": int(version_count),
             "contradiction_count": int(contradiction_count),
             "unsupported_inference_ids": [str(row["id"]) for row in unsupported_inference_rows],
+            "health_reviews": {
+                "contradictions": [dict(row) for row in contradiction_rows],
+                "unsupported_inferences": [dict(row) for row in unsupported_inference_rows],
+            },
             "audit": self.audit(),
         }
 

@@ -87,6 +87,10 @@ class DashboardInterfaceTests(unittest.TestCase):
             "workflow-feed",
             "health-actions",
             "health-action-summary",
+            "health-reviewer",
+            "health-review-body",
+            "health-review-progress",
+            "health-review-close",
             "health-areas",
             "auth-gate",
             "auth-login-form",
@@ -110,11 +114,14 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Shadow watches without changing memory.", html)
         self.assertIn("function renderHealthActions", html)
         self.assertIn("function copyHealthInstructions", html)
-        self.assertIn("Review when convenient", html)
+        self.assertIn("Simple review", html)
         self.assertIn("No action needed", html)
         self.assertIn("Resolved when:", html)
-        self.assertIn("Open conflict map", html)
-        self.assertIn('app.healthReview="unsupported"', html)
+        self.assertIn("function renderHealthReviewer", html)
+        self.assertIn("Which statement should Cortex use now?", html)
+        self.assertIn("Both are valid in different situations", html)
+        self.assertIn("/api/review/conflict", html)
+        self.assertIn("/api/review/inference", html)
 
     def test_dashboard_has_a_complete_favicon_set(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
@@ -125,6 +132,13 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertEqual(svg.attrib["viewBox"], "0 0 64 64")
         self.assertGreater((ROOT / "favicon.ico").stat().st_size, 100)
         self.assertGreater((ROOT / "apple-touch-icon.png").stat().st_size, 100)
+
+    def test_guided_review_is_documented_as_opt_in(self) -> None:
+        server = (ROOT / "dashboard.py").read_text()
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn('os.environ.get("CORTEX_DASHBOARD_REVIEWS"', server)
+        self.assertIn("guided review changes are disabled", server)
+        self.assertIn("CORTEX_DASHBOARD_REVIEWS=1", readme)
 
 
 if __name__ == "__main__":

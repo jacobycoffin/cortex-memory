@@ -1,5 +1,5 @@
 [Unit]
-Description=Cortex Brain read-only dashboard
+Description=Cortex Brain dashboard
 After=network.target
 
 [Service]

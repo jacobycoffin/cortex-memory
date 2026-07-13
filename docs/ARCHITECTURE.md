@@ -126,7 +126,8 @@ Optional reflection is last and defaults to zero tokens. When an operator suppli
 - memory text is sanitized before write;
 - likely secrets are redacted and prompt-like instructions quarantined;
 - evidence is labeled fallible and never presented as instructions;
-- the dashboard binds to localhost; memory and cognition endpoints are read-only, while authentication uses narrowly scoped sign-in and password-change POST endpoints;
+- the dashboard binds to localhost; memory and cognition reads stay read-only, while authentication and opt-in guided review use narrowly scoped, same-origin POST endpoints;
+- guided review writes are disabled unless `CORTEX_DASHBOARD_REVIEWS=1`; enabled actions require a complete authenticated session, an explicit confirmation, bounded request bodies, lifecycle/version history, and an audit record;
 - public routing requires TLS and authentication at or before the dashboard;
 - vault indexing is incremental and reads source notes without modifying them.
 - remote Sleep reflection is disabled by default and, when enabled, crosses the local trust boundary with selected memory text.

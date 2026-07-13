@@ -6,7 +6,7 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 
 - storage stays in `$HERMES_HOME/cortex/cortex.db`;
 - the dashboard binds to `127.0.0.1`;
-- the dashboard exposes read-only memory endpoints;
+- the dashboard exposes read-only memory endpoints and keeps guided review writes disabled by default;
 - dashboard passwords are stored as salted PBKDF2 hashes, not readable credentials;
 - browser sessions are signed, expire after 12 hours, and are revoked by a password change;
 - the first generated password must be replaced after sign-in;
@@ -15,6 +15,7 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - vault notes are read but never modified;
 - tool guidance keeps argument keys, not values;
 - no hard-delete API exists.
+- opt-in guided review can only resolve one conflict or unsupported inference per confirmed request, and preserves lifecycle/version history plus an audit record;
 - scheduled Cortex Sleep uses deterministic local analysis and zero provider tokens by default;
 - optional remote Sleep reflection sends a bounded selection of sanitized memory text to the configured provider and is therefore an explicit privacy boundary.
 
