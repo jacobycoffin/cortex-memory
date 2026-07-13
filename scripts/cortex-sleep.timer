@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Cortex Sleep nightly
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+RandomizedDelaySec=2h
+AccuracySec=1m
+Persistent=true
+Unit=cortex-sleep.service
+
+[Install]
+WantedBy=timers.target

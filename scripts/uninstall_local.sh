@@ -6,10 +6,15 @@ TARGET="$HERMES_HOME/plugins/cortex"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 if command -v systemctl >/dev/null 2>&1; then
-  systemctl --user disable --now cortex-dashboard.service cortex-vault-index.timer 2>/dev/null || true
+  systemctl --user disable --now \
+    cortex-dashboard.service \
+    cortex-sleep.timer \
+    cortex-vault-index.timer 2>/dev/null || true
 fi
 rm -f \
   "$UNIT_DIR/cortex-dashboard.service" \
+  "$UNIT_DIR/cortex-sleep.service" \
+  "$UNIT_DIR/cortex-sleep.timer" \
   "$UNIT_DIR/cortex-vault-index.service" \
   "$UNIT_DIR/cortex-vault-index.timer"
 if command -v systemctl >/dev/null 2>&1; then

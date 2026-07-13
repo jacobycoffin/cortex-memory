@@ -11,14 +11,25 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PRIVATE_PATH_SUFFIXES = (".db", ".db-shm", ".db-wal", ".key", ".pem", ".private.md")
-PRIVATE_FILENAMES = {".env", "KAYA_READ_THIS.md", "dashboard-auth.json"}
+PRIVATE_PATH_SUFFIXES = (
+    ".db",
+    ".db-shm",
+    ".db-wal",
+    ".key",
+    ".pem",
+    ".private.md",
+    ".private.jsonl",
+)
+PRIVATE_FILENAMES = {".env", "TWITTER_LAUNCH_KIT.md", "dashboard-auth.json"}
 CONTENT_RULES = {
-    "personal Brain hostname": re.compile(rb"brain\.jacobycoffin\.com", re.IGNORECASE),
     "macOS home-directory path": re.compile(rb"/Users/[A-Za-z0-9._-]+/"),
     "root Hermes home path": re.compile(rb"/root/\.hermes(?:/|\b)"),
     "private key material": re.compile(rb"BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY"),
     "OpenAI-style secret token": re.compile(rb"\bsk-[A-Za-z0-9_-]{20,}\b"),
+    "GitHub secret token": re.compile(rb"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    "AWS access key": re.compile(rb"\bAKIA[A-Z0-9]{16}\b"),
+    "Slack secret token": re.compile(rb"\bxox[baprs]-[A-Za-z0-9-]{20,}\b"),
+    "JWT bearer token": re.compile(rb"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
 }
 
 

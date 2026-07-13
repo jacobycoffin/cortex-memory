@@ -1,6 +1,8 @@
-# Cortex for Hermes
+# Cortex Memory
 
-**Memory that earns its place.** Cortex is a local-first, psychology-inspired memory provider and observability layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It recalls only when durable context is likely to help, learns which evidence and tool workflows actually work, preserves corrections, and cools stale memories without deleting history.
+**Memory that earns its place.** `cortex-memory` is a local-first, psychology-inspired memory core for agent harnesses. It recalls bounded evidence, learns which memories and tool workflows actually help, preserves corrections, consolidates offline, and cools stale information without deleting history.
+
+The core is harness-neutral. A small Python API handles durable writes, recall batches, evidence-use feedback, episodes, audit, and Cortex Sleep. [Hermes Agent](https://github.com/NousResearch/hermes-agent) is the first included adapter and the current reference benchmark—not a requirement for the storage, retrieval, lifecycle, dashboard, or Sleep engine.
 
 Cortex is an engineering system, not a simulated brain. Psychology and neuroscience provide hypotheses; transparent benchmarks decide whether the software helps.
 
@@ -17,7 +19,7 @@ Cortex is an engineering system, not a simulated brain. Psychology and neuroscie
 
 ![Cortex capacity and retrieval scaling profile](docs/assets/cortex-scale-profile.svg)
 
-These are reproducible synthetic benchmarks, not a promise about every agent or vault. The live accuracy comparison intentionally tests beyond the built-in snapshot's capacity, and Cortex used 51.8% more median prompt tokens in that run to supply the missing evidence. Read the [method, raw results, and required caveats](docs/BENCHMARKING.md), or run the same tests on your own Hermes history.
+These are reproducible synthetic benchmarks, not a promise about every agent or vault. The live accuracy comparison uses the Hermes reference adapter, intentionally tests beyond its built-in snapshot's capacity, and used 51.8% more median prompt tokens in that run to supply the missing evidence. Read the [method, raw results, and required caveats](docs/BENCHMARKING.md), then run representative tests on your own harness and history.
 
 ## Why Cortex
 
@@ -30,7 +32,7 @@ Most agent memory systems optimize only for storing and finding text. Cortex als
 - Which tool sequence has worked across multiple distinct tasks?
 - Can a stale-memory decision be reversed?
 
-The result is a bounded evidence layer for Hermes, plus a read-only Brain dashboard that makes its behavior inspectable.
+The result is a bounded evidence layer that an agent harness can call, plus a read-only Brain dashboard that makes its behavior inspectable.
 
 ## What 0.2 adds
 
@@ -53,16 +55,54 @@ Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing buil
 - **Private real-history evaluation:** operators can label their own memories locally and export a sanitized retrieval report without publishing queries, memory text, IDs, or database paths.
 - **Paired tool-call evaluation:** recorded observations or explicit live provider fixtures compare tool choice, argument shape, task success, latency, and tokens without executing arbitrary tools.
 - **Release automation:** Python 3.10–3.14 CI now covers unit tests, clean install, in-place upgrade, schema migration, syntax, public-file privacy, and SVG validation.
+- **Cortex Sleep:** a nightly offline replay cycle reviews older sessions and resolved outcomes, requires independent witnesses before proposing associations, surfaces interference, previews maintenance, and records every decision for the dashboard.
+- **Budgeted idle reflection:** optional model review can spend a separate per-run token ceiling on evidence-linked proposals. It is off by default, normally billed, privacy-sensitive, and never applies its own conclusions.
+- **Harness-neutral API:** `CortexMemory` and `RecallBatch` expose storage, bounded recall, outcome feedback, episodes, audit, and Sleep without depending on a particular agent framework.
 
 This is development evidence, not a new public performance claim. Stable installs should continue to use `main`; the [roadmap](docs/ROADMAP.md) states what is implemented, still being measured, and intentionally deferred.
 
-## Install in about a minute
+## Install the agent-neutral core
 
-Requirements: Hermes Agent, Python 3.10+, and SQLite with FTS5 (included in normal Python builds).
+Requirements: Python 3.10+ and SQLite with FTS5 (included in normal Python builds).
 
 ```bash
-git clone https://github.com/jacobycoffin/hermes-cortex-memory.git
-cd hermes-cortex-memory
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
+python3 -m pip install .
+```
+
+Use the same API from any harness:
+
+```python
+from cortex import CortexMemory
+
+with CortexMemory("./cortex.db") as memory:
+    memory.remember(
+        "Production deploys require a health check and verified backup.",
+        kind="procedure",
+        source_category="USER_EXPLICIT",
+        session_id="session-a",
+    )
+
+    recall = memory.recall(
+        "What checks are required before deployment?",
+        session_id="session-b",
+        task_type="deployment",
+    )
+    agent_context = recall.context()
+
+    # After the harness finishes the task, credit only evidence it actually used.
+    used_ids = [item["id"] for item in recall.memories]
+    recall.finish(used_ids, outcome="helpful")
+```
+
+An adapter maps its own session/turn lifecycle into `remember`, `recall`, `RecallBatch.finish`, `record_episode`, and optional offline `sleep`. See the [harness integration guide](docs/INTEGRATION.md).
+
+## Hermes adapter
+
+The repository includes a complete Hermes MemoryProvider adapter and installer:
+
+```bash
 HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```
@@ -77,7 +117,7 @@ If the `hermes` launcher is not on your VPS `PATH`, run the real environment dir
 
 See [Quickstart](docs/QUICKSTART.md) for migration, vault indexing, VPS services, rollback, and the first acceptance test.
 
-## Try it
+## Try the Hermes adapter
 
 In one Hermes session:
 
@@ -93,19 +133,23 @@ Then inspect the evidence:
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex search "production deploy checks"
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex recall-stats
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex audit
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex sleep --mode shadow --reflection-token-budget 0
 ```
 
 ## Brain dashboard
 
 ```bash
-PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard --no-open --port 8765
+cortex-memory --db ./cortex.db dashboard --no-open --port 8765
 ```
+
+For the Hermes plugin database, use `PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard --no-open --port 8765`.
 
 Open `http://127.0.0.1:8765`. The dashboard is read-only and includes:
 
 - a draggable 2D physics map and orbitable 3D constellation;
 - timeline, source, use-through, and tool-learning insights;
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
+- a Cortex Sleep view for offline replay, maintenance proposals, safety mode, and optional reflection-token use;
 - plain-language health guidance and an inspectable memory index;
 - six characterful themes with responsive text wrapping.
 
@@ -122,23 +166,37 @@ systemctl --user restart cortex-dashboard
 
 ```mermaid
 flowchart LR
-    Q["Hermes request"] --> G{"Attention gate"}
+    Q["Agent request"] --> G{"Attention gate"}
     G -->|"no durable context"| Z["Inject 0 memory tokens"]
     G -->|"memory can help"| H["FTS + semantic features"]
     H --> A["Bounded graph activation"]
     A --> R["Utility and temporal ranking"]
     R --> B["Token-budgeted evidence"]
-    B --> L["Hermes inference"]
+    B --> L["Harness inference"]
     L --> U["Evidence-use attribution"]
     U --> S["Utility, links, workflow, lifecycle"]
 ```
 
-The hot path is deterministic and local. Cortex never makes an extra LLM call to decide what to remember.
+The hot path is deterministic and local. Cortex Memory never requires an extra LLM call to decide what to remember.
+
+## Cortex Sleep
+
+Sleep moves consolidation work out of normal turn latency. Its deterministic pass replays a bounded set of older episodes and successful co-use records, proposes associations only after at least two independent witnesses, identifies structured conflicts, gently downscales weak stale edges, and previews lifecycle, duplicate, and dependency work. The nightly installer keeps it in shadow mode:
+
+```bash
+HERMES_HOME="$HOME/.hermes" ./scripts/install_sleep_timer.sh
+systemctl --user list-timers cortex-sleep.timer
+```
+
+Model reflection is a separate opt-in stage. A positive `--reflection-token-budget` is a ceiling for a normal provider call, not banked or free conversational tokens. Remote reflection can expose selected memory text to that provider, and validated output is stored only as a review proposal. Read the [design, research basis, and exact boundaries](docs/SLEEP.md).
+
+The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created mode `0600` with `CORTEX_SLEEP_TOKEN_BUDGET=0`. To test idle reflection later, set `CORTEX_SLEEP_ENDPOINT`, `CORTEX_SLEEP_MODEL`, the token budget, and the API-key variable named by `CORTEX_SLEEP_API_KEY_ENV`; then run one manual shadow cycle before leaving it scheduled.
 
 ## Safety model
 
 - no hard-delete operation;
 - pruning and consolidation default to shadow previews;
+- scheduled Sleep defaults to deterministic shadow mode with a zero reflection-token budget;
 - active → cold → archived transitions remain reversible;
 - corrections preserve version history;
 - derived memories identify evidence and become dirty when it changes;
@@ -149,7 +207,7 @@ The hot path is deterministic and local. Cortex never makes an extra LLM call to
 
 Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or importing a vault.
 
-## Configuration
+## Hermes adapter configuration
 
 `hermes memory setup` writes values under `plugins.cortex` in `$HERMES_HOME/config.yaml`.
 
@@ -175,13 +233,15 @@ Keep mutation modes in `shadow` until you have reviewed your own recall and prun
 
 ## Research and evidence
 
+- [Scientific Foundations (PDF)](output/pdf/Cortex-Scientific-Foundations.pdf) — an 11-page visual guide to 25 primary sources, their engineering translations, and the claims Cortex should and should not make.
 - [Brain and memory foundations](docs/BRAIN_FOUNDATIONS.md) — annotated primary sources, anatomy cautions, and the complete research-to-feature map.
 - [Architecture](docs/ARCHITECTURE.md) — data model, retrieval, learning, repair, and trust boundaries.
+- [Harness integration](docs/INTEGRATION.md) — the portable API and event contract for any agent runtime.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.
 - [0.3 evaluation guide](docs/EVALUATION.md) — private real-history labels and paired tool-calling measurement.
+- [Cortex Sleep](docs/SLEEP.md) — offline replay, optional reflection budgets, safety model, and primary-source research mapping.
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
 - [Development roadmap](docs/ROADMAP.md) — phased work, safety rules, and promotion gates.
-- [Launch kit](docs/TWITTER_LAUNCH_KIT.md) — accurate explanations and social copy.
 
 The July 13, 2026 additive benchmark on 90 paired questions / 500 synthetic memories measured 96.7% answer accuracy with Cortex versus 6.7% with Hermes's bounded built-in snapshot. Whole-agent TTFT was effectively tied; Cortex added prompt tokens in that pre-0.2 fixed-recall run. Treat it as a published baseline, not proof of universal speed or accuracy. Raw aggregates and methodology live in [`benchmark-results`](benchmark-results/).
 
@@ -204,4 +264,4 @@ Runtime dependencies are Python standard library only. Real-history and tool-cal
 
 Cortex is experimental software. It is suitable for opt-in testing with backups and shadow lifecycle modes. Neural embeddings, autonomous generated summaries, and unconstrained self-modification are intentionally out of scope until simpler mechanisms show a measurable benefit.
 
-MIT licensed. Cortex is an independent community project for Hermes Agent.
+MIT licensed. Cortex Memory is an independent agent-memory project; Hermes is its first supported harness adapter.

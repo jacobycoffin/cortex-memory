@@ -15,6 +15,8 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - vault notes are read but never modified;
 - tool guidance keeps argument keys, not values;
 - no hard-delete API exists.
+- scheduled Cortex Sleep uses deterministic local analysis and zero provider tokens by default;
+- optional remote Sleep reflection sends a bounded selection of sanitized memory text to the configured provider and is therefore an explicit privacy boundary.
 
 ## Operator responsibilities
 
@@ -25,6 +27,8 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - rotate credentials if they are displayed or copied into a public place;
 - keep `dashboard-auth.json` private and mode `0600`;
 - treat archived records as retained data, not deleted data.
+- keep `CORTEX_SLEEP_TOKEN_BUDGET=0` unless the provider's privacy terms, model, key handling, and expected cost are acceptable;
+- remember that a reflection budget is normal billed provider usage, not free or banked tokens.
 
 ## Reporting a vulnerability
 

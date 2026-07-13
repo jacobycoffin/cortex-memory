@@ -32,6 +32,7 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 | Replacement-mode experiment | Planned | Requires an explicit Hermes integration hook; no duplicate built-in context and no migrated fact loss. |
 | Query and result cache benchmark | Initial exact-query benchmark implemented | Warm exact-query latency and context stability are reported; representative hit-rate measurement remains active. |
 | Dashboard benchmark wizard | Planned | Generates a sanitized local run plan and report without exposing memory contents or API keys. |
+| Offline Sleep cycle | Implemented; shadow trial active | Nightly bounded replay reports evidence-backed associations, interference, maintenance previews, and optional reflection-token use without affecting turn latency. |
 
 ## 0.4 — Memory structure and calibration
 
@@ -63,7 +64,7 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 | Workstream | Safety rule | Acceptance evidence |
 | --- | --- | --- |
-| Scheduled maintenance cycle | Bounded runtime; shadow by default. | Reports consolidation, interference, dependencies, and lifecycle previews. |
+| Scheduled maintenance cycle | Implemented early in 0.3; shadow evidence accumulating. | Reports consolidation, interference, dependencies, lifecycle previews, resource use, and reversible apply changes. |
 | Learned retention thresholds | Never train on retrieval count alone. | Storage/interference improves within a preregistered regret ceiling. |
 | Pruning simulation | Replay archived candidates before applying. | Estimated benefit and regret are visible per proposed transition. |
 | Dependency repair | Changed evidence marks derived memory dirty before demotion. | Unsupported active inference rate decreases. |

@@ -1,6 +1,6 @@
 # Contributing to Cortex
 
-Thanks for helping make Hermes memory more useful and more honest.
+Thanks for helping make agent memory more useful, portable, and honest.
 
 ## Change standard
 

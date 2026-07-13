@@ -1,4 +1,4 @@
-"""Cortex: adaptive, utility-weighted local memory for Hermes Agent."""
+"""Cortex Memory: adaptive, utility-weighted memory for autonomous agents."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
 
 
 from .attribution import attribution_score
+from .client import CortexMemory, RecallBatch
 from .cognition import plan_recall
 from .extraction import extract_candidates
 from .retrieval import MemoryRetriever, RetrievalDiagnostics, RetrievalResult, token_overlap

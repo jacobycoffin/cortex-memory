@@ -1,6 +1,19 @@
 # Changelog
 
-## 0.3.0-dev.0 — Unreleased
+## 0.3.0-dev.1 — Unreleased
+
+- rebranded the project as `cortex-memory`, with Hermes retained as the first harness adapter;
+- added a framework-neutral `CortexMemory` and `RecallBatch` API plus pip packaging and a `cortex-memory` CLI;
+- added a five-event integration contract for custom harnesses and package-install CI coverage;
+- added Cortex Sleep, a bounded offline replay cycle that runs outside normal inference;
+- added independent-witness association evidence, structured interference review, weak-edge downscaling, and lifecycle, consolidation, and dependency previews;
+- added explicit reversible apply mode plus `sleep-undo`; default scheduling remains shadow-only;
+- added an optional provider reflection stage with a separate per-run token ceiling, strict output validation, proposal-only writes, and zero-token default;
+- added nightly low-priority systemd scheduling, schema 6 run/evidence/proposal/change records, and dashboard observability;
+- added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
+- added Sleep safety, idempotency, budget, outage, and reversibility tests.
+
+## 0.3.0-dev.0
 
 - added outcome-driven recall budgets that learn conservatively from resolved helpful, harmful, used, and ignored evidence;
 - added a short-lived, mutation-revisioned retrieval cache that preserves per-turn evidence accounting;

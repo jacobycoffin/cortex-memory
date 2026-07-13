@@ -30,12 +30,17 @@ for relative_path in \
   __init__.py \
   __main__.py \
   cli.py \
+  client.py \
   dashboard.py \
   dashboard_auth.py \
   plugin.yaml \
+  sleep.py \
   store.py \
   benchmarks/core.py \
+  scripts/cortex-sleep.service.in \
+  scripts/cortex-sleep.timer \
   scripts/install_dashboard_service.sh \
+  scripts/install_sleep_timer.sh \
   scripts/install_vault_timer.sh \
   docs/QUICKSTART.md
 do
@@ -44,6 +49,7 @@ done
 
 for relative_path in \
   scripts/install_dashboard_service.sh \
+  scripts/install_sleep_timer.sh \
   scripts/install_vault_timer.sh \
   scripts/uninstall_local.sh
 do

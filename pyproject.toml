@@ -1,14 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "hermes-cortex-memory"
-version = "0.3.0.dev0"
-description = "Psychology-inspired adaptive memory and observability for Hermes Agent"
+name = "cortex-memory"
+version = "0.3.0.dev1"
+description = "Psychology-inspired adaptive memory, offline consolidation, and observability for agent harnesses"
 requires-python = ">=3.10"
 dependencies = []
 
+[project.scripts]
+cortex-memory = "cortex.cli:main"
+
 [project.urls]
-Homepage = "https://github.com/jacobycoffin/hermes-cortex-memory"
-Documentation = "https://github.com/jacobycoffin/hermes-cortex-memory#readme"
-Issues = "https://github.com/jacobycoffin/hermes-cortex-memory/issues"
+Homepage = "https://github.com/jacobycoffin/cortex-memory"
+Documentation = "https://github.com/jacobycoffin/cortex-memory#readme"
+Issues = "https://github.com/jacobycoffin/cortex-memory/issues"
+
+[tool.setuptools]
+packages = ["cortex"]
+package-dir = {cortex = "."}
+include-package-data = true
+
+[tool.setuptools.package-data]
+cortex = ["dashboard.html", "plugin.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

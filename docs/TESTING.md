@@ -51,6 +51,7 @@ The suite currently covers:
 - private evaluation snapshots that include live WAL data but omit private fields from reports;
 - paired tool-call aggregation and fixture-only live-provider behavior;
 - isolated clean installation, upgrade backup, database persistence, and installed-provider import.
+- schema 6 Sleep migration, independent-witness replay, shadow idempotency, reversible apply/undo, bounded reflection, and provider-outage isolation.
 
 ## Current compatibility check
 
@@ -72,6 +73,7 @@ Keep `pruning_mode: shadow`.
 10. Resolve at least eight comparable recall outcomes, then inspect Cognition's Context budget learning panel; pending retrievals alone must not move the budget.
 11. Preview consolidation, apply it only on a backup test database, and undo the run.
 12. Run `cortex audit` and verify `ok: true`.
+13. Run `cortex sleep --mode shadow --reflection-token-budget 0`, verify no state/edge changes, and inspect the Sleep section in Cognition.
 
 ## Metrics for the shadow trial
 

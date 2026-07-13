@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -429,6 +429,114 @@ class CortexStore:
                 similarity REAL NOT NULL,
                 prior_state TEXT NOT NULL,
                 PRIMARY KEY(run_id,member_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_runs (
+                run_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL,
+                status TEXT NOT NULL,
+                cutoff_at TEXT NOT NULL,
+                episodes_scanned INTEGER NOT NULL DEFAULT 0,
+                episodes_replayed INTEGER NOT NULL DEFAULT 0,
+                association_proposals INTEGER NOT NULL DEFAULT 0,
+                interference_proposals INTEGER NOT NULL DEFAULT 0,
+                edge_decay_proposals INTEGER NOT NULL DEFAULT 0,
+                lifecycle_candidates INTEGER NOT NULL DEFAULT 0,
+                consolidation_candidates INTEGER NOT NULL DEFAULT 0,
+                dependency_candidates INTEGER NOT NULL DEFAULT 0,
+                applied_changes INTEGER NOT NULL DEFAULT 0,
+                reflection_token_budget INTEGER NOT NULL DEFAULT 0,
+                reflection_estimated_tokens INTEGER NOT NULL DEFAULT 0,
+                reflection_billed_tokens INTEGER,
+                reflection_status TEXT NOT NULL DEFAULT 'disabled',
+                report_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_sleep_runs_started
+              ON sleep_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS sleep_episode_state (
+                episode_id INTEGER PRIMARY KEY REFERENCES episodes(id) ON DELETE CASCADE,
+                first_replayed_at TEXT NOT NULL,
+                last_replayed_at TEXT NOT NULL,
+                replay_count INTEGER NOT NULL DEFAULT 1,
+                last_run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_usage_state (
+                task_id TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL,
+                last_run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_association_evidence (
+                src_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                dst_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                witness_key TEXT NOT NULL,
+                evidence_kind TEXT NOT NULL,
+                score REAL NOT NULL,
+                episode_id INTEGER REFERENCES episodes(id) ON DELETE SET NULL,
+                run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(src_id,dst_id,witness_key,evidence_kind),
+                CHECK(src_id < dst_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sleep_evidence_pair
+              ON sleep_association_evidence(src_id,dst_id,evidence_kind);
+
+            CREATE TABLE IF NOT EXISTS sleep_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
+                kind TEXT NOT NULL,
+                src_id TEXT REFERENCES memories(id) ON DELETE CASCADE,
+                dst_id TEXT REFERENCES memories(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                score REAL NOT NULL DEFAULT 0.0,
+                evidence_count INTEGER NOT NULL DEFAULT 0,
+                rationale TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_sleep_proposals_run
+              ON sleep_proposals(run_id,kind,status);
+
+            CREATE TABLE IF NOT EXISTS sleep_edge_changes (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
+                src_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                dst_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                relation TEXT NOT NULL,
+                prior_exists INTEGER NOT NULL,
+                prior_weight REAL,
+                prior_evidence_count INTEGER,
+                prior_last_reinforced_at TEXT,
+                next_weight REAL NOT NULL,
+                next_evidence_count INTEGER NOT NULL,
+                next_last_reinforced_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reversed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_state_changes (
+                change_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                prior_state TEXT NOT NULL,
+                next_state TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reversed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_edge_downscale_state (
+                src_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                dst_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                relation TEXT NOT NULL,
+                source_last_reinforced_at TEXT NOT NULL,
+                last_run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
+                last_downscaled_at TEXT NOT NULL,
+                PRIMARY KEY(src_id,dst_id,relation)
             );
 
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
@@ -1179,7 +1287,9 @@ class CortexStore:
         if not src_id or not dst_id or src_id == dst_id:
             return False
         src_id, dst_id = (
-            sorted((src_id, dst_id)) if relation in {"related", "co_used", "co_observed"} else (src_id, dst_id)
+            sorted((src_id, dst_id))
+            if relation in {"related", "co_used", "co_observed", "sleep_replay"}
+            else (src_id, dst_id)
         )
         now = utc_now()
         with self.transaction() as conn:
@@ -1868,6 +1978,8 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM recall_budget_observations WHERE outcome<>'pending') budget_observations, "
                 "(SELECT COUNT(*) FROM pruning_regret) pruning_regrets, "
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
+                "(SELECT COUNT(*) FROM sleep_runs) sleep_runs, "
+                "(SELECT COUNT(*) FROM sleep_proposals WHERE status='proposed') sleep_proposals, "
                 "(SELECT COUNT(*) FROM document_sources WHERE status='active') documents, "
                 "(SELECT COUNT(*) FROM document_chunks WHERE active=1) document_chunks"
             ).fetchone()
@@ -1986,6 +2098,19 @@ class CortexStore:
                    FROM tool_workflow_stats
                    ORDER BY success_count+failure_count DESC,updated_at DESC LIMIT 250"""
             ).fetchall()
+            sleep_rows = self._conn.execute(
+                """SELECT run_id,mode,status,cutoff_at,episodes_scanned,episodes_replayed,
+                          association_proposals,interference_proposals,edge_decay_proposals,
+                          lifecycle_candidates,consolidation_candidates,dependency_candidates,
+                          applied_changes,reflection_token_budget,reflection_estimated_tokens,
+                          reflection_billed_tokens,reflection_status,error,started_at,completed_at
+                   FROM sleep_runs ORDER BY started_at DESC LIMIT 100"""
+            ).fetchall()
+            sleep_proposal_rows = self._conn.execute(
+                """SELECT proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
+                          rationale,created_at
+                   FROM sleep_proposals ORDER BY created_at DESC LIMIT 250"""
+            ).fetchall()
         prepare_samples = sorted(float(row["prepare_ms"]) for row in recall_rows)
         token_samples = sorted(int(row["estimated_tokens"]) for row in recall_rows)
         return {
@@ -2015,6 +2140,8 @@ class CortexStore:
             "pruning_regrets": [dict(row) for row in regret_rows],
             "consolidation_runs": [dict(row) for row in consolidation_rows],
             "tool_workflows": [dict(row) for row in workflow_rows],
+            "sleep_runs": [dict(row) for row in sleep_rows],
+            "sleep_proposals": [dict(row) for row in sleep_proposal_rows],
             "version_count": int(version_count),
             "contradiction_count": int(contradiction_count),
             "audit": self.audit(),
@@ -2066,6 +2193,10 @@ class CortexStore:
                 """SELECT COUNT(*) n FROM document_chunks c
                    LEFT JOIN memories m ON m.id=c.memory_id WHERE m.id IS NULL"""
             ).fetchone()["n"]
+            orphan_sleep_proposals = self._conn.execute(
+                """SELECT COUNT(*) n FROM sleep_proposals p
+                   LEFT JOIN sleep_runs r ON r.run_id=p.run_id WHERE r.run_id IS NULL"""
+            ).fetchone()["n"]
         return {
             "ok": not (
                 duplicate_groups
@@ -2078,6 +2209,7 @@ class CortexStore:
                 or invalid
                 or stuck_usage
                 or orphan_document_chunks
+                or orphan_sleep_proposals
             ),
             "duplicate_groups": len(duplicate_groups),
             "orphan_fts_rows": orphan_fts,
@@ -2090,6 +2222,7 @@ class CortexStore:
             "unsupported_inferences": unsupported,
             "stuck_pending_usage": stuck_usage,
             "orphan_document_chunks": orphan_document_chunks,
+            "orphan_sleep_proposals": orphan_sleep_proposals,
         }
 
     def consolidate(self, *, dry_run: bool = True, similarity_threshold: float = 0.78) -> dict[str, Any]:

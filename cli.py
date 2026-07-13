@@ -13,7 +13,7 @@ from .store import CortexStore
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(prog="cortex", description="Inspect and test Cortex adaptive memory")
+    parser = argparse.ArgumentParser(prog="cortex-memory", description="Inspect and test Cortex Memory")
     parser.add_argument(
         "--db",
         default=os.environ.get("CORTEX_DB", str(Path.home() / ".hermes" / "cortex" / "cortex.db")),
@@ -41,6 +41,35 @@ def main() -> int:
     consolidate.add_argument("--threshold", type=float, default=0.78)
     undo = sub.add_parser("undo-consolidation", help="Restore members from an applied consolidation run")
     undo.add_argument("run_id")
+    sleep = sub.add_parser("sleep", help="Run bounded offline replay and consolidation")
+    sleep.add_argument("--mode", choices=("shadow", "apply"), default="shadow")
+    sleep.add_argument(
+        "--apply",
+        action="store_true",
+        help="Required confirmation when --mode apply is selected",
+    )
+    sleep.add_argument("--min-episode-age-hours", type=int, default=12)
+    sleep.add_argument("--max-episodes", type=int, default=250)
+    sleep.add_argument("--min-association-witnesses", type=int, default=2)
+    sleep.add_argument("--replay-threshold", type=float, default=0.24)
+    sleep.add_argument("--decay-after-days", type=int, default=120)
+    sleep.add_argument("--cold-after-days", type=int, default=90)
+    sleep.add_argument("--archive-after-days", type=int, default=180)
+    sleep.add_argument(
+        "--reflection-token-budget",
+        type=int,
+        default=int(os.environ.get("CORTEX_SLEEP_TOKEN_BUDGET", "0")),
+        help="Separate per-cycle provider-token ceiling; 0 disables model reflection",
+    )
+    sleep.add_argument("--reflection-endpoint", default=os.environ.get("CORTEX_SLEEP_ENDPOINT"))
+    sleep.add_argument("--reflection-model", default=os.environ.get("CORTEX_SLEEP_MODEL"))
+    sleep.add_argument(
+        "--reflection-api-key-env",
+        default=os.environ.get("CORTEX_SLEEP_API_KEY_ENV", "OPENROUTER_API_KEY"),
+        help="Name of the environment variable containing the provider key; never the key itself",
+    )
+    sleep_undo = sub.add_parser("sleep-undo", help="Undo reversible changes from an applied sleep run")
+    sleep_undo.add_argument("run_id")
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
     dashboard = sub.add_parser("dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
@@ -143,6 +172,32 @@ def main() -> int:
             result = store.consolidate(dry_run=not args.apply, similarity_threshold=args.threshold)
         elif args.command == "undo-consolidation":
             result = store.undo_consolidation(args.run_id)
+        elif args.command == "sleep":
+            from .sleep import SleepConfig, run_sleep
+
+            if args.mode == "apply" and not args.apply:
+                parser.error("--mode apply requires the explicit --apply confirmation")
+            result = run_sleep(
+                store,
+                SleepConfig(
+                    mode=args.mode,
+                    min_episode_age_hours=args.min_episode_age_hours,
+                    max_episodes=args.max_episodes,
+                    min_association_witnesses=args.min_association_witnesses,
+                    replay_threshold=args.replay_threshold,
+                    decay_after_days=args.decay_after_days,
+                    cold_after_days=args.cold_after_days,
+                    archive_after_days=args.archive_after_days,
+                    reflection_token_budget=args.reflection_token_budget,
+                    reflection_endpoint=args.reflection_endpoint,
+                    reflection_model=args.reflection_model,
+                    reflection_api_key_env=args.reflection_api_key_env,
+                ),
+            )
+        elif args.command == "sleep-undo":
+            from .sleep import undo_sleep
+
+            result = undo_sleep(store, args.run_id)
         elif args.command == "recall-stats":
             snapshot = store.dashboard_snapshot(memory_limit=1)
             result = {

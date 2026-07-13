@@ -75,6 +75,13 @@ class DashboardInterfaceTests(unittest.TestCase):
             "recall-mode-list",
             "budget-learning-list",
             "budget-learning-total",
+            "cortex-sleep",
+            "sleep-status",
+            "sleep-cycle-summary",
+            "sleep-metrics",
+            "sleep-safety",
+            "sleep-proposal-total",
+            "sleep-proposal-list",
             "lifecycle-feed",
             "workflow-feed",
             "health-actions",
@@ -96,6 +103,9 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderInsights()", html)
         self.assertIn("function renderCognition()", html)
         self.assertIn("function renderBudgetLearning", html)
+        self.assertIn("function renderSleep", html)
+        self.assertIn("Cortex Sleep", html)
+        self.assertIn("Shadow watches without changing memory.", html)
         self.assertIn("function renderHealthActions", html)
 
 

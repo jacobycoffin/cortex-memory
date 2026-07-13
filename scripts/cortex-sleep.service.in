@@ -1,0 +1,27 @@
+[Unit]
+Description=Cortex Sleep offline memory maintenance
+After=local-fs.target
+ConditionPathExists=@@HERMES_HOME@@/plugins/cortex/__main__.py
+
+[Service]
+Type=oneshot
+Environment="PYTHONPATH=@@HERMES_HOME@@/plugins"
+Environment="CORTEX_DB=@@HERMES_HOME@@/cortex/cortex.db"
+EnvironmentFile=-@@HERMES_HOME@@/cortex/sleep.env
+ExecStart="@@PYTHON_BIN@@" -m cortex sleep --mode shadow
+Nice=15
+CPUSchedulingPolicy=idle
+IOSchedulingClass=idle
+CPUWeight=10
+IOWeight=10
+UMask=0077
+TimeoutStartSec=2h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="@@HERMES_HOME@@/cortex"
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

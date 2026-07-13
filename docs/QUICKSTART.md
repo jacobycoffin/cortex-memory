@@ -1,4 +1,6 @@
-# Cortex quickstart
+# Cortex Memory Hermes adapter quickstart
+
+For a framework-neutral install and the five-event harness contract, start with the main README and [integration guide](INTEGRATION.md). This guide covers the included Hermes adapter, vault migration, Linux services, and rollback.
 
 ## 1. Back up existing Hermes memory
 
@@ -15,8 +17,8 @@ Cortex does not require discarding `MEMORY.md`, `USER.md`, or an Obsidian vault.
 ## 2. Install and activate
 
 ```bash
-git clone https://github.com/jacobycoffin/hermes-cortex-memory.git
-cd hermes-cortex-memory
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
 HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```
@@ -46,7 +48,24 @@ HERMES_HOME="$HOME/.hermes" VAULT_PATH="$HOME/.hermes/obsidian-vault" \
   ./scripts/install_vault_timer.sh
 ```
 
-## 4. Run the dashboard
+## 4. Enable offline Cortex Sleep
+
+Preview one bounded deterministic cycle:
+
+```bash
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex sleep --mode shadow --reflection-token-budget 0
+```
+
+On an always-on Linux host, install the low-priority nightly timer:
+
+```bash
+HERMES_HOME="$HOME/.hermes" ./scripts/install_sleep_timer.sh
+systemctl --user list-timers cortex-sleep.timer
+```
+
+The installed job runs in shadow mode and uses no provider tokens. It records replay evidence and proposals without changing memories or graph weights. Optional provider settings live in `$HERMES_HOME/cortex/sleep.env`, which the installer creates with mode `0600` and a zero budget. See [Cortex Sleep](SLEEP.md) before enabling remote reflection or explicit apply mode.
+
+## 5. Run the dashboard
 
 ```bash
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard --no-open --port 8765
@@ -70,7 +89,7 @@ systemctl --user restart cortex-dashboard
 
 Place Caddy, Nginx, or Cloudflare Tunnel in front of `127.0.0.1:8100`; do not bind the Python server directly to the public internet. Follow the [dashboard self-hosting guide](DASHBOARD_HOSTING.md) to connect a hostname you control without publishing personal deployment details.
 
-## 5. Acceptance test
+## 6. Acceptance test
 
 1. In session A, store a specific durable decision.
 2. In session B, ask a paraphrased question about it.
@@ -78,10 +97,12 @@ Place Caddy, Nginx, or Cloudflare Tunnel in front of `127.0.0.1:8100`; do not bi
 4. Correct it and confirm the old version remains.
 5. Run two related tool tasks and inspect the Tool notes and Cognition pages.
 6. Run the audit.
+7. Run one shadow Sleep cycle and inspect its proposal counts in Cognition.
 
 ```bash
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex audit
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex recall-stats
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex sleep --mode shadow --reflection-token-budget 0
 ```
 
 `audit.ok` should be `true`. Keep pruning and consolidation in `shadow` until you have real pruning-regret and retrieval evidence.

@@ -1,6 +1,6 @@
 # Cortex architecture
 
-Cortex is a local evidence system around Hermes inference. Its architecture favors bounded work, inspectability, and reversible adaptation over an opaque "remember everything" pipeline.
+Cortex Memory is a local evidence system around agent inference. Its architecture favors bounded work, inspectability, and reversible adaptation over an opaque "remember everything" pipeline. The core modules are harness-neutral; `__init__.py` also contains the included Hermes MemoryProvider adapter.
 
 ## Invariants
 
@@ -11,12 +11,13 @@ Cortex is a local evidence system around Hermes inference. Its architecture favo
 5. Destructive maintenance is staged and reversible.
 6. A tool procedure requires repeated evidence from distinct tasks.
 7. The hot path must not require a network service or an extra LLM call.
+8. Offline model reflection may propose, but never directly mutate, memory.
 
 ## Runtime flow
 
 ```mermaid
 flowchart TD
-    A["Hermes query"] --> B["Deterministic recall planner"]
+    A["Agent query"] --> B["Deterministic recall planner"]
     B -->|"none"| C["Record abstention"]
     B -->|"lean / focused / procedural / deep"| D["FTS5 candidates"]
     B --> D2["Transparent semantic-feature candidates"]
@@ -26,7 +27,7 @@ flowchart TD
     F --> G["Utility + time + source scoring"]
     G --> H["Diversity and token budget"]
     H --> I["Compact, untrusted evidence block"]
-    I --> J["Hermes model"]
+    I --> J["Harness model"]
     J --> K["Attribution and task outcome"]
     K --> L["Utility / association updates"]
     K --> M["Tool execution and workflow evidence"]
@@ -111,6 +112,14 @@ Lifecycle maintenance calculates retention from importance, confidence, trust, c
 
 Archived evidence is excluded from normal retrieval. A shadow search can detect a high-scoring archived match as pruning regret; `regret_mode=restore` can return it to active state. There is no hard-delete API.
 
+## Offline Sleep cycle
+
+`sleep.py` runs outside normal agent inference. A cycle selects only old, unprocessed episodes and resolved usage tasks, replays them through local graph-free retrieval, and stores hashed witness evidence. An association requires at least two independent session/task witnesses; one burst or raw retrieval count cannot qualify it.
+
+The deterministic pass also produces structured interference, stale weak-edge, lifecycle, near-duplicate, and dependency-repair proposals. Shadow mode records observations only. Explicit `--mode apply --apply` can add or strengthen a `sleep_replay` edge, reduce an eligible weak association by five percent, or commit a reversible lifecycle transition. `sleep_edge_changes` and `sleep_state_changes` preserve prior values for `sleep-undo`. Neither mode hard-deletes evidence.
+
+Optional reflection is last and defaults to zero tokens. When an operator supplies a provider, model, key environment-variable name, and per-run ceiling, Cortex sends a bounded set of already-sanitized proposal memories. The response must match the typed JSON contract and may reference only submitted memory IDs. Valid output becomes a `reflection_*` proposal; it cannot create a memory, relation, lifecycle change, or fact. Provider failure leaves deterministic Sleep results intact.
+
 ## Trust boundaries
 
 - SQLite is local to `$HERMES_HOME/cortex` and uses WAL mode.
@@ -120,9 +129,12 @@ Archived evidence is excluded from normal retrieval. A shadow search can detect 
 - the dashboard binds to localhost; memory and cognition endpoints are read-only, while authentication uses narrowly scoped sign-in and password-change POST endpoints;
 - public routing requires TLS and authentication at or before the dashboard;
 - vault indexing is incremental and reads source notes without modifying them.
+- remote Sleep reflection is disabled by default and, when enabled, crosses the local trust boundary with selected memory text.
 
 ## Schema evolution
 
 Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_regret`, `consolidation_runs`, `consolidation_members`, `tool_workflows`, and `tool_workflow_stats`.
 
 Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.
+
+Schema 6 adds auditable Sleep runs, replay/usage processing state, independent association evidence, proposals, and reversible edge/state change journals. Migration creates the new tables without rewriting existing memories or edges.
