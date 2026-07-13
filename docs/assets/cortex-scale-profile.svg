@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="620" viewBox="0 0 1440 620" role="img" aria-labelledby="title description">
+  <title id="title">Cortex memory scaling profile</title>
+  <desc id="description">A comparison of Cortex top-six recall and the coverage of the fixed Hermes built-in snapshot across 100, 500, and 2,000 synthetic memories. Cortex recall stays near 99 percent. Built-in snapshot coverage falls from 18 to 1.5 percent because the snapshot holds only 18 of the generated facts. Cortex p95 local retrieval remains between 12 and 34 milliseconds and its median returned context remains about 173 approximate tokens.</desc>
+  <rect width="1440" height="620" rx="28" fill="#0c1015"/>
+  <g font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="72" y="68" fill="#f1785d" font-size="20" font-weight="700" letter-spacing="4">CAPACITY PROFILE</text>
+    <text x="72" y="122" fill="#f3efe7" font-size="40" font-weight="700">The index grows. The recalled slice stays small.</text>
+    <text x="72" y="157" fill="#9eaaa5" font-size="18">Same fixture and query method at every corpus size.</text>
+
+    <g transform="translate(72 207)">
+      <text x="0" y="0" fill="#d5d8d4" font-size="17" font-weight="700">Answer-bearing coverage</text>
+      <line x1="64" y1="245" x2="794" y2="245" stroke="#27333a"/>
+      <line x1="64" y1="25" x2="64" y2="245" stroke="#27333a"/>
+      <g fill="#6f7c77" font-size="13">
+        <text x="51" y="250" text-anchor="end">0</text><text x="51" y="195" text-anchor="end">25</text><text x="51" y="140" text-anchor="end">50</text><text x="51" y="85" text-anchor="end">75</text><text x="51" y="30" text-anchor="end">100%</text>
+      </g>
+      <g stroke="#202a31">
+        <line x1="64" y1="190" x2="794" y2="190"/><line x1="64" y1="135" x2="794" y2="135"/><line x1="64" y1="80" x2="794" y2="80"/><line x1="64" y1="25" x2="794" y2="25"/>
+      </g>
+      <path d="M100 27 L430 28 L760 26" fill="none" stroke="#78cfbc" stroke-width="5" stroke-linecap="round"/>
+      <path d="M100 205 L430 238 L760 242" fill="none" stroke="#747f84" stroke-width="4" stroke-linecap="round"/>
+      <g fill="#78cfbc"><circle cx="100" cy="27" r="7"/><circle cx="430" cy="28" r="7"/><circle cx="760" cy="26" r="7"/></g>
+      <g fill="#747f84"><circle cx="100" cy="205" r="6"/><circle cx="430" cy="238" r="6"/><circle cx="760" cy="242" r="6"/></g>
+      <g fill="#9eaaa5" font-size="14">
+        <text x="100" y="277" text-anchor="middle">100 memories</text><text x="430" y="277" text-anchor="middle">500 memories</text><text x="760" y="277" text-anchor="middle">2,000 memories</text>
+      </g>
+      <g font-size="14" font-weight="700">
+        <text x="100" y="16" fill="#78cfbc" text-anchor="middle">99.0%</text><text x="430" y="17" fill="#78cfbc" text-anchor="middle">98.5%</text><text x="760" y="15" fill="#78cfbc" text-anchor="middle">99.5%</text>
+        <text x="100" y="196" fill="#aeb5b2" text-anchor="middle">18.0%</text><text x="430" y="229" fill="#aeb5b2" text-anchor="middle">3.0%</text><text x="760" y="233" fill="#aeb5b2" text-anchor="middle">1.5%</text>
+      </g>
+      <g font-size="14">
+        <circle cx="235" cy="319" r="6" fill="#78cfbc"/><text x="249" y="324" fill="#d5d8d4">Cortex recall@6</text>
+        <circle cx="435" cy="319" r="6" fill="#747f84"/><text x="449" y="324" fill="#d5d8d4">Built-in snapshot coverage</text>
+      </g>
+    </g>
+
+    <g transform="translate(940 207)">
+      <rect width="428" height="151" rx="16" fill="#121920" stroke="#27333a"/>
+      <text x="26" y="34" fill="#84918c" font-size="14" font-weight="700" letter-spacing="2">P95 LOCAL RETRIEVAL</text>
+      <text x="26" y="93" fill="#f3efe7" font-size="43" font-weight="750">12 → 34 ms</text>
+      <text x="26" y="124" fill="#9eaaa5" font-size="15">from 100 to 2,000 memories</text>
+
+      <rect y="174" width="428" height="151" rx="16" fill="#121920" stroke="#27333a"/>
+      <text x="26" y="208" fill="#84918c" font-size="14" font-weight="700" letter-spacing="2">MEDIAN RETURNED CONTEXT</text>
+      <text x="26" y="267" fill="#f3efe7" font-size="43" font-weight="750">≈ 173 tokens</text>
+      <text x="26" y="298" fill="#9eaaa5" font-size="15">stable across all three corpus sizes</text>
+    </g>
+
+    <text x="72" y="586" fill="#66736e" font-size="13">Built-in memory is a deliberately bounded 2,200-character snapshot, not a search engine. This chart measures capacity and retrieval—not model intelligence or inference speed.</text>
+  </g>
+</svg>

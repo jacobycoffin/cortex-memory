@@ -323,6 +323,27 @@
     .toast.show { opacity: 1; transform: translate(-50%,0); }
     .loading-screen { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; background: var(--bg); transition: opacity .35s; }
     .loading-screen.hidden { opacity: 0; pointer-events: none; }
+    .auth-gate { position: fixed; z-index: 150; inset: 0; display: grid; place-items: center; padding: 22px; background: var(--bg); }
+    .auth-gate[hidden], .account-gate[hidden] { display: none; }
+    .auth-card { width: min(430px,100%); padding: clamp(27px,5vw,42px); border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); box-shadow: var(--shadow); }
+    .auth-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 35px; }
+    .auth-brand .brand-mark { width: 30px; height: 30px; }
+    .auth-kicker { color: var(--accent); font-family: ui-monospace,monospace; font-size: .62rem; font-weight: 750; letter-spacing: .12em; text-transform: uppercase; }
+    .auth-card h1 { margin: 9px 0 10px; font-size: clamp(1.7rem,6vw,2.4rem); letter-spacing: -.045em; }
+    .auth-intro { color: var(--muted); font-size: .8rem; line-height: 1.6; margin-bottom: 27px; }
+    .auth-form { display: grid; gap: 16px; }
+    .auth-field { display: grid; gap: 7px; }
+    .auth-field span { color: var(--muted); font-size: .64rem; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
+    .auth-field input { width: 100%; min-width: 0; height: 44px; padding: 0 12px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2); color: var(--text); font: inherit; }
+    .auth-field input:focus { outline: 2px solid color-mix(in srgb,var(--accent) 42%,transparent); border-color: var(--accent); }
+    .auth-submit { width: 100%; height: 46px; margin-top: 4px; }
+    .auth-error { min-height: 18px; color: var(--red); font-size: .7rem; line-height: 1.45; }
+    .auth-note { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); color: var(--faint); font-size: .67rem; line-height: 1.55; }
+    .account-gate { position: fixed; z-index: 145; inset: 0; display: grid; place-items: center; padding: 22px; background: rgba(0,0,0,.58); backdrop-filter: blur(8px); }
+    .account-card { position: relative; width: min(470px,100%); }
+    .account-close { position: absolute; right: 15px; top: 15px; }
+    .account-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
+    .account-user { color: var(--muted); font-size: .7rem; overflow-wrap: anywhere; }
     .loader { text-align: center; color: var(--muted); font-size: .72rem; letter-spacing: .08em; }
     .loader-orb { width: 54px; height: 54px; margin: 0 auto 18px; border-radius: 50%; border: 1px solid rgba(141,125,247,.35); position: relative; box-shadow: 0 0 30px rgba(141,125,247,.12); }
     .loader-orb::before { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--violet); top: 20px; left: 20px; box-shadow: 0 0 16px var(--violet); animation: pulse 1.4s ease-in-out infinite; }
@@ -849,6 +870,36 @@
     <div class="loader"><div class="loader-orb"></div>OPENING THE INDEX</div>
   </div>
 
+  <section class="auth-gate" id="auth-gate" aria-labelledby="auth-title">
+    <div class="auth-card">
+      <div class="auth-brand"><div class="brand-mark" aria-hidden="true"></div><div class="brand-copy"><strong>CORTEX</strong><span>Private brain index</span></div></div>
+      <div id="auth-login-pane">
+        <div class="auth-kicker">Protected access</div>
+        <h1 id="auth-title">Open your Brain.</h1>
+        <p class="auth-intro">Sign in to inspect memories, recall activity, learned workflows, and system health.</p>
+        <form class="auth-form" id="auth-login-form">
+          <label class="auth-field"><span>Username</span><input id="auth-username" name="username" autocomplete="username" required></label>
+          <label class="auth-field"><span>Password</span><input id="auth-password" name="password" type="password" autocomplete="current-password" required></label>
+          <div class="auth-error" id="auth-login-error" role="alert" aria-live="polite"></div>
+          <button class="primary-btn auth-submit" type="submit">Sign in</button>
+        </form>
+        <p class="auth-note">Temporary passwords expire as soon as you replace them. Cortex stores a password hash, never the readable password.</p>
+      </div>
+      <div id="auth-change-pane" hidden>
+        <div class="auth-kicker">First sign-in</div>
+        <h1>Choose your password.</h1>
+        <p class="auth-intro">The temporary password is only for entry. Replace it now with at least 12 characters.</p>
+        <form class="auth-form" id="auth-forced-change-form">
+          <label class="auth-field"><span>Temporary password</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+          <label class="auth-field"><span>New password</span><input name="new_password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <label class="auth-field"><span>Confirm new password</span><input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label>
+          <div class="auth-error" role="alert" aria-live="polite"></div>
+          <button class="primary-btn auth-submit" type="submit">Save password and enter</button>
+        </form>
+      </div>
+    </div>
+  </section>
+
   <div class="app-shell">
     <aside class="sidebar" aria-label="Cortex navigation">
       <div class="brand">
@@ -895,6 +946,7 @@
             <button class="theme-option" type="button" data-theme-choice="mono" role="menuitemradio" aria-checked="false"><span class="theme-swatches"><i style="background:#ececec"></i><i style="background:#111"></i><i style="background:#c3342f"></i></span><span><strong>Mono</strong><small>Graphite with a red mark</small></span><span class="theme-check"></span></button>
           </div>
         </div>
+        <button class="icon-btn" id="account-open" type="button" aria-label="Account settings" title="Account">◎</button>
         <button class="icon-btn" id="refresh" type="button" aria-label="Refresh Cortex data" title="Refresh">↻</button>
       </header>
 
@@ -1070,6 +1122,22 @@
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
   <aside class="drawer" id="drawer" aria-label="Memory details" aria-hidden="true"><div class="drawer-head"><strong>Memory detail</strong><button class="icon-btn" id="drawer-close" type="button" aria-label="Close memory detail">×</button></div><div class="drawer-body" id="drawer-body"></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <section class="account-gate" id="account-gate" hidden aria-labelledby="account-title">
+    <div class="auth-card account-card">
+      <button class="icon-btn account-close" id="account-close" type="button" aria-label="Close account settings">×</button>
+      <div class="auth-kicker">Account</div>
+      <h1 id="account-title">Change password.</h1>
+      <p class="auth-intro">Updating your password signs out every other Brain session.</p>
+      <form class="auth-form" id="account-change-form">
+        <label class="auth-field"><span>Current password</span><input name="current_password" type="password" autocomplete="current-password" required></label>
+        <label class="auth-field"><span>New password</span><input name="new_password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <label class="auth-field"><span>Confirm new password</span><input name="confirm_password" type="password" autocomplete="new-password" minlength="12" required></label>
+        <div class="auth-error" role="alert" aria-live="polite"></div>
+        <button class="primary-btn auth-submit" type="submit">Update password</button>
+      </form>
+      <div class="account-actions"><span class="account-user" id="account-user"></span><button class="ghost-btn" id="account-logout" type="button">Sign out</button></div>
+    </div>
+  </section>
 
   <script>
     "use strict";
@@ -1087,6 +1155,126 @@
     };
     const svgNS = "http://www.w3.org/2000/svg";
     const themeNames = { field: "Field", ink: "Ink", dusk: "Dusk", tide: "Tide", moss: "Moss", mono: "Mono" };
+    const authState = { enabled: true, username: "", currentPassword: "" };
+
+    async function authRequest(path, payload) {
+      const response = await fetch(path, {
+        method: "POST",
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-Cortex-Request": "1" },
+        body: JSON.stringify(payload || {})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      return data;
+    }
+
+    async function bootAuth() {
+      try {
+        const response = await fetch("/api/auth/status", { cache: "no-store", credentials: "same-origin" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const status = await response.json();
+        authState.enabled = Boolean(status.auth_enabled);
+        authState.username = status.username || "";
+        document.getElementById("auth-username").value = authState.username;
+        document.getElementById("account-user").textContent = authState.username ? `Signed in as ${authState.username}` : "";
+        document.getElementById("account-open").hidden = !authState.enabled;
+        if (!authState.enabled || (status.authenticated && !status.must_change_password)) {
+          enterDashboard();
+          return;
+        }
+        if (status.authenticated && status.must_change_password) showForcedPasswordChange();
+        else showLogin();
+      } catch (error) {
+        showLogin(`Could not check authentication: ${error.message}`);
+      }
+    }
+
+    function enterDashboard() {
+      authState.currentPassword = "";
+      document.getElementById("auth-gate").hidden = true;
+      document.getElementById("account-gate").hidden = true;
+      document.body.style.overflow = "";
+      load(false);
+    }
+
+    function showLogin(message = "") {
+      document.getElementById("auth-gate").hidden = false;
+      document.getElementById("auth-login-pane").hidden = false;
+      document.getElementById("auth-change-pane").hidden = true;
+      document.getElementById("auth-login-error").textContent = message;
+      document.getElementById("loading-screen").classList.add("hidden");
+      document.body.style.overflow = "hidden";
+      requestAnimationFrame(() => document.getElementById("auth-username").focus());
+    }
+
+    function showForcedPasswordChange(currentPassword = "") {
+      const form = document.getElementById("auth-forced-change-form");
+      document.getElementById("auth-gate").hidden = false;
+      document.getElementById("auth-login-pane").hidden = true;
+      document.getElementById("auth-change-pane").hidden = false;
+      form.current_password.value = currentPassword || authState.currentPassword;
+      form.querySelector(".auth-error").textContent = "";
+      document.body.style.overflow = "hidden";
+      requestAnimationFrame(() => form.new_password.focus());
+    }
+
+    async function submitPasswordChange(form, forced) {
+      const error = form.querySelector(".auth-error"), button = form.querySelector("button[type=submit]");
+      error.textContent = "";
+      if (form.new_password.value !== form.confirm_password.value) {
+        error.textContent = "The new passwords do not match.";
+        return;
+      }
+      button.disabled = true;
+      try {
+        const result = await authRequest("/api/auth/change-password", {
+          current_password: form.current_password.value,
+          new_password: form.new_password.value
+        });
+        authState.username = result.username || authState.username;
+        form.reset();
+        if (forced) enterDashboard();
+        else {
+          document.getElementById("account-gate").hidden = true;
+          document.body.style.overflow = "";
+          showToast("Password updated. Other sessions were signed out.");
+        }
+      } catch (requestError) {
+        error.textContent = requestError.message;
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    document.getElementById("auth-login-form").addEventListener("submit", async event => {
+      event.preventDefault();
+      const form = event.currentTarget, error = document.getElementById("auth-login-error"), button = form.querySelector("button[type=submit]");
+      error.textContent = ""; button.disabled = true;
+      try {
+        const password = form.password.value;
+        const result = await authRequest("/api/auth/login", { username: form.username.value, password });
+        authState.username = result.username || form.username.value;
+        authState.currentPassword = password;
+        document.getElementById("account-user").textContent = `Signed in as ${authState.username}`;
+        if (result.must_change_password) showForcedPasswordChange(password);
+        else { form.reset(); enterDashboard(); }
+      } catch (requestError) {
+        error.textContent = requestError.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.getElementById("auth-forced-change-form").addEventListener("submit", event => { event.preventDefault(); submitPasswordChange(event.currentTarget, true); });
+    document.getElementById("account-change-form").addEventListener("submit", event => { event.preventDefault(); submitPasswordChange(event.currentTarget, false); });
+    document.getElementById("account-open").addEventListener("click", () => { document.getElementById("account-gate").hidden = false; document.body.style.overflow = "hidden"; requestAnimationFrame(() => document.querySelector("#account-change-form input").focus()); });
+    document.getElementById("account-close").addEventListener("click", () => { document.getElementById("account-gate").hidden = true; document.getElementById("account-change-form").reset(); document.body.style.overflow = ""; });
+    document.getElementById("account-logout").addEventListener("click", async () => {
+      try { await authRequest("/api/auth/logout", {}); } catch (_) { /* The local session is cleared either way. */ }
+      document.getElementById("account-gate").hidden = true;
+      showLogin("Signed out.");
+    });
 
     document.querySelectorAll(".nav-btn").forEach(button => button.addEventListener("click", () => setView(button.dataset.view)));
     document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => setView(button.dataset.go)));
@@ -1145,6 +1333,8 @@
       refresh.classList.add("refreshing");
       try {
         const response = await fetch("/api/snapshot", { cache: "no-store" });
+        if (response.status === 401) { showLogin("Your session expired. Sign in again."); return; }
+        if (response.status === 403) { showForcedPasswordChange(); return; }
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         app.data = await response.json();
         populateFilters();
@@ -1965,7 +2155,7 @@
     function svgEl(tag,attrs={}){const node=document.createElementNS(svgNS,tag);Object.entries(attrs).forEach(([k,v])=>node.setAttribute(k,String(v)));return node;}
     function svgText(x,y,text,className,anchor="start"){const node=svgEl("text",{x,y,class:className,"text-anchor":anchor});node.textContent=String(text);return node;}
 
-    load(false);
+    bootAuth();
     setInterval(()=>load(true),60000);
   </script>
 </body>

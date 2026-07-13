@@ -59,7 +59,16 @@ HERMES_HOME="$HOME/.hermes" PORT=8100 ./scripts/install_dashboard_service.sh
 systemctl --user start cortex-dashboard
 ```
 
-Place Caddy, Nginx, or Cloudflare Tunnel in front of `127.0.0.1:8100`; do not bind the Python server directly to the public internet.
+The installer prints a one-time password. At first sign-in the dashboard requires a new password of at least 12 characters. Use the **Account** control in the top bar to change it again or sign out.
+
+If the password is lost, reset it from the host and restart the service:
+
+```bash
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard-password --username cortex
+systemctl --user restart cortex-dashboard
+```
+
+Place Caddy, Nginx, or Cloudflare Tunnel in front of `127.0.0.1:8100`; do not bind the Python server directly to the public internet. Follow the [dashboard self-hosting guide](DASHBOARD_HOSTING.md) to connect a hostname you control without publishing personal deployment details.
 
 ## 5. Acceptance test
 

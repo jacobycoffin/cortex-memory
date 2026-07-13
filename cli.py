@@ -45,6 +45,15 @@ def main() -> int:
     dashboard = sub.add_parser("dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true")
+    dashboard_password = sub.add_parser(
+        "dashboard-password", help="Generate a temporary dashboard password and require a change at login"
+    )
+    dashboard_password.add_argument(
+        "--username", default=os.environ.get("CORTEX_DASHBOARD_USER", "cortex")
+    )
+    dashboard_password.add_argument(
+        "--auth-file", help="Override the dashboard auth file path (defaults beside cortex.db)"
+    )
     vault_index = sub.add_parser("vault-index", help="Plan or apply an incremental Obsidian vault import")
     vault_index.add_argument("vault_path")
     vault_index.add_argument("--apply", action="store_true", help="Write the planned import to Cortex")
@@ -57,6 +66,23 @@ def main() -> int:
         from .dashboard import serve_dashboard
 
         serve_dashboard(args.db, port=args.port, open_browser=not args.no_open)
+        return 0
+    if args.command == "dashboard-password":
+        from .dashboard_auth import DashboardAuth
+
+        auth_path = Path(args.auth_file).expanduser() if args.auth_file else Path(args.db).expanduser().parent / "dashboard-auth.json"
+        temporary_password = DashboardAuth(auth_path).reset(username=args.username, must_change=True)
+        print(
+            json.dumps(
+                {
+                    "auth_file": str(auth_path),
+                    "must_change_password": True,
+                    "temporary_password": temporary_password,
+                    "username": args.username,
+                },
+                indent=2,
+            )
+        )
         return 0
 
     store = CortexStore(args.db)

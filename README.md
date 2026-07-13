@@ -4,6 +4,21 @@
 
 Cortex is an engineering system, not a simulated brain. Psychology and neuroscience provide hypotheses; transparent benchmarks decide whether the software helps.
 
+![Cortex benchmark results at a glance](docs/assets/cortex-results-at-a-glance.svg)
+
+## Evidence at a glance
+
+| Question | Measured result | What it means |
+| --- | --- | --- |
+| Can it find memory at scale? | **98.5–99.5% recall@6** from 100 to 2,000 synthetic memories. | The relevant fact was almost always in Cortex's first six results. |
+| Does adaptive recall reduce Cortex context? | **21.7% fewer** approximate memory-context tokens than fixed verbose Cortex, with the same 93.3% labeled answer availability. | The attention gate and compact format avoided unnecessary memory text in this workload. |
+| Did answers improve in a live paired run? | **6.7% → 96.7% exact-answer accuracy** across 90 pairs in additive mode. | Cortex made the labeled answer available; the built-in bounded snapshot usually could not hold it. |
+| Is inference proven faster? | **No clear latency difference.** TTFT was 1,339 ms with Cortex and 1,337 ms built-in; the confidence interval crossed zero. | The proven benefit is memory capacity and answer availability, not raw model speed—yet. |
+
+![Cortex capacity and retrieval scaling profile](docs/assets/cortex-scale-profile.svg)
+
+These are reproducible synthetic benchmarks, not a promise about every agent or vault. The live accuracy comparison intentionally tests beyond the built-in snapshot's capacity, and Cortex used 51.8% more median prompt tokens in that run to supply the missing evidence. Read the [method, raw results, and required caveats](docs/BENCHMARKING.md), or run the same tests on your own Hermes history.
+
 ## Why Cortex
 
 Most agent memory systems optimize only for storing and finding text. Cortex also asks:
@@ -82,7 +97,14 @@ Open `http://127.0.0.1:8765`. The dashboard is read-only and includes:
 - plain-language health guidance and an inspectable memory index;
 - six characterful themes with responsive text wrapping.
 
-For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. Set `CORTEX_DASHBOARD_USER` and `CORTEX_DASHBOARD_PASSWORD`; every HTML and API request is protected. The included systemd installer generates a private credential file.
+For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
+
+If the password is lost, generate a new one and restart the dashboard:
+
+```bash
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard-password --username cortex
+systemctl --user restart cortex-dashboard
+```
 
 ## How a recall works
 

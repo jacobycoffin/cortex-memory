@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="810" viewBox="0 0 1440 810" role="img" aria-labelledby="title description">
+  <title id="title">Cortex benchmark results at a glance</title>
+  <desc id="description">Cortex retrieved the right memory in the top six 98.5 to 99.5 percent of the time across synthetic corpora from 100 to 2,000 memories. Adaptive compact recall used 21.7 percent fewer approximate memory-context tokens than fixed verbose Cortex while preserving 93.3 percent labeled answer availability. In a 90-pair live additive benchmark, exact-answer accuracy increased from 6.7 to 96.7 percent, while time to first token showed no clear difference.</desc>
+  <rect width="1440" height="810" rx="28" fill="#0c1015"/>
+  <path d="M1135 -22 C1275 55 1322 126 1466 151 L1466 -22 Z" fill="#18241f"/>
+  <circle cx="1325" cy="29" r="93" fill="#234039" opacity=".55"/>
+
+  <g font-family="Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="72" y="70" fill="#f1785d" font-size="20" font-weight="700" letter-spacing="4">CORTEX / MEASURED EVIDENCE</text>
+    <text x="72" y="128" fill="#f3efe7" font-size="44" font-weight="700">The benchmark benefit, without the hype.</text>
+    <text x="72" y="168" fill="#9eaaa5" font-size="20">Scale durable memory, retrieve a small relevant slice, and measure whether it helped.</text>
+
+    <g transform="translate(72 218)">
+      <rect width="408" height="390" rx="18" fill="#121920" stroke="#27333a"/>
+      <text x="30" y="42" fill="#84918c" font-size="15" font-weight="700" letter-spacing="2">RETRIEVAL AT SCALE</text>
+      <text x="30" y="109" fill="#78cfbc" font-size="51" font-weight="750">98.5–99.5%</text>
+      <text x="30" y="140" fill="#d5d8d4" font-size="17">right memory found in the top 6</text>
+      <path d="M44 244 L190 251 L360 238" fill="none" stroke="#78cfbc" stroke-width="5" stroke-linecap="round"/>
+      <path d="M44 244 L44 304 M190 251 L190 304 M360 238 L360 304" stroke="#27333a"/>
+      <circle cx="44" cy="244" r="8" fill="#78cfbc"/><circle cx="190" cy="251" r="8" fill="#78cfbc"/><circle cx="360" cy="238" r="8" fill="#78cfbc"/>
+      <text x="44" y="329" fill="#84918c" font-size="14" text-anchor="middle">100</text>
+      <text x="190" y="329" fill="#84918c" font-size="14" text-anchor="middle">500</text>
+      <text x="360" y="329" fill="#84918c" font-size="14" text-anchor="middle">2,000</text>
+      <text x="202" y="359" fill="#687570" font-size="13" text-anchor="middle">synthetic memories indexed</text>
+    </g>
+
+    <g transform="translate(516 218)">
+      <rect width="408" height="390" rx="18" fill="#121920" stroke="#27333a"/>
+      <text x="30" y="42" fill="#84918c" font-size="15" font-weight="700" letter-spacing="2">ADAPTIVE CONTEXT</text>
+      <text x="30" y="109" fill="#f4b69e" font-size="51" font-weight="750">−21.7%</text>
+      <text x="30" y="140" fill="#d5d8d4" font-size="17">approx. memory-context tokens</text>
+      <text x="30" y="189" fill="#84918c" font-size="14">FIXED VERBOSE</text>
+      <rect x="30" y="205" width="330" height="27" rx="6" fill="#263139"/>
+      <text x="369" y="224" fill="#aab3af" font-size="14" text-anchor="end">11,972</text>
+      <text x="30" y="270" fill="#84918c" font-size="14">ADAPTIVE COMPACT</text>
+      <rect x="30" y="286" width="258" height="27" rx="6" fill="#f1785d"/>
+      <text x="369" y="305" fill="#f4b69e" font-size="14" text-anchor="end">9,377</text>
+      <line x1="30" y1="340" x2="378" y2="340" stroke="#27333a"/>
+      <text x="30" y="370" fill="#d5d8d4" font-size="15">Same labeled answer availability: 93.3%</text>
+    </g>
+
+    <g transform="translate(960 218)">
+      <rect width="408" height="390" rx="18" fill="#121920" stroke="#27333a"/>
+      <text x="30" y="42" fill="#84918c" font-size="15" font-weight="700" letter-spacing="2">LIVE PAIRED TEST</text>
+      <text x="30" y="109" fill="#f3efe7" font-size="48" font-weight="750">6.7 → <tspan fill="#78cfbc">96.7%</tspan></text>
+      <text x="30" y="140" fill="#d5d8d4" font-size="17">exact-answer accuracy</text>
+      <text x="30" y="205" fill="#84918c" font-size="14">HERMES BUILT-IN</text>
+      <rect x="30" y="221" width="330" height="27" rx="6" fill="#263139"/>
+      <rect x="30" y="221" width="23" height="27" rx="6" fill="#6f7b81"/>
+      <text x="369" y="240" fill="#aab3af" font-size="14" text-anchor="end">6.7%</text>
+      <text x="30" y="278" fill="#84918c" font-size="14">BUILT-IN + CORTEX</text>
+      <rect x="30" y="294" width="319" height="27" rx="6" fill="#78cfbc"/>
+      <text x="339" y="313" fill="#0c1015" font-size="14" font-weight="700" text-anchor="end">96.7%</text>
+      <line x1="30" y1="340" x2="378" y2="340" stroke="#27333a"/>
+      <text x="30" y="370" fill="#d5d8d4" font-size="15">90 pairs · 500 memories · additive mode</text>
+    </g>
+
+    <rect x="72" y="642" width="1296" height="91" rx="16" fill="#151c22" stroke="#27333a"/>
+    <text x="102" y="678" fill="#f3efe7" font-size="21" font-weight="700">Speed result: effectively tied</text>
+    <text x="102" y="708" fill="#9eaaa5" font-size="16">Whole-agent TTFT: 1,339 ms Cortex vs 1,337 ms built-in. The 95% interval crosses zero, so this is not evidence of faster inference.</text>
+
+    <text x="72" y="775" fill="#66736e" font-size="13">Synthetic corpus results; approximate tokens use characters ÷ 4. Publish the method and caveats with the headline.</text>
+  </g>
+</svg>
