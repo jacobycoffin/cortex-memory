@@ -53,6 +53,11 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     store = CortexStore(db_path)
     html_path = Path(__file__).with_name("dashboard.html")
     html = html_path.read_bytes()
+    public_assets = {
+        "/favicon.svg": ("image/svg+xml", Path(__file__).with_name("favicon.svg").read_bytes()),
+        "/favicon.ico": ("image/x-icon", Path(__file__).with_name("favicon.ico").read_bytes()),
+        "/apple-touch-icon.png": ("image/png", Path(__file__).with_name("apple-touch-icon.png").read_bytes()),
+    }
     auth_user = os.environ.get("CORTEX_DASHBOARD_USER", "")
     auth_password = os.environ.get("CORTEX_DASHBOARD_PASSWORD", "")
     auth_path = Path(
@@ -71,6 +76,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/":
                 self._headers_only(HTTPStatus.OK, "text/html; charset=utf-8", len(html))
                 return
+            if parsed.path in public_assets:
+                content_type, payload = public_assets[parsed.path]
+                self._headers_only(HTTPStatus.OK, content_type, len(payload))
+                return
             if parsed.path == "/api/auth/status":
                 self._headers_only(HTTPStatus.OK, "application/json; charset=utf-8", 0)
                 return
@@ -86,6 +95,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             parsed = urlparse(self.path)
             if parsed.path == "/":
                 self._send(HTTPStatus.OK, "text/html; charset=utf-8", html)
+                return
+            if parsed.path in public_assets:
+                content_type, payload = public_assets[parsed.path]
+                self._send(HTTPStatus.OK, content_type, payload)
                 return
             if parsed.path == "/api/auth/status":
                 authenticated = self._authorized(complete=False)

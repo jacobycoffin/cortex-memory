@@ -14,7 +14,7 @@ if [[ -d "$TARGET" ]]; then
 fi
 
 mkdir -p "$TARGET"
-for file in __init__.py __main__.py attribution.py client.py cli.py cognition.py dashboard.py dashboard_auth.py dashboard.html extraction.py retrieval.py security.py semantics.py sleep.py store.py tooling.py vault.py plugin.yaml README.md LICENSE CHANGELOG.md; do
+for file in __init__.py __main__.py attribution.py client.py cli.py cognition.py dashboard.py dashboard_auth.py dashboard.html favicon.svg favicon.ico apple-touch-icon.png extraction.py retrieval.py security.py semantics.py sleep.py store.py tooling.py vault.py plugin.yaml README.md LICENSE CHANGELOG.md; do
   cp "$SOURCE_DIR/$file" "$TARGET/$file"
 done
 mkdir -p "$TARGET/scripts"

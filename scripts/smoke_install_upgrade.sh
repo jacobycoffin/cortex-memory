@@ -33,6 +33,10 @@ for relative_path in \
   client.py \
   dashboard.py \
   dashboard_auth.py \
+  dashboard.html \
+  favicon.svg \
+  favicon.ico \
+  apple-touch-icon.png \
   plugin.yaml \
   sleep.py \
   store.py \

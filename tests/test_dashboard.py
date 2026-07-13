@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from html.parser import HTMLParser
 from pathlib import Path
+from xml.etree import ElementTree
 
 
 from tests._bootstrap import ROOT
@@ -107,6 +108,16 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Cortex Sleep", html)
         self.assertIn("Shadow watches without changing memory.", html)
         self.assertIn("function renderHealthActions", html)
+
+    def test_dashboard_has_a_complete_favicon_set(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertIn('rel="icon" href="/favicon.svg" type="image/svg+xml"', html)
+        self.assertIn('rel="icon" href="/favicon.ico" sizes="any"', html)
+        self.assertIn('rel="apple-touch-icon" href="/apple-touch-icon.png"', html)
+        svg = ElementTree.parse(ROOT / "favicon.svg").getroot()
+        self.assertEqual(svg.attrib["viewBox"], "0 0 64 64")
+        self.assertGreater((ROOT / "favicon.ico").stat().st_size, 100)
+        self.assertGreater((ROOT / "apple-touch-icon.png").stat().st_size, 100)
 
 
 if __name__ == "__main__":

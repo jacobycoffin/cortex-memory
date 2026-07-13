@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description">
+  <title id="title">Cortex Memory</title>
+  <desc id="description">Two open memory rings and a vermilion memory node on deep pine.</desc>
+  <rect width="64" height="64" rx="14" fill="#17312f"/>
+  <path
+    d="M46 16.5C42.1 13 37 11 31.4 11C19.9 11 11 20.2 11 32s8.9 21 20.4 21c5.9 0 11.3-2.3 15.3-6.3"
+    fill="none"
+    stroke="#f5f0e5"
+    stroke-width="5.25"
+    stroke-linecap="round"
+  />
+  <path
+    d="M40.5 23.1a12.9 12.9 0 1 0-.3 18.1"
+    fill="none"
+    stroke="#f5f0e5"
+    stroke-opacity=".52"
+    stroke-width="2.5"
+    stroke-linecap="round"
+  />
+  <circle cx="47.5" cy="15.3" r="5.1" fill="#ef765b" stroke="#17312f" stroke-width="2.5"/>
+</svg>
