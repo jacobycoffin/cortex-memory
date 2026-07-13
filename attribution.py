@@ -1,0 +1,64 @@
+"""Evidence-use attribution for Cortex feedback and utility learning."""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from .semantics import feature_similarity
+
+
+_WORD = re.compile(r"[\w~./:@+-]{2,}", re.UNICODE)
+_ANCHOR = re.compile(
+    r"(?:https?://\S+|(?:~?/)?(?:[\w.-]+/){1,}[\w./-]+|\b\d{2,}(?:\.\d+)?\b|\b[\w]+-[\w-]{3,}\b)",
+    re.I,
+)
+_STOP = {
+    "about", "after", "again", "also", "because", "before", "could", "from", "have", "into", "memory",
+    "completed", "done", "should", "task", "that", "the", "their", "there", "these", "they", "this",
+    "through", "using", "what", "when", "where", "which", "with", "would", "your",
+}
+
+
+def attribution_score(memory: dict[str, Any], response: str) -> float:
+    """Estimate whether an answer used a recalled memory.
+
+    Exact structured values and distinctive anchors dominate.  Conceptual
+    similarity can support attribution but cannot independently produce a
+    high-confidence success signal.
+    """
+
+    content = str(memory.get("content") or "")
+    answer = response or ""
+    if not content or not answer:
+        return 0.0
+    answer_folded = answer.casefold()
+    object_value = str(memory.get("object_value") or "").strip()
+    if object_value and object_value.casefold() in answer_folded:
+        return 1.0
+
+    memory_tokens = _tokens(content)
+    answer_tokens = _tokens(answer)
+    shared_tokens = memory_tokens & answer_tokens
+    overlap = len(shared_tokens) / max(1, min(len(memory_tokens), len(answer_tokens)))
+
+    anchors = {anchor.casefold().rstrip(".,;:!?") for anchor in _ANCHOR.findall(content)}
+    anchor_hits = sum(anchor in answer_folded for anchor in anchors)
+    anchor_score = anchor_hits / len(anchors) if anchors else 0.0
+
+    if len(shared_tokens) < 2 and not anchors:
+        overlap *= 0.35
+
+    conceptual = feature_similarity(content, answer)
+    score = max(overlap, 0.88 * anchor_score, 0.68 * conceptual)
+    if overlap < 0.12 and anchor_score == 0:
+        score = min(score, 0.17)
+    return max(0.0, min(1.0, score))
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        token.casefold().strip(".,;:!?()[]{}\"'")
+        for token in _WORD.findall(text)
+        if len(token) >= 3 and token.casefold() not in _STOP
+    }

@@ -1,0 +1,128 @@
+{
+  "benchmark": "cortex-live-paired-repeated-aggregate",
+  "conditions": {
+    "cortex": {
+      "accuracy": 0.966667,
+      "agent_total_latency": {
+        "maximum_ms": 19238.516,
+        "minimum_ms": 1360.052,
+        "p50_ms": 1524.4485,
+        "p95_ms": 1867.95465,
+        "p99_ms": 4113.63083
+      },
+      "agent_ttft": {
+        "maximum_ms": 2234.205,
+        "minimum_ms": 1236.945,
+        "p50_ms": 1338.6815,
+        "p95_ms": 1583.19455,
+        "p99_ms": 2034.93222
+      },
+      "answer_availability": 1.0,
+      "memory_prepare": {
+        "maximum_ms": 16.469,
+        "minimum_ms": 7.544,
+        "p50_ms": 11.7265,
+        "p95_ms": 15.0446,
+        "p99_ms": 16.37288
+      },
+      "reported_prompt_tokens_median": 973.0,
+      "requests": 90
+    },
+    "default_built_in": {
+      "accuracy": 0.066667,
+      "agent_total_latency": {
+        "maximum_ms": 1975.255,
+        "minimum_ms": 1236.415,
+        "p50_ms": 1487.1845,
+        "p95_ms": 1725.77275,
+        "p99_ms": 1845.55619
+      },
+      "agent_ttft": {
+        "maximum_ms": 1856.745,
+        "minimum_ms": 1164.08,
+        "p50_ms": 1337.2545,
+        "p95_ms": 1608.2735,
+        "p99_ms": 1768.1099
+      },
+      "answer_availability": 0.066667,
+      "memory_prepare": {
+        "maximum_ms": 0.0,
+        "minimum_ms": 0.0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0
+      },
+      "reported_prompt_tokens_median": 641.0,
+      "requests": 90
+    }
+  },
+  "corpus_memories": 500,
+  "cortex_mode": "additive",
+  "generated_at": "2026-07-13T13:14:25+00:00",
+  "model": "tencent/hy3:free",
+  "paired_deltas_cortex_minus_default": {
+    "agent_total_ms_hierarchical_bootstrap_mean_95_ci": [
+      5.647,
+      851.669
+    ],
+    "agent_total_ms_hierarchical_bootstrap_median_95_ci": [
+      -11.435,
+      102.675
+    ],
+    "agent_total_ms_pooled_median": 31.751,
+    "agent_ttft_ms_hierarchical_bootstrap_mean_95_ci": [
+      -56.894,
+      93.229
+    ],
+    "agent_ttft_ms_hierarchical_bootstrap_median_95_ci": [
+      -53.004,
+      76.738
+    ],
+    "agent_ttft_ms_pooled_median": -7.246,
+    "interpretation": "Negative latency values favor Cortex; positive values favor built-in memory."
+  },
+  "paired_queries_per_run": 30,
+  "run_summaries": [
+    {
+      "agent_total_delta_median_ms": -8.33,
+      "agent_ttft_delta_median_ms": -39.234,
+      "cortex_accuracy": 0.933333,
+      "cortex_prompt_tokens_median": 966.5,
+      "default_accuracy": 0.033333,
+      "default_prompt_tokens_median": 639.0,
+      "run": 1,
+      "run_at": "2026-07-13T13:07:02+00:00",
+      "seed": 7
+    },
+    {
+      "agent_total_delta_median_ms": 102.413,
+      "agent_ttft_delta_median_ms": 78.372,
+      "cortex_accuracy": 0.966667,
+      "cortex_prompt_tokens_median": 979.0,
+      "default_accuracy": 0.1,
+      "default_prompt_tokens_median": 647.0,
+      "run": 2,
+      "run_at": "2026-07-13T13:09:11+00:00",
+      "seed": 17
+    },
+    {
+      "agent_total_delta_median_ms": 9.728,
+      "agent_ttft_delta_median_ms": -35.33,
+      "cortex_accuracy": 1.0,
+      "cortex_prompt_tokens_median": 969.0,
+      "default_accuracy": 0.066667,
+      "default_prompt_tokens_median": 641.0,
+      "run": 3,
+      "run_at": "2026-07-13T13:11:14+00:00",
+      "seed": 27
+    }
+  ],
+  "runs": 3,
+  "schema_version": 1,
+  "seeds": [
+    7,
+    17,
+    27
+  ],
+  "total_pairs": 90
+}

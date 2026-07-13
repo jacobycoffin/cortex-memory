@@ -1,0 +1,13 @@
+[Unit]
+Description=Incrementally index the Obsidian vault into Cortex
+After=local-fs.target
+
+[Service]
+Type=oneshot
+Environment=PYTHONPATH=@@HERMES_HOME@@/plugins
+ExecStart=@@PYTHON_BIN@@ -m cortex vault-index @@VAULT_PATH@@ --apply
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@@HERMES_HOME@@/cortex

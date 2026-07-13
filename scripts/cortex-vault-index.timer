@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the Cortex vault index current
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=15m
+RandomizedDelaySec=60
+Persistent=true
+Unit=cortex-vault-index.service
+
+[Install]
+WantedBy=timers.target

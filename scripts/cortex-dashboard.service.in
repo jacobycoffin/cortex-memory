@@ -1,0 +1,19 @@
+[Unit]
+Description=Cortex Brain read-only dashboard
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=@@HERMES_HOME@@/cortex/dashboard.env
+Environment=PYTHONPATH=@@HERMES_HOME@@/plugins
+ExecStart=@@PYTHON_BIN@@ -m cortex dashboard --no-open --port @@PORT@@
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@@HERMES_HOME@@/cortex
+
+[Install]
+WantedBy=default.target

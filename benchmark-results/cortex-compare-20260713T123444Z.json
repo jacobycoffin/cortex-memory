@@ -1,0 +1,201 @@
+{
+  "benchmark": "cortex-vs-hermes-built-in-synthetic",
+  "environment": {
+    "platform": "macOS-27.0-arm64-arm-64bit-Mach-O",
+    "processor": "arm",
+    "python": "3.14.2"
+  },
+  "finished_at": "2026-07-13T12:34:44+00:00",
+  "results": [
+    {
+      "configuration": {
+        "default_memory_char_limit": 2200,
+        "seed": 7,
+        "token_budget_approx": 700,
+        "top_k": 6
+      },
+      "corpus_memories": 100,
+      "cortex": {
+        "context_approx_tokens": {
+          "maximum": 184.0,
+          "mean": 173.29,
+          "minimum": 168.0,
+          "p50": 173.0,
+          "p95": 179.25
+        },
+        "indexed_memories": 100,
+        "mrr": 0.956,
+        "one_time_index_ms": 22.705,
+        "precision_at_k": 0.166667,
+        "query_latency": {
+          "maximum_ms": 12.030042,
+          "minimum_ms": 2.534792,
+          "p50_ms": 6.790479,
+          "p95_ms": 7.37531,
+          "p99_ms": 10.521282
+        },
+        "recall_at_k": 1.0,
+        "returned_memories": {
+          "maximum": 6.0,
+          "mean": 6.0,
+          "minimum": 6.0,
+          "p50": 6.0,
+          "p95": 6.0
+        }
+      },
+      "default_built_in": {
+        "answer_coverage_rate": 0.18,
+        "context_approx_tokens": {
+          "maximum": 563.0,
+          "mean": 563.0,
+          "minimum": 563.0,
+          "p50": 563.0,
+          "p95": 563.0
+        },
+        "notes": "Frozen snapshot access only. Hermes performs no query-time search for built-in memory, so this is a capacity/context baseline rather than a retrieval-ranking baseline.",
+        "per_turn_snapshot_access_latency": {
+          "maximum_ms": 0.00025,
+          "minimum_ms": 0.0,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 8.4e-05,
+          "p99_ms": 0.00025
+        },
+        "rejected_for_capacity": 82,
+        "stored_memories": 18
+      },
+      "queries": 100
+    },
+    {
+      "configuration": {
+        "default_memory_char_limit": 2200,
+        "seed": 7,
+        "token_budget_approx": 700,
+        "top_k": 6
+      },
+      "corpus_memories": 500,
+      "cortex": {
+        "context_approx_tokens": {
+          "maximum": 178.0,
+          "mean": 172.87,
+          "minimum": 169.0,
+          "p50": 173.0,
+          "p95": 176.0
+        },
+        "indexed_memories": 500,
+        "mrr": 0.9525,
+        "one_time_index_ms": 124.612,
+        "precision_at_k": 0.165,
+        "query_latency": {
+          "maximum_ms": 8.941375,
+          "minimum_ms": 6.521167,
+          "p50_ms": 7.458709,
+          "p95_ms": 8.12691,
+          "p99_ms": 8.436502
+        },
+        "recall_at_k": 0.99,
+        "returned_memories": {
+          "maximum": 6.0,
+          "mean": 6.0,
+          "minimum": 6.0,
+          "p50": 6.0,
+          "p95": 6.0
+        }
+      },
+      "default_built_in": {
+        "answer_coverage_rate": 0.03,
+        "context_approx_tokens": {
+          "maximum": 568.0,
+          "mean": 568.0,
+          "minimum": 568.0,
+          "p50": 568.0,
+          "p95": 568.0
+        },
+        "notes": "Frozen snapshot access only. Hermes performs no query-time search for built-in memory, so this is a capacity/context baseline rather than a retrieval-ranking baseline.",
+        "per_turn_snapshot_access_latency": {
+          "maximum_ms": 0.000417,
+          "minimum_ms": 4.1e-05,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 8.4e-05,
+          "p99_ms": 0.000167
+        },
+        "rejected_for_capacity": 482,
+        "stored_memories": 18
+      },
+      "queries": 200
+    },
+    {
+      "configuration": {
+        "default_memory_char_limit": 2200,
+        "seed": 7,
+        "token_budget_approx": 700,
+        "top_k": 6
+      },
+      "corpus_memories": 2000,
+      "cortex": {
+        "context_approx_tokens": {
+          "maximum": 178.0,
+          "mean": 173.175,
+          "minimum": 169.0,
+          "p50": 173.0,
+          "p95": 176.0
+        },
+        "indexed_memories": 2000,
+        "mrr": 0.963083,
+        "one_time_index_ms": 497.906,
+        "precision_at_k": 0.165833,
+        "query_latency": {
+          "maximum_ms": 27.135375,
+          "minimum_ms": 6.862792,
+          "p50_ms": 9.942874,
+          "p95_ms": 15.285875,
+          "p99_ms": 21.808363
+        },
+        "recall_at_k": 0.995,
+        "returned_memories": {
+          "maximum": 6.0,
+          "mean": 6.0,
+          "minimum": 6.0,
+          "p50": 6.0,
+          "p95": 6.0
+        }
+      },
+      "default_built_in": {
+        "answer_coverage_rate": 0.015,
+        "context_approx_tokens": {
+          "maximum": 568.0,
+          "mean": 568.0,
+          "minimum": 568.0,
+          "p50": 568.0,
+          "p95": 568.0
+        },
+        "notes": "Frozen snapshot access only. Hermes performs no query-time search for built-in memory, so this is a capacity/context baseline rather than a retrieval-ranking baseline.",
+        "per_turn_snapshot_access_latency": {
+          "maximum_ms": 0.000333,
+          "minimum_ms": 0.0,
+          "p50_ms": 4.2e-05,
+          "p95_ms": 8.4e-05,
+          "p99_ms": 8.5e-05
+        },
+        "rejected_for_capacity": 1982,
+        "stored_memories": 18
+      },
+      "queries": 200
+    }
+  ],
+  "schema_version": 1,
+  "scope": {
+    "does_not_measure": [
+      "LLM time to first token",
+      "LLM total response latency",
+      "provider-billed token counts",
+      "real-user memory quality"
+    ],
+    "measures": [
+      "built-in bounded-context coverage",
+      "Cortex recall@k, precision@k, and MRR",
+      "query-time retrieval latency",
+      "approximate context size"
+    ]
+  },
+  "started_at": "2026-07-13T12:34:39+00:00"
+}
