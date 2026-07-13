@@ -73,6 +73,8 @@ class DashboardInterfaceTests(unittest.TestCase):
             "view-cognition",
             "cognition-metrics",
             "recall-mode-list",
+            "budget-learning-list",
+            "budget-learning-total",
             "lifecycle-feed",
             "workflow-feed",
             "health-actions",
@@ -93,6 +95,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('data-renderer-mode="constellation"', html)
         self.assertIn("function renderInsights()", html)
         self.assertIn("function renderCognition()", html)
+        self.assertIn("function renderBudgetLearning", html)
         self.assertIn("function renderHealthActions", html)
 
 

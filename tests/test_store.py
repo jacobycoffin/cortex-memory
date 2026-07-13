@@ -11,7 +11,7 @@ from tests._bootstrap import ROOT
 
 from cortex.retrieval import MemoryRetriever, _fts_relevance
 from cortex.security import sanitize_memory
-from cortex.store import CortexStore
+from cortex.store import SCHEMA_VERSION, CortexStore
 
 
 class CortexStoreTests(unittest.TestCase):
@@ -168,7 +168,7 @@ class CortexStoreTests(unittest.TestCase):
             self.assertEqual(memory["content"], "Legacy memory survives migration.")
             self.assertEqual(memory["source_category"], "AGENT_INFERENCE")
             self.assertIsNotNone(memory["observed_at"])
-            self.assertEqual(migrated.stats()["schema_version"], 4)
+            self.assertEqual(migrated.stats()["schema_version"], SCHEMA_VERSION)
         finally:
             migrated.close()
         # Recreate the fixture store so tearDown remains idempotent.

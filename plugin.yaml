@@ -1,5 +1,5 @@
 name: cortex
-version: 0.2.0
+version: 0.3.0-dev.0
 description: "Adaptive local Hermes memory with attention-gated recall, transparent hybrid search, workflow learning, and reversible self-repair."
 hooks:
   - on_memory_write

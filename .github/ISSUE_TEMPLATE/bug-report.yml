@@ -1,0 +1,72 @@
+name: Bug report
+description: Report a reproducible Cortex problem without publishing private memory data.
+title: "[bug] "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing Cortex. Redact credentials, hostnames, IP addresses, usernames, vault text, queries, memory content, and tool arguments before submitting anything.
+  - type: input
+    id: cortex_version
+    attributes:
+      label: Cortex version or commit
+      placeholder: v0.2.0-dev-preview or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: hermes_version
+    attributes:
+      label: Hermes revision
+      placeholder: Commit SHA or release
+    validations:
+      required: true
+  - type: dropdown
+    id: install_type
+    attributes:
+      label: Installation
+      options:
+        - Linux VPS
+        - Linux desktop
+        - macOS
+        - Container
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      placeholder: 3.12.3
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observable behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use synthetic or placeholder memory content only.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: sanitized_output
+    attributes:
+      label: Sanitized output
+      description: Include only the smallest relevant output after removing all private data.
+      render: text
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Privacy confirmation
+      options:
+        - label: I removed credentials, private memory text, vault content, personal hostnames, IP addresses, and identifying paths.
+          required: true
+        - label: I reproduced this against the version or commit listed above.
+          required: true

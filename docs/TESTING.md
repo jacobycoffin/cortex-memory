@@ -9,9 +9,11 @@ python3 -m unittest discover -v
 python3 scripts/benchmark.py
 python3 scripts/benchmark_compare.py --sizes 100,500,2000 --queries 200
 python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
+python3 scripts/benchmark_cache.py --size 2000 --repetitions 80
+PYTHON_BIN=python3 bash scripts/smoke_install_upgrade.sh
 ```
 
-For the full benchmark methodology, paired live-model runner, metric definitions, and public-claim guardrails, see [BENCHMARKING.md](BENCHMARKING.md).
+GitHub Actions runs the unit and install/upgrade suites on Python 3.10 through 3.14, then checks Python and shell syntax, public-file privacy, SVG validity, and whitespace. For the full benchmark methodology, paired live-model runner, metric definitions, and public-claim guardrails, see [BENCHMARKING.md](BENCHMARKING.md). For private real-history retrieval and paired tool-call measurement, see [EVALUATION.md](EVALUATION.md).
 
 The suite currently covers:
 
@@ -30,10 +32,10 @@ The suite currently covers:
 - archived-memory restoration;
 - repeated tool successes becoming procedural guidance only after reinforcement;
 - repeated tool failures becoming task-scoped warnings;
-- selected-but-unused memories receiving no positive reinforcement.
+- selected-but-unused memories receiving no positive reinforcement;
 - v1 prototype databases migrating to the structured evidence schema without losing memories;
 - SQLite FTS5 BM25 relevance preserving the correct best-to-worst order;
-- repeated live-run aggregation accepting independent frozen query seeds.
+- repeated live-run aggregation accepting independent frozen query seeds;
 - attention-gate abstention and task-sensitive recall plans;
 - transparent semantic-feature paraphrase recall;
 - current versus historical temporal retrieval;
@@ -41,7 +43,14 @@ The suite currently covers:
 - JSON tool-result failure classification;
 - repeated multi-step workflow reinforcement;
 - reversible consolidation and pruning-regret restoration;
-- schema 4 migration and semantic-feature backfill.
+- schema 4 migration and semantic-feature backfill;
+- schema 5 migration without memory loss;
+- outcome-driven recall budgets that ignore pending evidence and stay within configured caps;
+- cache hits preserving per-turn injection and usage evidence;
+- cross-connection cache invalidation after material correction;
+- private evaluation snapshots that include live WAL data but omit private fields from reports;
+- paired tool-call aggregation and fixture-only live-provider behavior;
+- isolated clean installation, upgrade backup, database persistence, and installed-provider import.
 
 ## Current compatibility check
 
@@ -60,8 +69,9 @@ Keep `pruning_mode: shadow`.
 7. Archive and restore the memory.
 8. Run the same multi-step tool-backed workflow on two distinct tasks and inspect Tool notes and Cognition.
 9. Inspect `cortex recall-stats` and verify social/self-contained turns can record zero context.
-10. Preview consolidation, apply it only on a backup test database, and undo the run.
-11. Run `cortex audit` and verify `ok: true`.
+10. Resolve at least eight comparable recall outcomes, then inspect Cognition's Context budget learning panel; pending retrievals alone must not move the budget.
+11. Preview consolidation, apply it only on a backup test database, and undo the run.
+12. Run `cortex audit` and verify `ok: true`.
 
 ## Metrics for the shadow trial
 
@@ -77,4 +87,4 @@ Keep `pruning_mode: shadow`.
 
 ## Public benchmark rule
 
-`scripts/benchmark.py` is a local p95 performance gate and `scripts/benchmark_compare.py` is an offline capacity/retrieval evaluation. Neither measures model inference. Only results from `scripts/benchmark_e2e.py` may be described as TTFT or total-response speed, and those results must name the exact model, provider class, corpus, paired question count, and uncertainty interval.
+`scripts/benchmark.py` is a local p95 performance gate and `scripts/benchmark_compare.py` is an offline capacity/retrieval evaluation. `scripts/benchmark_cache.py` measures only an identical repeated prefetch inside the cache lifetime; it does not establish a production hit rate or varied-query speed. None of these measures model inference. Only results from `scripts/benchmark_e2e.py` may be described as TTFT or total-response speed, and those results must name the exact model, provider class, corpus, paired question count, and uncertainty interval.

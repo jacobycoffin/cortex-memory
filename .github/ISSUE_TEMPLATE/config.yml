@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security or private-memory report
+    url: https://github.com/jacobycoffin/hermes-cortex-memory/security/advisories/new
+    about: Report vulnerabilities privately. Never put credentials, vault text, memory content, or private paths in a public issue.

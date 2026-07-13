@@ -1,0 +1,76 @@
+name: Benchmark report
+description: Share a reproducible, sanitized Cortex comparison.
+title: "[benchmark] "
+labels: [benchmark]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Publish all comparable runs, not only the best one. Do not include API keys, endpoints containing credentials, private questions, memory text, vault paths, tool arguments, or raw provider traces.
+  - type: dropdown
+    id: benchmark_type
+    attributes:
+      label: Benchmark type
+      options:
+        - Deterministic retrieval
+        - Adaptive context ablation
+        - Paired live-model accuracy and latency
+        - Real-history labeled retrieval
+        - Paired tool calling
+        - Installation or upgrade smoke test
+    validations:
+      required: true
+  - type: input
+    id: cortex_version
+    attributes:
+      label: Cortex version or commit
+      placeholder: v0.2.0-dev-preview or a commit SHA
+    validations:
+      required: true
+  - type: input
+    id: hermes_version
+    attributes:
+      label: Hermes revision
+      placeholder: Commit SHA or release
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Sanitized environment
+      description: OS, architecture, Python version, model identifier if applicable, corpus size, query count, and relevant Cortex settings.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Complete results
+      description: Include every comparable run and uncertainty interval produced by the runner.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: interpretation
+    attributes:
+      label: What does this result support?
+      description: Separate retrieval, context, model accuracy, tool completion, and inference-speed claims.
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Reporting confirmation
+      options:
+        - label: I removed secrets and private content from the report.
+          required: true
+        - label: I included failed or unfavorable comparable runs.
+          required: true
+        - label: I did not infer model speed from a local retrieval-only test.
+          required: true

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0-dev.0 — Unreleased
+
+- added outcome-driven recall budgets that learn conservatively from resolved helpful, harmful, used, and ignored evidence;
+- added a short-lived, mutation-revisioned retrieval cache that preserves per-turn evidence accounting;
+- tightened deterministic abstention for social-only and self-contained arithmetic turns;
+- added a private real-history retrieval evaluator and paired recorded/live-fixture tool-calling evaluator;
+- added dashboard evidence for learned context-budget pressure;
+- advanced the database to schema 5 with automatic, non-destructive migration;
+- added Python 3.10–3.14 CI, repository privacy checks, and isolated clean-install/upgrade smoke tests;
+- added the measured development roadmap and public benchmark-report template.
+
 ## 0.2.0 — 2026-07-13
 
 - added attention-gated recall with five task-sensitive plans;

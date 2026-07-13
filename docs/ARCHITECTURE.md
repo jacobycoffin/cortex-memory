@@ -36,7 +36,7 @@ flowchart TD
 
 | Layer | Representation | Behavior |
 | --- | --- | --- |
-| Working | prefetch cache, recall plan, usage batch | session-scoped, bounded, cleared after turn sync |
+| Working | recall plan, pending usage batch, short-lived exact-query cache | process-local and bounded; usage resolves after turn sync |
 | Episodic | immutable `episodes`, `tool_executions`, episode memories | exact observations with deduplication |
 | Semantic | semantic/decision/preference/identity memories and optional claims | versioned and time-aware |
 | Procedural | procedure memories, tool stats, workflow stats | reinforced only after repeated outcomes |
@@ -58,6 +58,8 @@ This is functional decomposition, not a claim that a SQLite table is a hippocamp
 
 These are conservative heuristics, not a semantic classifier. Every decision is recorded in `recall_runs` for later calibration.
 
+When adaptive budget learning is enabled, a plan may be adjusted only after at least eight resolved outcomes for the same task type and mode. Pending outcomes and raw retrieval frequency do not count. Repeated ignored or harmful context can reduce the plan by 10–15%; consistently helpful, fully used context can increase it by at most 10%, always inside the configured ceiling. A broader mode-level fallback requires twice as much evidence.
+
 ## Candidate retrieval
 
 Two independent local indexes generate candidates:
@@ -66,6 +68,8 @@ Two independent local indexes generate candidates:
 - `memory_features` stores inspectable tokens, crude stems, adjacent pairs, concept aliases, and low-weight character trigrams. It catches modest paraphrases and typos without claiming embedding-level semantics.
 
 The union becomes the seed set for a bounded personalized PageRank-style walk over explicit associations. The neighborhood is capped, the iteration count is fixed, and graph activation cannot bypass lifecycle-state checks.
+
+The provider may cache a retrieval result for a short bounded interval (45 seconds by default, 300 seconds maximum). Connection-local SQLite triggers invalidate the cache after material writes by the provider, while SQLite's `data_version` detects changes committed through another connection. This avoids adding a revision write to every memory transaction and remains compatible with raw SQLite clients. Cache hits still create their own recall record and pending usage batch, so speed does not erase evidence accounting.
 
 ## Scoring and selection
 
@@ -113,10 +117,12 @@ Archived evidence is excluded from normal retrieval. A shadow search can detect 
 - memory text is sanitized before write;
 - likely secrets are redacted and prompt-like instructions quarantined;
 - evidence is labeled fallible and never presented as instructions;
-- the dashboard binds to localhost and exposes GET-only inspection endpoints;
+- the dashboard binds to localhost; memory and cognition endpoints are read-only, while authentication uses narrowly scoped sign-in and password-change POST endpoints;
 - public routing requires TLS and authentication at or before the dashboard;
 - vault indexing is incremental and reads source notes without modifying them.
 
-## Schema 4 additions
+## Schema evolution
 
-`memory_features`, `recall_runs`, `lifecycle_events`, `pruning_regret`, `consolidation_runs`, `consolidation_members`, `tool_workflows`, and `tool_workflow_stats`. Opening an older database creates and backfills the new structures without deleting existing memories.
+Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_regret`, `consolidation_runs`, `consolidation_members`, `tool_workflows`, and `tool_workflow_stats`.
+
+Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.

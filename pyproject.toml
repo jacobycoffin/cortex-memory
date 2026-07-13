@@ -1,6 +1,6 @@
 [project]
 name = "hermes-cortex-memory"
-version = "0.2.0"
+version = "0.3.0.dev0"
 description = "Psychology-inspired adaptive memory and observability for Hermes Agent"
 requires-python = ">=3.10"
 dependencies = []

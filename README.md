@@ -44,6 +44,18 @@ The result is a bounded evidence layer for Hermes, plus a read-only Brain dashbo
 - **Pruning-regret detection:** archived evidence can be surfaced in shadow mode or restored automatically.
 - **Cognition dashboard:** live recall latency, estimated context tokens, abstention, lifecycle changes, tool workflows, and scientific field notes.
 
+## What is developing on `testing`
+
+Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing build adds:
+
+- **Outcome-driven context budgets:** Cortex holds its default until it has enough resolved evidence, then cautiously spends less on repeatedly ignored or harmful context and slightly more when helpful context is consistently saturated.
+- **Safe retrieval caching:** short-lived results can be reused after repeated queries, while every turn still records retrieval, selection, injection, and use. Material memory, graph, or tool-guidance changes invalidate the cache across database connections.
+- **Private real-history evaluation:** operators can label their own memories locally and export a sanitized retrieval report without publishing queries, memory text, IDs, or database paths.
+- **Paired tool-call evaluation:** recorded observations or explicit live provider fixtures compare tool choice, argument shape, task success, latency, and tokens without executing arbitrary tools.
+- **Release automation:** Python 3.10–3.14 CI now covers unit tests, clean install, in-place upgrade, schema migration, syntax, public-file privacy, and SVG validation.
+
+This is development evidence, not a new public performance claim. Stable installs should continue to use `main`; the [roadmap](docs/ROADMAP.md) states what is implemented, still being measured, and intentionally deferred.
+
 ## Install in about a minute
 
 Requirements: Hermes Agent, Python 3.10+, and SQLite with FTS5 (included in normal Python builds).
@@ -149,6 +161,8 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `token_budget` | `700` | Maximum approximate memory context budget |
 | `retrieval_threshold` | `0.16` | Minimum non-pinned retrieval score |
 | `adaptive_recall` | `true` | Skip or shrink recall by task |
+| `adaptive_budget_learning` | `true` | Learn bounded task-sensitive budgets from resolved outcomes |
+| `query_cache_ttl_seconds` | `45` | Reuse unchanged retrieval results briefly; `0` disables it |
 | `compact_context` | `true` | Use the lower-token evidence format |
 | `attribution_threshold` | `0.18` | Minimum evidence-use score for utility credit |
 | `regret_mode` | `shadow` | `off`, detect only, or `restore` archived matches |
@@ -164,7 +178,9 @@ Keep mutation modes in `shadow` until you have reviewed your own recall and prun
 - [Brain and memory foundations](docs/BRAIN_FOUNDATIONS.md) — annotated primary sources, anatomy cautions, and the complete research-to-feature map.
 - [Architecture](docs/ARCHITECTURE.md) — data model, retrieval, learning, repair, and trust boundaries.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.
+- [0.3 evaluation guide](docs/EVALUATION.md) — private real-history labels and paired tool-calling measurement.
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
+- [Development roadmap](docs/ROADMAP.md) — phased work, safety rules, and promotion gates.
 - [Launch kit](docs/TWITTER_LAUNCH_KIT.md) — accurate explanations and social copy.
 
 The July 13, 2026 additive benchmark on 90 paired questions / 500 synthetic memories measured 96.7% answer accuracy with Cortex versus 6.7% with Hermes's bounded built-in snapshot. Whole-agent TTFT was effectively tied; Cortex added prompt tokens in that pre-0.2 fixed-recall run. Treat it as a published baseline, not proof of universal speed or accuracy. Raw aggregates and methodology live in [`benchmark-results`](benchmark-results/).
@@ -178,9 +194,11 @@ python3 -m unittest discover -v
 python3 scripts/benchmark.py
 python3 scripts/benchmark_compare.py --sizes 100,500,2000 --queries 200
 python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
+python3 scripts/benchmark_cache.py --size 2000 --repetitions 80
+PYTHON_BIN=python3 bash scripts/smoke_install_upgrade.sh
 ```
 
-Runtime dependencies are Python standard library only. See [Contributing](CONTRIBUTING.md) for change rules and required evidence.
+Runtime dependencies are Python standard library only. Real-history and tool-call evaluation commands are in the [0.3 evaluation guide](docs/EVALUATION.md). See [Contributing](CONTRIBUTING.md) for change rules and required evidence.
 
 ## Project status
 

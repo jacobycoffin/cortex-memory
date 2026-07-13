@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -23,7 +24,7 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
 from .attribution import attribution_score
 from .cognition import plan_recall
 from .extraction import extract_candidates
-from .retrieval import MemoryRetriever, token_overlap
+from .retrieval import MemoryRetriever, RetrievalDiagnostics, RetrievalResult, token_overlap
 from .security import safe_prompt_text, sanitize_memory
 from .store import CortexStore
 from .tooling import build_tool_workflow, classify_task, extract_tool_executions, task_fingerprint
@@ -38,6 +39,8 @@ DEFAULTS: dict[str, Any] = {
     "token_budget": 700,
     "retrieval_threshold": 0.16,
     "adaptive_recall": True,
+    "adaptive_budget_learning": True,
+    "query_cache_ttl_seconds": 45,
     "compact_context": True,
     "attribution_threshold": 0.18,
     "regret_mode": "shadow",
@@ -54,6 +57,16 @@ _NEGATIVE_FEEDBACK = re.compile(
     r"\b(?:that(?:'s| is) wrong|not right|outdated|incorrect|didn(?:'t| not) work|still broken|you forgot)\b", re.I
 )
 _GREETING_ONLY = re.compile(r"^\s*(?:hi|hey|hello|thanks|thank you|good morning|good night)[.! ]*\s*$", re.I)
+
+
+@dataclass(frozen=True)
+class _RecallCacheEntry:
+    created_at: float
+    revision: tuple[int, int]
+    results: tuple[RetrievalResult, ...]
+    diagnostics: RetrievalDiagnostics
+    tool_guidance: tuple[dict[str, Any], ...]
+    workflow_guidance: tuple[dict[str, Any], ...]
 
 
 CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
@@ -139,7 +152,8 @@ class CortexMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._agent_context = "primary"
         self._cache_lock = threading.RLock()
-        self._prefetch_cache: dict[tuple[str, str], tuple[float, str, list[str], str | None]] = {}
+        self._retrieval_cache: dict[tuple[Any, ...], _RecallCacheEntry] = {}
+        self._pending_prefetches: dict[str, list[tuple[list[str], str | None]]] = {}
         self._used_by_session: dict[str, list[str]] = {}
         self._completed_task_by_session: dict[str, list[str]] = {}
 
@@ -180,16 +194,9 @@ class CortexMemoryProvider(MemoryProvider):
         if not self._store or not self._retriever or not query:
             return ""
         sid = session_id or self._session_id or "default"
-        digest = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
-        key = (sid, digest)
-        now = time.monotonic()
-        with self._cache_lock:
-            cached = self._prefetch_cache.get(key)
-            if cached and now - cached[0] < 45.0:
-                return cached[1]
-
         prepare_start = time.perf_counter()
-        if _as_bool(self._config.get("adaptive_recall", True)):
+        adaptive_recall = _as_bool(self._config.get("adaptive_recall", True))
+        if adaptive_recall:
             plan = plan_recall(
                 query,
                 max_limit=int(self._config["top_k"]),
@@ -231,46 +238,128 @@ class CortexMemoryProvider(MemoryProvider):
                 abstained=True,
             )
             return ""
-
-        results, diagnostics = self._retriever.search_detailed(
-            query,
-            limit=plan.limit,
-            token_budget=plan.token_budget,
-            temporal_mode=plan.temporal_mode,
-            as_of=plan.as_of,
-            graph_depth=plan.graph_depth,
-            threshold=plan.threshold,
-        )
         task_type = classify_task(query)
-        tool_guidance = self._store.tool_guidance(task_type, limit=max(1, plan.tool_limit)) if plan.tool_limit else []
-        workflow_guidance = (
-            self._store.tool_workflow_guidance(
+        if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
+            budget_diagnostics = self._store.recommend_token_budget(
                 task_type,
-                task_fingerprint(query),
-                limit=max(1, plan.tool_limit),
+                plan.mode,
+                plan.token_budget,
+                max_budget=int(self._config["token_budget"]),
             )
-            if plan.tool_limit
-            else []
+            learned_budget = int(budget_diagnostics["budget"])
+            if learned_budget != plan.token_budget:
+                plan = replace(
+                    plan,
+                    token_budget=learned_budget,
+                    reason=f"{plan.reason}; learned budget: {budget_diagnostics['reason']}",
+                )
+
+        digest = hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
+        fingerprint = task_fingerprint(query)
+        cache_key = (
+            digest,
+            plan.mode,
+            plan.limit,
+            plan.token_budget,
+            round(plan.threshold, 6),
+            plan.temporal_mode,
+            plan.as_of,
+            plan.graph_depth,
+            plan.tool_limit,
+            task_type,
+            fingerprint,
         )
-        if not results and str(self._config.get("regret_mode", "shadow")).casefold() in {"shadow", "restore"}:
-            archived_results = self._retriever.search(
+        now = time.monotonic()
+        revision = self._store.retrieval_revision()
+        try:
+            ttl = float(self._config.get("query_cache_ttl_seconds", 45))
+        except (TypeError, ValueError):
+            ttl = 45.0
+        ttl = max(0.0, min(300.0, ttl))
+        with self._cache_lock:
+            cached = self._retrieval_cache.get(cache_key)
+            cache_hit = bool(
+                cached
+                and cached.revision == revision
+                and ttl > 0.0
+                and now - cached.created_at < ttl
+            )
+
+        if cache_hit and cached:
+            results = list(cached.results)
+            diagnostics = cached.diagnostics
+            tool_guidance = list(cached.tool_guidance)
+            workflow_guidance = list(cached.workflow_guidance)
+        else:
+            results, diagnostics = self._retriever.search_detailed(
                 query,
-                limit=2,
-                token_budget=min(240, plan.token_budget),
-                include_archived=True,
+                limit=plan.limit,
+                token_budget=plan.token_budget,
                 temporal_mode=plan.temporal_mode,
                 as_of=plan.as_of,
-                graph_depth=1,
+                graph_depth=plan.graph_depth,
                 threshold=plan.threshold,
             )
-            archived = next((result for result in archived_results if result.memory["state"] == "archived"), None)
-            if archived and archived.score >= min(1.0, plan.threshold + 0.05):
-                restore = str(self._config.get("regret_mode", "shadow")).casefold() == "restore"
-                self._store.record_pruning_regret(
-                    archived.memory["id"], query=query, score=archived.score, restore=restore
+            tool_guidance = (
+                self._store.tool_guidance(task_type, limit=max(1, plan.tool_limit))
+                if plan.tool_limit
+                else []
+            )
+            workflow_guidance = (
+                self._store.tool_workflow_guidance(
+                    task_type,
+                    fingerprint,
+                    limit=max(1, plan.tool_limit),
                 )
-                if restore:
-                    results = [archived]
+                if plan.tool_limit
+                else []
+            )
+            if not results and str(self._config.get("regret_mode", "shadow")).casefold() in {
+                "shadow",
+                "restore",
+            }:
+                archived_results = self._retriever.search(
+                    query,
+                    limit=2,
+                    token_budget=min(240, plan.token_budget),
+                    include_archived=True,
+                    temporal_mode=plan.temporal_mode,
+                    as_of=plan.as_of,
+                    graph_depth=1,
+                    threshold=plan.threshold,
+                )
+                archived = next(
+                    (result for result in archived_results if result.memory["state"] == "archived"),
+                    None,
+                )
+                if archived and archived.score >= min(1.0, plan.threshold + 0.05):
+                    restore = str(self._config.get("regret_mode", "shadow")).casefold() == "restore"
+                    self._store.record_pruning_regret(
+                        archived.memory["id"], query=query, score=archived.score, restore=restore
+                    )
+                    if restore:
+                        results = [archived]
+            post_revision = self._store.retrieval_revision()
+            # A concurrent material write can finish while retrieval is in
+            # progress. Do not cache that mixed-revision result.
+            if post_revision == revision:
+                cache_entry = _RecallCacheEntry(
+                    created_at=now,
+                    revision=post_revision,
+                    results=tuple(results),
+                    diagnostics=diagnostics,
+                    tool_guidance=tuple(dict(item) for item in tool_guidance),
+                    workflow_guidance=tuple(dict(item) for item in workflow_guidance),
+                )
+                with self._cache_lock:
+                    self._retrieval_cache[cache_key] = cache_entry
+                    if len(self._retrieval_cache) > 128:
+                        oldest = min(
+                            self._retrieval_cache,
+                            key=lambda item: self._retrieval_cache[item].created_at,
+                        )
+                        self._retrieval_cache.pop(oldest, None)
+
         if not results and not tool_guidance and not workflow_guidance:
             prepare_ms = (time.perf_counter() - prepare_start) * 1000
             self._store.record_recall_run(
@@ -326,23 +415,35 @@ class CortexMemoryProvider(MemoryProvider):
         context = "\n".join(lines)
         task_id = (
             self._store.create_usage_batch(
-                [(result.memory["id"], result.score) for result in results], query=query, session_id=sid
+                [(result.memory["id"], result.score) for result in results],
+                query=query,
+                session_id=sid,
+                task_type=task_type,
+                recall_mode=plan.mode,
+                requested_budget=plan.token_budget,
+                estimated_tokens=sum(result.estimated_tokens for result in results),
             )
             if results
             else None
         )
+        dropped_pending: list[tuple[list[str], str | None]] = []
         with self._cache_lock:
-            self._prefetch_cache[key] = (now, context, ids, task_id)
-            # Bound long-running gateway memory.
-            if len(self._prefetch_cache) > 128:
-                oldest = min(self._prefetch_cache, key=lambda k: self._prefetch_cache[k][0])
-                self._prefetch_cache.pop(oldest, None)
+            pending = self._pending_prefetches.setdefault(sid, [])
+            pending.append((ids, task_id))
+            if len(pending) > 128:
+                dropped_pending = pending[:-128]
+                del pending[:-128]
+        # A broken caller that prefetches forever without syncing a turn must
+        # not leave unbounded pending attribution records behind.
+        for _memory_ids, dropped_task_id in dropped_pending:
+            if dropped_task_id:
+                self._store.resolve_usage(dropped_task_id, {})
         prepare_ms = (time.perf_counter() - prepare_start) * 1000
         self._store.record_recall_run(
             session_id=sid,
             query=query,
             mode=plan.mode,
-            reason=plan.reason,
+            reason=f"{plan.reason}; {'retrieval cache hit' if cache_hit else 'retrieval cache miss'}",
             requested_limit=plan.limit,
             token_budget=plan.token_budget,
             candidate_count=diagnostics.candidate_count,
@@ -410,9 +511,6 @@ class CortexMemoryProvider(MemoryProvider):
             self._completed_task_by_session[sid] = current_tasks
         self._used_by_session[sid] = used
         self._reinforce_group(used, "co_used", weight=0.05)
-        with self._cache_lock:
-            for cache_key in [key for key in self._prefetch_cache if key[0] == sid]:
-                self._prefetch_cache.pop(cache_key, None)
 
     def on_memory_write(
         self,
@@ -486,8 +584,7 @@ class CortexMemoryProvider(MemoryProvider):
             self._used_by_session.pop(new_session_id, None)
             self._completed_task_by_session.pop(new_session_id, None)
             with self._cache_lock:
-                for cache_key in [key for key in self._prefetch_cache if key[0] == new_session_id]:
-                    self._prefetch_cache.pop(cache_key, None)
+                self._pending_prefetches.pop(new_session_id, None)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [CORTEX_MEMORY_SCHEMA]
@@ -661,6 +758,17 @@ class CortexMemoryProvider(MemoryProvider):
                 "choices": ["true", "false"],
             },
             {
+                "key": "adaptive_budget_learning",
+                "description": "Conservatively tune recall budgets after enough resolved outcomes",
+                "default": "true",
+                "choices": ["true", "false"],
+            },
+            {
+                "key": "query_cache_ttl_seconds",
+                "description": "Short retrieval-cache lifetime; material writes invalidate entries immediately",
+                "default": "45",
+            },
+            {
                 "key": "compact_context",
                 "description": "Use the compact evidence format to reduce prompt tokens",
                 "default": "true",
@@ -719,6 +827,9 @@ class CortexMemoryProvider(MemoryProvider):
             self._store.close()
         self._store = None
         self._retriever = None
+        with self._cache_lock:
+            self._retrieval_cache.clear()
+            self._pending_prefetches.clear()
 
     def _capture(self, text: str, *, role: str, session_id: str) -> list[str]:
         if not self._store:
@@ -765,11 +876,11 @@ class CortexMemoryProvider(MemoryProvider):
 
     def _current_prefetches(self, session_id: str) -> tuple[list[str], list[str]]:
         with self._cache_lock:
-            matches = [entry for (sid, _), entry in self._prefetch_cache.items() if sid == session_id]
+            matches = self._pending_prefetches.pop(session_id, [])
         if not matches:
             return [], []
-        ids = list(dict.fromkeys(memory_id for entry in matches for memory_id in entry[2]))
-        task_ids = list(dict.fromkeys(entry[3] for entry in matches if entry[3]))
+        ids = list(dict.fromkeys(memory_id for memory_ids, _task_id in matches for memory_id in memory_ids))
+        task_ids = list(dict.fromkeys(task_id for _memory_ids, task_id in matches if task_id))
         return ids, task_ids
 
     def _capture_tool_outcomes(self, messages: List[Dict[str, Any]], session_id: str) -> None:

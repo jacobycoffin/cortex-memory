@@ -1069,6 +1069,7 @@
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Attention gate</h2><p>Each request gets the smallest recall mode likely to help</p></div><span class="chip" id="recall-total">0 runs</span></div><div class="mode-ledger" id="recall-mode-list"></div></div>
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context over time</h2><p>Daily estimated memory tokens injected into prompts</p></div><span class="chip" id="recall-window">No samples</span></div><div class="recall-strip" id="recall-strip"></div></div>
           </div>
+          <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">0 outcomes</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
           <div class="dashboard-grid equal">
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Self-healing trail</h2><p>Cooling, archiving, restoration, and reversible consolidation</p></div></div><div class="lifecycle-feed" id="lifecycle-feed"></div></div>
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Learned workflows</h2><p>Multi-step tool paths reinforced only after distinct successful tasks</p></div></div><div class="lifecycle-feed" id="workflow-feed"></div></div>
@@ -2022,7 +2023,7 @@
 
     function renderCognition() {
       if(!app.data)return;
-      const d=app.data,summary=d.recall_summary||{},runs=d.recall_runs||[],modes=d.recall_modes||[],days=[...(d.recall_by_day||[])].reverse(),abstained=Number(summary.abstained||0),runCount=Number(summary.count||0),abstention=percent(abstained,Math.max(1,runCount));
+      const d=app.data,summary=d.recall_summary||{},runs=d.recall_runs||[],modes=d.recall_modes||[],budgets=d.recall_budgets||[],days=[...(d.recall_by_day||[])].reverse(),abstained=Number(summary.abstained||0),runCount=Number(summary.count||0),abstention=percent(abstained,Math.max(1,runCount));
       metricCards("cognition-metrics",[
         ["Recall decisions",d.stats.recall_runs||0,`${formatNum(abstained)} of the latest ${formatNum(runCount)} abstained`,"⌁"],
         ["Context avoided",`${abstention}%`,"Turns where Cortex injected zero memory tokens","○"],
@@ -2033,6 +2034,7 @@
       const modeDescriptions={none:"No durable context needed",lean:"Small evidence check",focused:"Personal, current, or decision context",procedural:"Memory plus tool evidence",deep:"Temporal or multi-memory reasoning",fixed:"Adaptive gate disabled"},modeHost=document.getElementById("recall-mode-list");modeHost.replaceChildren();
       if(!modes.length)modeHost.append(emptyState("No recall decisions yet","Use Hermes normally; attention-gate evidence will appear here."));
       modes.forEach(mode=>{const row=el("div","mode-row"),count=Number(mode.count||0),skipped=Number(mode.abstained||0);row.append(el("div","mode-name",humanize(mode.mode)),el("div","mode-copy",`${modeDescriptions[mode.mode]||"Adaptive recall plan"} · avg ${Math.round(Number(mode.avg_tokens||0))} tokens`),el("div","mode-stat",`${formatNum(count)} · ${percent(skipped,Math.max(1,count))}% empty`));modeHost.append(row);});
+      renderBudgetLearning(budgets);
       const strip=document.getElementById("recall-strip"),maxTokens=Math.max(1,...days.map(day=>Number(day.estimated_tokens||0)));strip.replaceChildren();
       if(!days.length)strip.append(emptyState("No token history yet","The chart begins after Cortex handles recall decisions."));
       days.forEach(day=>{const bar=el("div","recall-day");bar.style.height=`${Math.max(3,Number(day.estimated_tokens||0)/maxTokens*150)}px`;bar.title=`${day.day}: ${formatNum(day.estimated_tokens||0)} estimated tokens · ${formatNum(day.abstained||0)} abstained`;strip.append(bar);});
@@ -2045,6 +2047,12 @@
       const workflowHost=document.getElementById("workflow-feed"),workflows=d.tool_workflows||[];workflowHost.replaceChildren();
       if(!workflows.length)workflowHost.append(emptyState("No repeated workflows yet","A path appears only after the same tool sequence works across distinct tasks."));
       workflows.slice(0,10).forEach(workflow=>{const steps=parseJson(workflow.steps_json,[]),chain=steps.map(step=>`${step.tool}(${(step.argument_keys||[]).join(",")})`).join(" → ")||"Recorded workflow",attempts=Number(workflow.success_count||0)+Number(workflow.failure_count||0),rate=percent(workflow.success_count,Math.max(1,attempts)),row=el("div","lifecycle-row");row.append(el("div","lifecycle-state",humanize(workflow.task_type)));const copy=el("div","lifecycle-copy",chain);copy.append(el("small","",`${formatNum(workflow.distinct_tasks||0)} distinct tasks · ${rate}% observed success`));row.append(copy,el("div","small-meta",timeAgo(new Date(workflow.updated_at))));workflowHost.append(row);});
+    }
+
+    function renderBudgetLearning(budgets) {
+      const host=document.getElementById("budget-learning-list"),total=budgets.reduce((sum,row)=>sum+Number(row.sample_count||0),0);host.replaceChildren();document.getElementById("budget-learning-total").textContent=`${formatNum(total)} resolved outcomes`;
+      if(!budgets.length){host.append(emptyState("Waiting for resolved outcomes","Cortex holds its default budgets until enough recalled evidence has been used, ignored, confirmed, or corrected."));return;}
+      budgets.slice(0,12).forEach(item=>{const samples=Number(item.sample_count||0),used=Number(item.used_count||0),helpful=Number(item.helpful_count||0),harmful=Number(item.harmful_count||0),ignored=Number(item.ignored_count||0),fill=Number(item.avg_estimated_tokens||0)/Math.max(1,Number(item.avg_requested_budget||0)),usedRate=used/Math.max(1,samples),ignoredRate=ignored/Math.max(1,samples);let signal="Hold";if(samples<8)signal="Learning";else if(harmful/Math.max(1,samples)>=.2)signal="Risk signal";else if(ignoredRate>=.65&&!helpful)signal="Reduce pressure";else if(helpful>=3&&usedRate>=.75&&fill>=.8)signal="Helpful saturation";const row=el("div","mode-row");row.append(el("div","mode-name",`${humanize(item.task_type)} · ${humanize(item.mode)}`),el("div","mode-copy",`${formatNum(samples)} outcomes · ${percent(used,samples)}% used · avg ${Math.round(Number(item.avg_estimated_tokens||0))}/${Math.round(Number(item.avg_requested_budget||0))} tokens`),el("div","mode-stat",signal));host.append(row);});
     }
 
     function renderTools() {

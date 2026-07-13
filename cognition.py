@@ -14,7 +14,8 @@ from typing import Any
 
 
 _GREETING_ONLY = re.compile(
-    r"^\s*(?:hi|hey|hello|thanks|thank you|good morning|good night|ok(?:ay)?|sounds good)[.! ]*\s*$",
+    r"^\s*(?:hi|hey|hello|thanks|thank you|good (?:morning|afternoon|evening|night)|"
+    r"ok(?:ay)?|sounds good|got it|understood|cool|nice)[.! ]*\s*$",
     re.I,
 )
 _STATELESS = re.compile(
@@ -22,7 +23,7 @@ _STATELESS = re.compile(
     re.I,
 )
 _PERSONAL = re.compile(
-    r"\b(?:my|our|we|i\s+(?:prefer|said|asked|decided)|remember|memory|previous|before|again|usual|favorite|"
+    r"\b(?:my|our|i\s+(?:prefer|said|asked|decided)|remember|memory|previous|before|again|usual|favorite|"
     r"preference|profile|vault|assistant|agent|hermes|cortex)\b",
     re.I,
 )
@@ -45,6 +46,12 @@ _HISTORICAL = re.compile(
     r"\b(?:previously|formerly|historical|history|back then|last (?:week|month|year)|used to|during)\b", re.I
 )
 _YEAR = re.compile(r"\b(19\d{2}|20\d{2}|21\d{2})\b")
+_ARITHMETIC_ONLY = re.compile(
+    r"^\s*(?:(?:what(?:'s| is)|solve|evaluate)\s+)?(?:\(?\s*-?\d+(?:\.\d+)?\s*\)?\s*)"
+    r"(?:[+\-*/%^]|\*\*)\s*(?:\(?\s*-?\d+(?:\.\d+)?\s*\)?\s*)"
+    r"(?:(?:[+\-*/%^]|\*\*)\s*(?:\(?\s*-?\d+(?:\.\d+)?\s*\)?\s*))*[?=.! ]*$",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -85,7 +92,9 @@ def plan_recall(
     historical = bool(year or _HISTORICAL.search(text))
     current = bool(_CURRENT.search(text))
 
-    if _STATELESS.search(text) and not (personal or decision or historical):
+    if (_STATELESS.search(text) or _ARITHMETIC_ONLY.match(text)) and not (
+        personal or decision or historical
+    ):
         return RecallPlan("none", False, 0, 0, base_threshold, "self-contained transformation")
 
     temporal_mode = "historical" if historical else "current"

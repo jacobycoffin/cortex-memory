@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -109,11 +109,14 @@ class CortexStore:
         self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
         self._conn.row_factory = sqlite3.Row
+        self._local_retrieval_revision = 0
+        self._conn.create_function("cortex_bump_revision", 0, self._bump_local_retrieval_revision)
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute("PRAGMA busy_timeout=5000")
             self._create_schema()
+            self._create_connection_revision_triggers()
 
     def _create_schema(self) -> None:
         self._conn.executescript(
@@ -122,6 +125,18 @@ class CortexStore:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            DROP TRIGGER IF EXISTS cortex_revision_memory_insert;
+            DROP TRIGGER IF EXISTS cortex_revision_memory_delete;
+            DROP TRIGGER IF EXISTS cortex_revision_memory_material_update;
+            DROP TRIGGER IF EXISTS cortex_revision_edge_insert;
+            DROP TRIGGER IF EXISTS cortex_revision_edge_update;
+            DROP TRIGGER IF EXISTS cortex_revision_edge_delete;
+            DROP TRIGGER IF EXISTS cortex_revision_tool_stats_insert;
+            DROP TRIGGER IF EXISTS cortex_revision_tool_stats_update;
+            DROP TRIGGER IF EXISTS cortex_revision_tool_stats_delete;
+            DROP TRIGGER IF EXISTS cortex_revision_workflow_stats_insert;
+            DROP TRIGGER IF EXISTS cortex_revision_workflow_stats_update;
+            DROP TRIGGER IF EXISTS cortex_revision_workflow_stats_delete;
 
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
@@ -362,6 +377,21 @@ class CortexStore:
             );
             CREATE INDEX IF NOT EXISTS idx_recall_runs_created ON recall_runs(created_at);
 
+            CREATE TABLE IF NOT EXISTS recall_budget_observations (
+                task_id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                requested_budget INTEGER NOT NULL,
+                estimated_tokens INTEGER NOT NULL,
+                selected_count INTEGER NOT NULL,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_budget_observations_lookup
+              ON recall_budget_observations(task_type,mode,outcome,created_at);
+
             CREATE TABLE IF NOT EXISTS lifecycle_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -434,6 +464,53 @@ class CortexStore:
             (str(SCHEMA_VERSION),),
         )
         self._conn.commit()
+
+    def _bump_local_retrieval_revision(self) -> int:
+        """Advance the in-process material revision from a TEMP trigger."""
+
+        self._local_retrieval_revision += 1
+        return self._local_retrieval_revision
+
+    def _create_connection_revision_triggers(self) -> None:
+        """Track local material writes without adding a write to every transaction.
+
+        TEMP triggers exist only on this connection. Other connections are
+        detected through SQLite's ``data_version`` value in
+        :meth:`retrieval_revision`, so raw SQLite clients remain compatible.
+        """
+
+        self._conn.executescript(
+            """
+            CREATE TEMP TRIGGER cortex_local_revision_memory_insert
+            AFTER INSERT ON main.memories BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_memory_delete
+            AFTER DELETE ON main.memories BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_memory_material_update
+            AFTER UPDATE OF kind,content,valid_from,valid_to,subject,predicate,object_value,
+              confidence,currentness_confidence,importance,uniqueness,volatility,trust,state,
+              pinned,protected,supersedes_id,quarantine_reason,used_count,success_count,
+              confirmed_count,validated_count,helpful_count,harmful_count,correction_count,
+              false_positive_count ON main.memories BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_edge_insert
+            AFTER INSERT ON main.edges BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_edge_update
+            AFTER UPDATE ON main.edges BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_edge_delete
+            AFTER DELETE ON main.edges BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_tool_stats_insert
+            AFTER INSERT ON main.tool_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_tool_stats_update
+            AFTER UPDATE ON main.tool_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_tool_stats_delete
+            AFTER DELETE ON main.tool_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_workflow_stats_insert
+            AFTER INSERT ON main.tool_workflow_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_workflow_stats_update
+            AFTER UPDATE ON main.tool_workflow_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_workflow_stats_delete
+            AFTER DELETE ON main.tool_workflow_stats BEGIN SELECT cortex_bump_revision(); END;
+            """
+        )
 
     def _backfill_memory_features(self) -> None:
         rows = self._conn.execute(
@@ -802,6 +879,119 @@ class CortexStore:
             ).fetchall()
         by_id = {row["id"]: dict(row) for row in rows}
         return [by_id[mid] for mid in memory_ids if mid in by_id]
+
+    def retrieval_revision(self) -> tuple[int, int]:
+        """Return the durable revision used to invalidate retrieval caches.
+
+        The revision advances for material memory, association, and learned-tool
+        changes. Pure retrieval/injection counters intentionally do not advance
+        it, so a short-lived cache can still be useful while every injection is
+        recorded independently.
+        """
+
+        with self._lock:
+            row = self._conn.execute("PRAGMA data_version").fetchone()
+            data_version = int(row[0]) if row else 0
+            return self._local_retrieval_revision, data_version
+
+    def recommend_token_budget(
+        self,
+        task_type: str,
+        mode: str,
+        base_budget: int,
+        *,
+        min_budget: int = 160,
+        max_budget: int = 700,
+        min_samples: int = 8,
+    ) -> dict[str, Any]:
+        """Return a bounded token-budget recommendation from resolved outcomes.
+
+        Learning is intentionally conservative. Exact task-type/mode evidence
+        is preferred; a mode-wide fallback requires twice as many observations.
+        No change is recommended until the evidence clears those gates.
+        """
+
+        maximum = max(1, int(max_budget))
+        minimum = max(1, min(int(min_budget), maximum))
+        baseline = max(minimum, min(maximum, int(base_budget)))
+        required = max(2, int(min_samples))
+        with self._lock:
+            exact = self._conn.execute(
+                """SELECT requested_budget,estimated_tokens,selected_count,used_count,outcome
+                   FROM recall_budget_observations
+                   WHERE task_type=? AND mode=? AND outcome<>'pending'
+                   ORDER BY created_at DESC LIMIT 80""",
+                (task_type, mode),
+            ).fetchall()
+            rows = exact
+            scope = "task_mode"
+            if len(rows) < required:
+                rows = self._conn.execute(
+                    """SELECT requested_budget,estimated_tokens,selected_count,used_count,outcome
+                       FROM recall_budget_observations
+                       WHERE mode=? AND outcome<>'pending'
+                       ORDER BY created_at DESC LIMIT 120""",
+                    (mode,),
+                ).fetchall()
+                scope = "mode"
+                required *= 2
+
+        sample_count = len(rows)
+        used_count = sum(1 for row in rows if int(row["used_count"]) > 0)
+        positive_count = sum(1 for row in rows if row["outcome"] in {"helpful", "validated"})
+        negative_count = sum(1 for row in rows if row["outcome"] in {"harmful", "corrected"})
+        ignored_count = sum(1 for row in rows if row["outcome"] == "ignored")
+        fill_values = [
+            min(1.0, int(row["estimated_tokens"]) / max(1, int(row["requested_budget"])))
+            for row in rows
+        ]
+        used_ratio = used_count / sample_count if sample_count else 0.0
+        ignored_ratio = ignored_count / sample_count if sample_count else 0.0
+        average_fill = sum(fill_values) / sample_count if sample_count else 0.0
+
+        budget = baseline
+        adjustment = "hold"
+        reason = f"learning gate needs {required} resolved outcomes"
+        if sample_count >= required:
+            reason = "resolved outcomes support the baseline budget"
+            if negative_count / sample_count >= 0.20:
+                budget = max(minimum, round(baseline * 0.85))
+                adjustment = "shrink"
+                reason = "harmful or corrected outcomes exceeded the conservative limit"
+            elif ignored_ratio >= 0.75 and positive_count == 0:
+                budget = max(minimum, round(baseline * 0.85))
+                adjustment = "shrink"
+                reason = "most retrieved context was ignored"
+            elif ignored_ratio >= 0.65 and positive_count == 0:
+                budget = max(minimum, round(baseline * 0.90))
+                adjustment = "shrink"
+                reason = "retrieved context was usually ignored"
+            elif (
+                positive_count >= 3
+                and negative_count == 0
+                and used_ratio >= 0.75
+                and average_fill >= 0.80
+            ):
+                budget = min(maximum, round(baseline * 1.10))
+                adjustment = "expand"
+                reason = "helpful outcomes repeatedly saturated the available budget"
+
+        return {
+            "budget": budget,
+            "base_budget": baseline,
+            "adjustment": adjustment,
+            "reason": reason,
+            "scope": scope,
+            "task_type": task_type,
+            "mode": mode,
+            "sample_count": sample_count,
+            "required_samples": required,
+            "used_ratio": round(used_ratio, 4),
+            "ignored_ratio": round(ignored_ratio, 4),
+            "average_fill": round(average_fill, 4),
+            "positive_count": positive_count,
+            "negative_count": negative_count,
+        }
 
     def claim_memories(
         self,
@@ -1278,6 +1468,10 @@ class CortexStore:
         *,
         query: str,
         session_id: str | None,
+        task_type: str | None = None,
+        recall_mode: str | None = None,
+        requested_budget: int = 0,
+        estimated_tokens: int = 0,
     ) -> str:
         task_id = str(uuid.uuid4())
         now = utc_now()
@@ -1288,6 +1482,22 @@ class CortexStore:
                        usage_id,task_id,memory_id,session_id,query,score,selected,created_at
                        ) VALUES(?,?,?,?,?,?,1,?)""",
                     (str(uuid.uuid4()), task_id, memory_id, session_id, query, score, now),
+                )
+            if items and task_type and recall_mode:
+                conn.execute(
+                    """INSERT INTO recall_budget_observations(
+                       task_id,task_type,mode,requested_budget,estimated_tokens,
+                       selected_count,created_at
+                       ) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        task_id,
+                        normalize_text(task_type)[:80],
+                        normalize_text(recall_mode)[:40],
+                        max(1, int(requested_budget)),
+                        max(0, int(estimated_tokens)),
+                        len(items),
+                        now,
+                    ),
                 )
         return task_id
 
@@ -1308,6 +1518,17 @@ class CortexStore:
                     (int(used), attribution, "used" if used else "ignored", now, task_id, memory_id),
                 )
                 resolved += 1
+            used_count = sum(
+                1
+                for row in rows
+                if _clamp(attribution_by_id.get(str(row["memory_id"]), 0.0)) > 0.0
+            )
+            conn.execute(
+                """UPDATE recall_budget_observations
+                   SET used_count=?,outcome=?,resolved_at=?
+                   WHERE task_id=? AND outcome='pending'""",
+                (used_count, "used" if used_count else "ignored", now, task_id),
+            )
         return resolved
 
     def apply_task_outcome(self, task_id: str, outcome: str) -> list[str]:
@@ -1318,6 +1539,11 @@ class CortexStore:
             ids = [str(row["memory_id"]) for row in rows]
             conn.execute(
                 "UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND used=1",
+                (outcome, utc_now(), task_id),
+            )
+            conn.execute(
+                """UPDATE recall_budget_observations SET outcome=?,resolved_at=?
+                   WHERE task_id=? AND used_count>0""",
                 (outcome, utc_now(), task_id),
             )
         for memory_id in ids:
@@ -1639,6 +1865,7 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM tool_stats) tool_strategies, "
                 "(SELECT COUNT(*) FROM tool_workflows) tool_workflows, "
                 "(SELECT COUNT(*) FROM recall_runs) recall_runs, "
+                "(SELECT COUNT(*) FROM recall_budget_observations WHERE outcome<>'pending') budget_observations, "
                 "(SELECT COUNT(*) FROM pruning_regret) pruning_regrets, "
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
                 "(SELECT COUNT(*) FROM document_sources WHERE status='active') documents, "
@@ -1720,6 +1947,19 @@ class CortexStore:
                           AVG(estimated_tokens) avg_tokens,AVG(prepare_ms) avg_prepare_ms
                    FROM recall_runs GROUP BY mode ORDER BY count DESC"""
             ).fetchall()
+            budget_rows = self._conn.execute(
+                """SELECT task_type,mode,COUNT(*) sample_count,
+                          SUM(CASE WHEN used_count>0 THEN 1 ELSE 0 END) used_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) helpful_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) harmful_count,
+                          SUM(CASE WHEN outcome='ignored' THEN 1 ELSE 0 END) ignored_count,
+                          AVG(requested_budget) avg_requested_budget,
+                          AVG(estimated_tokens) avg_estimated_tokens,
+                          MAX(COALESCE(resolved_at,created_at)) most_recent_at
+                   FROM recall_budget_observations WHERE outcome<>'pending'
+                   GROUP BY task_type,mode
+                   ORDER BY sample_count DESC,most_recent_at DESC LIMIT 250"""
+            ).fetchall()
             recall_day_rows = self._conn.execute(
                 """SELECT substr(created_at,1,10) day,COUNT(*) count,SUM(abstained) abstained,
                           SUM(estimated_tokens) estimated_tokens,AVG(prepare_ms) avg_prepare_ms
@@ -1761,6 +2001,7 @@ class CortexStore:
             "usage_outcomes": {str(row["outcome"]): int(row["count"]) for row in usage_rows},
             "recall_runs": [dict(row) for row in recall_rows],
             "recall_modes": [dict(row) for row in recall_mode_rows],
+            "recall_budgets": [dict(row) for row in budget_rows],
             "recall_by_day": [dict(row) for row in recall_day_rows],
             "recall_summary": {
                 "count": len(recall_rows),
