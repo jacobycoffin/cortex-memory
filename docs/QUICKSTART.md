@@ -15,8 +15,8 @@ Cortex does not require discarding `MEMORY.md`, `USER.md`, or an Obsidian vault.
 ## 2. Install and activate
 
 ```bash
-git clone https://github.com/jacobycoffin/hermes-cortex-memory.git
-cd hermes-cortex-memory
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
 HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```

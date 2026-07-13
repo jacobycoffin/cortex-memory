@@ -1,14 +1,14 @@
 [project]
-name = "hermes-cortex-memory"
+name = "cortex-memory"
 version = "0.2.0"
-description = "Psychology-inspired adaptive memory and observability for Hermes Agent"
+description = "Psychology-inspired adaptive memory and observability for AI agents"
 requires-python = ">=3.10"
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/jacobycoffin/hermes-cortex-memory"
-Documentation = "https://github.com/jacobycoffin/hermes-cortex-memory#readme"
-Issues = "https://github.com/jacobycoffin/hermes-cortex-memory/issues"
+Homepage = "https://github.com/jacobycoffin/cortex-memory"
+Documentation = "https://github.com/jacobycoffin/cortex-memory#readme"
+Issues = "https://github.com/jacobycoffin/cortex-memory/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

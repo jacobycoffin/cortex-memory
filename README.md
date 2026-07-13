@@ -1,6 +1,6 @@
-# Cortex for Hermes
+# Cortex Memory
 
-**Memory that earns its place.** Cortex is a local-first, psychology-inspired memory provider and observability layer for [Hermes Agent](https://github.com/NousResearch/hermes-agent). It recalls only when durable context is likely to help, learns which evidence and tool workflows actually work, preserves corrections, and cools stale memories without deleting history.
+**Memory that earns its place.** Cortex is a local-first, psychology-inspired memory and observability layer for AI agents. The current stable adapter targets [Hermes Agent](https://github.com/NousResearch/hermes-agent); the harness-neutral API and offline Sleep engine are developing on the `testing` branch.
 
 Cortex is an engineering system, not a simulated brain. Psychology and neuroscience provide hypotheses; transparent benchmarks decide whether the software helps.
 
@@ -30,7 +30,7 @@ Most agent memory systems optimize only for storing and finding text. Cortex als
 - Which tool sequence has worked across multiple distinct tasks?
 - Can a stale-memory decision be reversed?
 
-The result is a bounded evidence layer for Hermes, plus a read-only Brain dashboard that makes its behavior inspectable.
+The result is a bounded evidence layer for agents, plus a read-only Brain dashboard that makes its behavior inspectable.
 
 ## What 0.2 adds
 
@@ -44,13 +44,13 @@ The result is a bounded evidence layer for Hermes, plus a read-only Brain dashbo
 - **Pruning-regret detection:** archived evidence can be surfaced in shadow mode or restored automatically.
 - **Cognition dashboard:** live recall latency, estimated context tokens, abstention, lifecycle changes, tool workflows, and scientific field notes.
 
-## Install in about a minute
+## Install the Hermes adapter in about a minute
 
 Requirements: Hermes Agent, Python 3.10+, and SQLite with FTS5 (included in normal Python builds).
 
 ```bash
-git clone https://github.com/jacobycoffin/hermes-cortex-memory.git
-cd hermes-cortex-memory
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
 HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```
@@ -165,7 +165,6 @@ Keep mutation modes in `shadow` until you have reviewed your own recall and prun
 - [Architecture](docs/ARCHITECTURE.md) — data model, retrieval, learning, repair, and trust boundaries.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
-- [Launch kit](docs/TWITTER_LAUNCH_KIT.md) — accurate explanations and social copy.
 
 The July 13, 2026 additive benchmark on 90 paired questions / 500 synthetic memories measured 96.7% answer accuracy with Cortex versus 6.7% with Hermes's bounded built-in snapshot. Whole-agent TTFT was effectively tied; Cortex added prompt tokens in that pre-0.2 fixed-recall run. Treat it as a published baseline, not proof of universal speed or accuracy. Raw aggregates and methodology live in [`benchmark-results`](benchmark-results/).
 

@@ -6,7 +6,16 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .DS_Store
-KAYA_READ_THIS.md
+*.env
+*.key
+*.pem
+*.sqlite*
+*.db-journal
+TWITTER_LAUNCH_KIT.md
+social-drafts/
 *.private.md
+*.private.jsonl
+cortex-evaluations/
+dashboard-auth.json
 benchmark-results/*vps*
 local/
