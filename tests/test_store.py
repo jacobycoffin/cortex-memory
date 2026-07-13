@@ -97,9 +97,21 @@ class CortexStoreTests(unittest.TestCase):
 
     def test_audit_is_clean(self) -> None:
         self.store.add_memory("User prefers concise technical explanations.", kind="preference")
+        inferred_id, _ = self.store.add_memory(
+            "The deployment may require a restart.",
+            source_category="AGENT_INFERENCE",
+        )
+        supported_id, _ = self.store.add_memory(
+            "The deployment requires an explicit health check.",
+            source_category="AGENT_INFERENCE",
+        )
+        evidence_id, _ = self.store.add_memory("The deployment runbook requires a health check.")
+        self.store.add_dependency(supported_id, evidence_id)
         self.assertTrue(self.store.audit()["ok"])
         snapshot = self.store.dashboard_snapshot()
         self.assertTrue(snapshot["audit"]["ok"])
+        self.assertIn(inferred_id, snapshot["unsupported_inference_ids"])
+        self.assertNotIn(supported_id, snapshot["unsupported_inference_ids"])
         self.assertIn("sources", snapshot)
         self.assertIn("recent_access", snapshot)
         self.assertIn("recall_summary", snapshot)

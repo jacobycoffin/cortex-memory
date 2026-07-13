@@ -2049,6 +2049,16 @@ class CortexStore:
             contradiction_count = self._conn.execute(
                 "SELECT COUNT(*) count FROM edges WHERE relation='contradicts'"
             ).fetchone()["count"]
+            unsupported_inference_rows = self._conn.execute(
+                """SELECT m.id FROM memories m
+                   WHERE m.source_category IN ('AGENT_INFERENCE','REFLECTION')
+                   AND m.state IN ('active','cold')
+                   AND NOT EXISTS(
+                       SELECT 1 FROM memory_dependencies d
+                       WHERE d.memory_id=m.id AND d.active=1
+                   )
+                   ORDER BY m.updated_at DESC LIMIT 2000"""
+            ).fetchall()
             recall_rows = self._conn.execute(
                 """SELECT recall_id,mode,reason,requested_limit,token_budget,candidate_count,
                           selected_count,estimated_tokens,prepare_ms,abstained,created_at
@@ -2144,6 +2154,7 @@ class CortexStore:
             "sleep_proposals": [dict(row) for row in sleep_proposal_rows],
             "version_count": int(version_count),
             "contradiction_count": int(contradiction_count),
+            "unsupported_inference_ids": [str(row["id"]) for row in unsupported_inference_rows],
             "audit": self.audit(),
         }
 

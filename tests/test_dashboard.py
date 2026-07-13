@@ -86,6 +86,7 @@ class DashboardInterfaceTests(unittest.TestCase):
             "lifecycle-feed",
             "workflow-feed",
             "health-actions",
+            "health-action-summary",
             "health-areas",
             "auth-gate",
             "auth-login-form",
@@ -108,6 +109,12 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Cortex Sleep", html)
         self.assertIn("Shadow watches without changing memory.", html)
         self.assertIn("function renderHealthActions", html)
+        self.assertIn("function copyHealthInstructions", html)
+        self.assertIn("Review when convenient", html)
+        self.assertIn("No action needed", html)
+        self.assertIn("Resolved when:", html)
+        self.assertIn("Open conflict map", html)
+        self.assertIn('app.healthReview="unsupported"', html)
 
     def test_dashboard_has_a_complete_favicon_set(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
