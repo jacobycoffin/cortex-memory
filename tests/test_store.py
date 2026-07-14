@@ -175,6 +175,28 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIn("tool_workflows", snapshot)
         self.assertIn("lifecycle_events", snapshot)
 
+    def test_dashboard_snapshot_includes_daily_activity_trends(self) -> None:
+        first, _ = self.store.add_memory("A daily trend memory.", kind="episode")
+        second, _ = self.store.add_memory("A connected daily trend memory.", kind="semantic")
+        self.store.add_edge(first, second, "related", weight=0.7)
+        self.store.set_state(first, "cold", reason="trend test")
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                """INSERT INTO tool_executions(
+                   execution_id,session_id,task_type,task_context,tool_name,argument_keys,
+                   success,error_type,result_summary,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                ("trend-tool", "trend-session", "test", "trend", "search", "[]", 1, None, "ok", now),
+            )
+
+        today = now[:10]
+        trend = {row["day"]: row for row in self.store.dashboard_snapshot()["activity_trends"]}[today]
+        self.assertEqual(trend["memories_made"], 2)
+        self.assertEqual(trend["connections_made"], 1)
+        self.assertEqual(trend["memories_pruned"], 1)
+        self.assertEqual(trend["tool_calls"], 1)
+
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()
         db_path = Path(self.tmp.name) / "legacy.db"

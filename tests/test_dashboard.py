@@ -83,6 +83,14 @@ class DashboardInterfaceTests(unittest.TestCase):
             "sleep-safety",
             "sleep-proposal-total",
             "sleep-proposal-list",
+            "sleep-start",
+            "sleep-progress",
+            "trend-chart",
+            "trend-legend",
+            "kind-guide",
+            "view-settings",
+            "settings-theme-slot",
+            "settings-account-slot",
             "lifecycle-feed",
             "workflow-feed",
             "health-actions",
@@ -110,6 +118,10 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderCognition()", html)
         self.assertIn("function renderBudgetLearning", html)
         self.assertIn("function renderSleep", html)
+        self.assertIn("function startSleepSession", html)
+        self.assertIn("/api/sleep/start", html)
+        self.assertIn("function renderTrendChart", html)
+        self.assertIn("function renderKindGuide", html)
         self.assertIn("Cortex Sleep", html)
         self.assertIn("Shadow watches without changing memory.", html)
         self.assertIn("function renderHealthActions", html)
@@ -122,6 +134,13 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Both are valid in different situations", html)
         self.assertIn("/api/review/conflict", html)
         self.assertIn("/api/review/inference", html)
+
+    def test_dashboard_keeps_ipad_navigation_and_index_content_readable(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertIn(":root { --sidebar: 172px; }", html)
+        self.assertIn(".nav-btn .nav-text { display: block", html)
+        self.assertIn("-webkit-line-clamp: 4", html)
+        self.assertIn("tap for full memory", html)
 
     def test_dashboard_theme_catalog_stays_complete(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
@@ -152,6 +171,9 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('os.environ.get("CORTEX_DASHBOARD_REVIEWS"', server)
         self.assertIn("guided review changes are disabled", server)
         self.assertIn("CORTEX_DASHBOARD_REVIEWS=1", readme)
+        self.assertIn('parsed.path == "/api/sleep/start"', server)
+        self.assertIn('SleepConfig(mode="shadow", reflection_token_budget=0)', server)
+        self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 
 if __name__ == "__main__":

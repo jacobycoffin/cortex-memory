@@ -17,6 +17,8 @@ Normal agent activity is the “wake” phase: new events arrive, memories are r
 
 The default and recommended deployment mode is shadow-only. Sleep writes a report and proposals without changing retrieval state. A separate explicit `--mode apply --apply` path exists for bounded, reversible association, downscaling, and lifecycle changes after shadow evidence has been reviewed. Sleep never hard-deletes memories or silently applies model-generated conclusions. Every proposal must name its evidence and reason. Pinned, protected, prospective, quarantined, and corrected memories keep their existing lifecycle protections.
 
+The Brain dashboard exposes this safe default under **Cognition → Cortex Sleep**. Its **Start shadow Sleep** control runs the deterministic pass with provider reflection disabled, rejects concurrent runs, and streams the current phase—episode replay, connection review, pruning review, lifecycle preview, consolidation, and report finalization—before refreshing the proposal list. Apply mode remains CLI/operator-only.
+
 ## A bounded cycle
 
 A Sleep run should have explicit ceilings rather than “thinking until finished”:

@@ -194,6 +194,14 @@
     .legend-row { display: grid; grid-template-columns: 10px 1fr auto; gap: 8px; align-items: center; font-size: .72rem; color: var(--text-soft); }
     .legend-swatch { width: 8px; height: 8px; border-radius: 3px; }
     .legend-row strong { font-size: .71rem; color: var(--text); }
+    .kind-guide { width: 100%; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border); }
+    .kind-guide-button { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); cursor: pointer; display: grid; grid-template-columns: 8px minmax(0,1fr) auto; align-items: center; gap: 8px; text-align: left; }
+    .kind-guide-button:hover, .kind-guide-button[aria-expanded="true"] { border-color: var(--mint); background: var(--mint-soft); }
+    .kind-guide-button strong { font-size: .68rem; font-weight: 650; }
+    .kind-guide-button small { color: var(--muted); font-family: ui-monospace,monospace; font-size: .56rem; }
+    .kind-guide-detail { grid-column: 1 / -1; padding: 12px 13px; border-left: 3px solid var(--violet); background: var(--surface-2); }
+    .kind-guide-detail strong { display: block; font-family: Iowan Old Style,Baskerville,Georgia,serif; font-size: .95rem; font-weight: 500; }
+    .kind-guide-detail p { margin: 5px 0 0; color: var(--text-soft); font-size: .68rem; line-height: 1.5; }
     .activity-feed, .signal-list, .source-list, .tool-list, .health-list { display: grid; }
     .activity-item, .signal-item, .source-item, .tool-item, .health-row {
       border-top: 1px solid var(--border); padding: 13px 0; display: grid; align-items: center; gap: 11px;
@@ -774,6 +782,12 @@
     .insight-index { width: 23px; height: 23px; display: grid; place-items: center; border: 1px solid var(--border-strong); color: var(--violet); font-family: ui-monospace,monospace; font-size: .58rem; }
     .insight-note strong, .health-action strong, .health-area strong, .glossary-row strong { display: block; font-size: .73rem; }
     .insight-note p, .health-action p, .health-area p, .glossary-row p { margin: 4px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
+    .trend-panel { margin-bottom: 14px; }
+    .trend-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
+    .trend-legend-item { display: inline-grid; grid-template-columns: 8px auto; gap: 6px; align-items: center; color: var(--muted); font-size: .64rem; }
+    .trend-legend-item i { width: 8px; height: 8px; }
+    .trend-legend-item strong { color: var(--text); font-family: ui-monospace,monospace; font-size: .62rem; font-weight: 650; }
+    .trend-chart { display: block; width: 100%; height: auto; min-height: 260px; overflow: visible; }
     .funnel-list { display: grid; gap: 15px; }
     .funnel-row { display: grid; grid-template-columns: 105px minmax(0,1fr) auto; gap: 10px; align-items: center; }
     .funnel-row span { color: var(--text-soft); font-size: .7rem; }
@@ -856,6 +870,7 @@
     .memory-row { grid-template-columns: minmax(0,1.6fr) minmax(90px,125px) minmax(70px,105px) minmax(82px,100px) minmax(72px,100px) 20px; align-items: start; }
     .memory-title { white-space: normal; line-height: 1.45; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
     .memory-source { white-space: normal; line-height: 1.35; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+    .memory-mobile-meta { display: none; margin-top: 7px; color: var(--faint); font-family: ui-monospace,monospace; font-size: .58rem; line-height: 1.4; }
     .row-date, .row-use { padding-top: 3px; }
     table { table-layout: fixed; }
     th, td { overflow-wrap: anywhere; word-break: normal; line-height: 1.4; }
@@ -871,26 +886,36 @@
     .loader-orb { width: 42px; height: 42px; border: 1px solid var(--mint); border-radius: 50% 48% 52% 49%; box-shadow: none; }
     .loader-orb::before { width: 6px; height: 6px; top: 17px; left: 17px; background: var(--violet); box-shadow: none; }
     @media (max-width: 1220px) {
-      :root { --sidebar: 86px; }
+      :root { --sidebar: 172px; }
       .sidebar { padding-inline: 12px; }
-      .brand { justify-content: center; padding-inline: 0; }
-      .brand-copy, .side-label, .nav-btn .nav-text, .brain-mini { display: none; }
-      .side-nav { justify-items: center; }
-      .nav-btn { justify-content: center; box-shadow: none; }
-      .nav-btn[aria-selected="true"] { box-shadow: inset 0 -2px #ef765b; }
-      .nav-icon { width: auto; justify-content: center; font-size: .62rem; }
+      .brand { justify-content: flex-start; padding-inline: 5px; }
+      .brand-copy, .side-label, .nav-btn .nav-text { display: block; }
+      .brand-copy span, .brain-mini { display: none; }
+      .side-nav { justify-items: stretch; }
+      .nav-btn { justify-content: flex-start; gap: 7px; box-shadow: none; }
+      .nav-btn[aria-selected="true"] { box-shadow: inset 2px 0 #ef765b; }
+      .nav-icon { width: 24px; justify-content: flex-start; font-size: .58rem; }
       .brain-hero { grid-template-columns: minmax(0,1fr) 190px; }
       .metric-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
       .dashboard-grid, .dashboard-grid.equal { grid-template-columns: 1fr; }
+      .memory-row { grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 16px; }
+      .memory-row .row-date, .memory-row .row-confidence, .memory-row .row-use, .memory-row .row-arrow { display: none; }
+      .memory-row .status-chip { grid-column: 2; grid-row: 1; }
+      .memory-title { font-size: .82rem; -webkit-line-clamp: 4; }
+      .memory-source { -webkit-line-clamp: 2; }
+      .memory-mobile-meta { display: block; }
     }
     @media (max-width: 760px) {
       :root { --sidebar: 0px; }
-      body { padding-bottom: 72px; }
-      .sidebar { inset: auto 0 0; width: 100%; height: 67px; padding: 8px max(8px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); background: var(--sidebar-bg); border-top: 1px solid rgba(255,255,255,.12); }
+      body { padding-bottom: 86px; }
+      .sidebar { inset: auto 0 0; width: 100%; height: 81px; padding: 7px max(8px,env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); background: var(--sidebar-bg); border-top: 1px solid rgba(255,255,255,.12); overflow: hidden; }
       .brand, .side-label, .sidebar-spacer, .brain-mini { display: none; }
-      .side-nav { display: grid; grid-template-columns: repeat(8,1fr); gap: 2px; width: 100%; }
-      .nav-btn { padding: 7px 3px; min-width: 0; }
-      .nav-icon { font-size: .58rem; }
+      .side-nav { display: flex; gap: 2px; width: 100%; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+      .side-nav::-webkit-scrollbar { display: none; }
+      .nav-btn { flex: 0 0 76px; min-width: 76px; padding: 5px 3px; flex-direction: column; justify-content: center; gap: 3px; text-align: center; }
+      .nav-btn .nav-text { display: block; color: rgba(245,240,229,.72); font-size: .51rem; line-height: 1.1; white-space: nowrap; }
+      .nav-icon { width: auto; font-size: .55rem; justify-content: center; }
+      .nav-btn[aria-selected="true"] { box-shadow: inset 0 -2px #ef765b; }
       .app-main { margin-left: 0; }
       .topbar { height: 61px; padding: 0 13px; gap: 8px; }
       .mobile-brand { display: block; font-family: ui-monospace,monospace; font-size: .7rem; }
@@ -961,6 +986,9 @@
       .drawer { width: 100%; top: 28px; border-radius: 7px 7px 0 0; }
       .detail-grid { grid-template-columns: minmax(85px,110px) minmax(0,1fr); }
       .counter-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .settings-shortcut { width: 38px; padding: 0; }
+      .settings-shortcut .settings-label { display: none; }
+      .kind-guide { grid-template-columns: 1fr; }
     }
     @media (max-width: 430px) {
       .metric-grid { grid-template-columns: 1fr; }
@@ -1025,8 +1053,40 @@
     .sleep-proposal-meta { min-width: 70px; display: grid; justify-items: end; gap: 6px; }
     .sleep-proposal-state { max-width: 120px; color: var(--text-soft); font-family: ui-monospace,monospace; font-size: .58rem; text-transform: uppercase; text-align: right; overflow-wrap: anywhere; }
     .sleep-proposal-score { color: var(--muted); font-family: ui-monospace,monospace; font-size: .59rem; white-space: nowrap; }
+    .sleep-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .sleep-progress { margin: 14px 0 0; padding: 14px; border: 1px solid var(--border); background: var(--surface-2); }
+    .sleep-progress[hidden] { display: none; }
+    .sleep-progress-head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: start; }
+    .sleep-progress-head strong { display: block; font-size: .72rem; }
+    .sleep-progress-head p { margin: 4px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
+    .sleep-progress-value { color: var(--violet); font-family: ui-monospace,monospace; font-size: .64rem; }
+    .sleep-progress-track { height: 5px; margin-top: 12px; background: var(--surface); overflow: hidden; }
+    .sleep-progress-fill { height: 100%; width: 0; background: var(--mint); transition: width .25s ease; }
+    .sleep-step-list { display: grid; gap: 7px; margin-top: 12px; }
+    .sleep-step { display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 9px; color: var(--muted); font-size: .61rem; line-height: 1.35; }
+    .sleep-step span { color: var(--faint); font-family: ui-monospace,monospace; text-transform: uppercase; }
+    .settings-shortcut { width: auto; padding: 0 11px; }
+    .settings-shortcut .settings-label { font-size: .69rem; }
+    .settings-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); gap: 14px; }
+    .settings-theme-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+    .settings-theme-grid .theme-option { border: 1px solid var(--border); background: var(--surface-2); }
+    .settings-theme-grid .theme-option[aria-checked="true"] { border-color: var(--mint); }
+    .topbar > .theme-picker, .topbar > #account-open { display: none; }
+    .settings-theme-slot .theme-picker { display: block; }
+    .settings-theme-slot .theme-trigger { display: none; }
+    .settings-theme-slot .theme-menu { position: static; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; width: auto; max-height: none; overflow: visible; padding: 0; border: 0; box-shadow: none; background: transparent; }
+    .settings-theme-slot .theme-menu[hidden] { display: grid; }
+    .settings-theme-slot .theme-menu-head { grid-column: 1 / -1; padding: 0 0 5px; }
+    .settings-theme-slot .theme-option { border: 1px solid var(--border); background: var(--surface-2); }
+    .settings-theme-slot .theme-option[aria-checked="true"] { border-color: var(--mint); }
+    .settings-account-slot .icon-btn { width: auto; padding: 0 12px; color: var(--text); }
+    .settings-security { display: grid; gap: 13px; }
+    .settings-security-card { padding: 15px; border: 1px solid var(--border); background: var(--surface-2); }
+    .settings-security-card strong { display: block; font-size: .75rem; }
+    .settings-security-card p { margin: 6px 0 13px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
     @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid { grid-template-columns: 1fr; } }
-    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-cycle-head { align-items: stretch; flex-direction: column; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } }
+    @media (max-width: 920px) { .settings-grid { grid-template-columns: 1fr; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-cycle-head { align-items: stretch; flex-direction: column; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
     @media (max-width: 430px) { .sleep-metric-grid { grid-template-columns: 1fr; } .sleep-proposal-row { grid-template-columns: 1fr; gap: 6px; } .sleep-proposal-meta { grid-column: 1; } }
   </style>
 </head>
@@ -1118,6 +1178,7 @@
           </div>
         </div>
         <button class="icon-btn" id="account-open" type="button" aria-label="Account settings" title="Account">◎</button>
+        <button class="icon-btn settings-shortcut" id="settings-open" type="button" data-go="settings" aria-label="Open dashboard settings" title="Settings"><span aria-hidden="true">⚙</span><span class="settings-label">Settings</span></button>
         <button class="icon-btn" id="refresh" type="button" aria-label="Refresh Cortex data" title="Refresh">↻</button>
       </header>
 
@@ -1147,7 +1208,7 @@
             </div>
             <div class="panel panel-pad">
               <div class="panel-heading"><div><h2>Memory composition</h2><p>How the brain is currently structured</p></div></div>
-              <div class="donut-layout"><div class="donut" id="kind-donut"><div class="donut-center"><strong id="donut-total">0</strong><span>memories</span></div></div><div class="legend-list" id="kind-legend"></div></div>
+              <div class="donut-layout"><div class="donut" id="kind-donut"><div class="donut-center"><strong id="donut-total">0</strong><span>memories</span></div></div><div class="legend-list" id="kind-legend"></div><div class="kind-guide" id="kind-guide" aria-label="Memory type guide"></div></div>
             </div>
           </div>
 
@@ -1219,6 +1280,11 @@
         <section class="view" id="view-insights" aria-labelledby="insights-heading">
           <div class="page-heading"><div><div class="eyebrow">Patterns Cortex can already see</div><h1 id="insights-heading">Insights</h1><p>Useful signals derived from recall, connection, source, and tool-learning activity.</p></div></div>
           <div class="metric-grid" id="insight-metrics"></div>
+          <div class="panel panel-pad trend-panel">
+            <div class="panel-heading"><div><h2>Brain activity by day</h2><p>New memories, new links, lifecycle pruning, and tool calls on the same daily timeline.</p></div><select class="control" id="trends-range" aria-label="Trend date range"><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></div>
+            <div class="trend-legend" id="trend-legend"></div>
+            <svg class="trend-chart" id="trend-chart" viewBox="0 0 900 300" role="img" aria-label="Daily Cortex memory, connection, pruning, and tool-call trends"></svg>
+          </div>
           <div class="dashboard-grid equal">
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>What the data says</h2><p>Plain-language observations, recalculated from the live brain</p></div></div><div class="insight-observations" id="insight-observations"></div></div>
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Recall funnel</h2><p>How often stored knowledge moves from available to actually useful</p></div></div><div class="funnel-list" id="recall-funnel"></div></div>
@@ -1243,8 +1309,9 @@
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">0 outcomes</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
           <div class="sleep-grid" id="cortex-sleep">
             <div class="panel panel-pad">
-              <div class="panel-heading"><div><h2>Cortex Sleep</h2><p>An offline cycle that replays recent experience, looks for useful structure, and proposes careful maintenance.</p></div><span class="chip" id="sleep-status" aria-live="polite">Waiting</span></div>
+              <div class="panel-heading"><div><h2>Cortex Sleep</h2><p>An offline cycle that replays recent experience, looks for useful structure, and proposes careful maintenance.</p></div><div class="sleep-controls"><span class="chip" id="sleep-status" aria-live="polite">Waiting</span><button class="primary-btn" id="sleep-start" type="button">Start shadow Sleep</button></div></div>
               <div id="sleep-cycle-summary" aria-live="polite"></div>
+              <div class="sleep-progress" id="sleep-progress" hidden aria-live="polite"><div class="sleep-progress-head"><div><strong id="sleep-progress-title">Preparing Sleep</strong><p id="sleep-progress-message">Opening a bounded shadow review.</p></div><span class="sleep-progress-value" id="sleep-progress-value">0%</span></div><div class="sleep-progress-track"><div class="sleep-progress-fill" id="sleep-progress-fill"></div></div><div class="sleep-step-list" id="sleep-step-list"></div></div>
               <div class="sleep-metric-grid" id="sleep-metrics"></div>
               <div class="sleep-safety" id="sleep-safety"><span class="sleep-safety-mark">S</span><div><strong>Shadow watches without changing memory.</strong><p>In shadow mode, Cortex records what it would connect, cool, or consolidate. Apply mode may commit only proposals that pass the configured safety gates.</p></div></div>
             </div>
@@ -1302,6 +1369,21 @@
             <div class="pagination"><span id="page-label"></span><div class="pagination-actions"><button class="ghost-btn" id="page-prev" type="button">Previous</button><button class="ghost-btn" id="page-next" type="button">Next</button></div></div>
           </div>
         </section>
+
+        <section class="view" id="view-settings" aria-labelledby="settings-heading">
+          <div class="page-heading"><div><div class="eyebrow">Dashboard preferences</div><h1 id="settings-heading">Settings</h1><p>Appearance and account controls live here so the observation workspace stays quiet.</p></div></div>
+          <div class="settings-grid">
+            <div class="panel panel-pad">
+              <div class="panel-heading"><div><h2>Appearance</h2><p>Choose a palette. Cortex saves the selection on this device.</p></div></div>
+              <div class="settings-theme-slot" id="settings-theme-slot"></div>
+            </div>
+            <div class="panel panel-pad settings-security">
+              <div class="panel-heading"><div><h2>Account &amp; security</h2><p>Password controls are kept out of the live dashboard header.</p></div></div>
+              <div class="settings-security-card settings-account-slot" id="settings-account-slot"><strong id="settings-account-status">Dashboard account</strong><p>Change the Brain password or sign out of this device.</p></div>
+              <div class="settings-security-card"><strong>Sleep safety</strong><p>User-started Sleep is always shadow-only here. It can write an audit report and proposals, but it cannot change or delete memories, links, or lifecycle state.</p><button class="ghost-btn" type="button" data-go="cognition">Open Sleep controls</button></div>
+            </div>
+          </div>
+        </section>
       </div>
     </main>
   </div>
@@ -1330,7 +1412,7 @@
     "use strict";
     const savedGraphPositions = parseJson(localStorage.getItem("cortex-graph-positions") || "{}", {});
     const app = {
-      data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true,
+      data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
       healthReview: { kind: null, index: 0, pending: null, busy: false },
       graph: {
         scale: 1, panX: 0, panY: 0, showLabels: localStorage.getItem("cortex-graph-labels") !== "false",
@@ -1346,7 +1428,32 @@
       field: "Field", ink: "Ink", dusk: "Dusk", tide: "Tide", moss: "Moss", mono: "Mono",
       midnight: "Midnight", ember: "Ember", orchid: "Orchid", glacier: "Glacier", sepia: "Sepia", terminal: "Terminal"
     };
+    const memoryKindGuide = {
+      semantic: ["Semantic memory", "Facts and durable knowledge about the world. Cortex retrieves these when a task needs stable background, definitions, or known relationships."],
+      episode: ["Episodic memory", "What happened in a particular conversation or task. Cortex uses episodes for continuity, recent context, and offline replay during Sleep."],
+      procedure: ["Procedural memory", "Repeatable instructions and ways of working. Cortex favors these for how-to requests and can reinforce them with successful tool outcomes."],
+      preference: ["Preference memory", "How the user likes things done, written, organized, or presented. Cortex uses it to personalize future work without asking again."],
+      identity: ["Identity memory", "Stable facts about people, projects, systems, and roles. Cortex uses identity to keep references consistent across conversations."],
+      decision: ["Decision memory", "A choice that was made and the context behind it. Cortex recalls decisions to avoid reopening settled questions or contradicting prior direction."],
+      prospective: ["Prospective memory", "Something intended for the future: a plan, reminder, commitment, or next step. Cortex keeps it active until it is resolved or no longer relevant."],
+      operational: ["Operational memory", "Current technical state such as paths, ports, services, environments, and deployment details. Cortex weighs currentness heavily because these facts can change."],
+    };
     const authState = { enabled: true, username: "", currentPassword: "" };
+    let sleepPollTimer = null;
+
+    const settingsThemeSlot = document.getElementById("settings-theme-slot");
+    const themePicker = document.querySelector(".topbar .theme-picker");
+    if (settingsThemeSlot && themePicker) {
+      settingsThemeSlot.append(themePicker);
+      document.getElementById("theme-toggle").hidden = true;
+      document.getElementById("theme-menu").hidden = false;
+    }
+    const settingsAccountSlot = document.getElementById("settings-account-slot");
+    const accountButton = document.getElementById("account-open");
+    if (settingsAccountSlot && accountButton) {
+      accountButton.textContent = "Change password or sign out";
+      settingsAccountSlot.append(accountButton);
+    }
 
     async function authRequest(path, payload) {
       const response = await fetch(path, {
@@ -1370,6 +1477,7 @@
         authState.username = status.username || "";
         document.getElementById("auth-username").value = authState.username;
         document.getElementById("account-user").textContent = authState.username ? `Signed in as ${authState.username}` : "";
+        document.getElementById("settings-account-status").textContent = authState.username ? `Signed in as ${authState.username}` : "Dashboard account";
         document.getElementById("account-open").hidden = !authState.enabled;
         if (!authState.enabled || (status.authenticated && !status.must_change_password)) {
           enterDashboard();
@@ -1425,6 +1533,7 @@
           new_password: form.new_password.value
         });
         authState.username = result.username || authState.username;
+        document.getElementById("settings-account-status").textContent = authState.username ? `Signed in as ${authState.username}` : "Dashboard account";
         form.reset();
         if (forced) enterDashboard();
         else {
@@ -1449,6 +1558,7 @@
         authState.username = result.username || form.username.value;
         authState.currentPassword = password;
         document.getElementById("account-user").textContent = `Signed in as ${authState.username}`;
+        document.getElementById("settings-account-status").textContent = `Signed in as ${authState.username}`;
         if (result.must_change_password) showForcedPasswordChange(password);
         else { form.reset(); enterDashboard(); }
       } catch (requestError) {
@@ -1472,7 +1582,7 @@
     document.getElementById("refresh").addEventListener("click", () => load(false));
     document.getElementById("theme-toggle").addEventListener("click", event => { event.stopPropagation(); toggleThemeMenu(); });
     document.getElementById("theme-menu").addEventListener("click", event => event.stopPropagation());
-    document.querySelectorAll("[data-theme-choice]").forEach(button => button.addEventListener("click", () => { setTheme(button.dataset.themeChoice); closeThemeMenu(); }));
+    document.querySelectorAll("[data-theme-choice]").forEach(button => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
     document.addEventListener("click", closeThemeMenu);
     document.getElementById("drawer-close").addEventListener("click", closeDrawer);
     document.getElementById("drawer-backdrop").addEventListener("click", closeDrawer);
@@ -1486,6 +1596,8 @@
     ["memory-search","memory-kind","memory-state","memory-source","memory-sort"].forEach(id => document.getElementById(id).addEventListener("input", () => { app.explorerPage = 1; renderExplorer(); }));
     document.getElementById("health-review-close").addEventListener("click", closeHealthReview);
     document.getElementById("timeline-range").addEventListener("change", renderTimeline);
+    document.getElementById("trends-range").addEventListener("change", renderTrendChart);
+    document.getElementById("sleep-start").addEventListener("click", startSleepSession);
     document.getElementById("graph-plus").addEventListener("click", () => zoomActiveRenderer(1.22));
     document.getElementById("graph-minus").addEventListener("click", () => zoomActiveRenderer(1 / 1.22));
     document.getElementById("graph-reset").addEventListener("click", fitActiveRenderer);
@@ -1564,7 +1676,9 @@
     }
 
     function closeThemeMenu() {
-      document.getElementById("theme-menu").hidden = true;
+      const menu = document.getElementById("theme-menu");
+      if (menu.closest(".settings-theme-slot")) return;
+      menu.hidden = true;
       document.getElementById("theme-toggle").setAttribute("aria-expanded", "false");
     }
 
@@ -1658,6 +1772,13 @@
       document.getElementById("donut-total").textContent=formatNum(entries.reduce((n,e)=>n+e[1],0));
       const legend=document.getElementById("kind-legend"); legend.replaceChildren();
       entries.slice(0,6).forEach(([kind,count])=>{ const row=el("div","legend-row"); const sw=el("i","legend-swatch"); sw.style.background=kindColor(kind); row.append(sw,el("span","",humanize(kind)),el("strong","",formatNum(count))); legend.append(row); });
+      renderKindGuide(counts);
+    }
+
+    function renderKindGuide(counts) {
+      const host=document.getElementById("kind-guide");host.replaceChildren();
+      Object.entries(memoryKindGuide).forEach(([kind,[title]])=>{const button=el("button","kind-guide-button");button.type="button";button.setAttribute("aria-expanded",String(app.kindGuide===kind));const swatch=el("i","legend-swatch");swatch.style.background=kindColor(kind);button.append(swatch,el("strong","",humanize(kind)),el("small","",formatNum(counts[kind]||0)));button.addEventListener("click",()=>{app.kindGuide=app.kindGuide===kind?null:kind;renderKindGuide(counts);});host.append(button);});
+      if(app.kindGuide&&memoryKindGuide[app.kindGuide]){const[title,copy]=memoryKindGuide[app.kindGuide],detail=el("div","kind-guide-detail");detail.append(el("strong","",title),el("p","",copy));host.append(detail);}
     }
 
     function renderRecentActivity() {
@@ -2205,6 +2326,26 @@
       renderMemoryRanking("hub-list",[...active].sort((a,b)=>connectionCount(b.id)-connectionCount(a.id)).slice(0,6),memory=>`${connectionCount(memory.id)} connections · ${humanize(memory.kind)}`);
       renderInsightSources(sourceCounts,memories.length);
       renderInsightTools(tools);
+      renderTrendChart();
+    }
+
+    function renderTrendChart() {
+      if(!app.data)return;
+      const svg=document.getElementById("trend-chart"),legend=document.getElementById("trend-legend"),range=Math.max(7,Number(document.getElementById("trends-range").value||30)),source=new Map((app.data.activity_trends||[]).map(row=>[row.day,row])),days=[],today=new Date();
+      for(let offset=range-1;offset>=0;offset--){const day=new Date(Date.UTC(today.getUTCFullYear(),today.getUTCMonth(),today.getUTCDate()-offset)),key=day.toISOString().slice(0,10),row=source.get(key)||{};days.push({day:key,memories_made:Number(row.memories_made||0),connections_made:Number(row.connections_made||0),memories_pruned:Number(row.memories_pruned||0),tool_calls:Number(row.tool_calls||0)});}
+      const series=[
+        {key:"memories_made",label:"Memories made",color:cssVar("--violet")},
+        {key:"connections_made",label:"Connections made",color:cssVar("--mint")},
+        {key:"memories_pruned",label:"Cooled / pruned",color:cssVar("--amber")},
+        {key:"tool_calls",label:"Tool calls",color:cssVar("--blue")},
+      ];
+      svg.replaceChildren();legend.replaceChildren();
+      series.forEach(item=>{const total=days.reduce((sum,day)=>sum+day[item.key],0),entry=el("span","trend-legend-item"),swatch=el("i","");swatch.style.background=item.color;entry.append(swatch,el("span","",item.label),el("strong","",formatNum(total)));legend.append(entry);});
+      const desc=svgEl("desc");desc.textContent=`Daily Cortex activity across the last ${range} days.`;svg.append(desc);
+      const W=900,H=300,L=44,R=18,T=18,B=38,max=Math.max(1,...days.flatMap(day=>series.map(item=>day[item.key]))),plotH=H-T-B,plotW=W-L-R;
+      for(let index=0;index<5;index++){const y=T+index*plotH/4,value=Math.round(max*(4-index)/4);svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,class:"chart-grid"}),svgText(L-8,y+4,value,"chart-label","end"));}
+      series.forEach(item=>{const points=days.map((day,index)=>({x:L+index*plotW/Math.max(1,days.length-1),y:T+(max-day[item.key])*plotH/max,value:day[item.key],day:day.day})),path=points.map((point,index)=>`${index?"L":"M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");svg.append(svgEl("path",{d:path,fill:"none",stroke:item.color,"stroke-width":"2.4","stroke-linecap":"round","stroke-linejoin":"round"}));if(days.length<=30)points.forEach(point=>{const dot=svgEl("circle",{cx:point.x,cy:point.y,r:point.value?3.2:2,fill:point.value?item.color:cssVar("--surface"),stroke:item.color,"stroke-width":"1.4"}),title=svgEl("title");title.textContent=`${point.day}: ${point.value} ${item.label.toLowerCase()}`;dot.append(title);svg.append(dot);});});
+      const labelEvery=Math.max(1,Math.ceil(days.length/6));days.forEach((day,index)=>{if(index%labelEvery===0||index===days.length-1)svg.append(svgText(L+index*plotW/Math.max(1,days.length-1),H-11,shortDay(day.day),"chart-label","middle"));});
     }
 
     function renderFunnel(stages,total) {const host=document.getElementById("recall-funnel");host.replaceChildren();stages.forEach(([label,value])=>{const row=el("div","funnel-row"),track=el("div","bar-track"),fill=el("div","bar-fill");fill.style.width=`${value/Math.max(1,total)*100}%`;track.append(fill);row.append(el("span","",label),track,el("strong","",`${formatNum(value)} · ${percent(value,total)}%`));host.append(row);});}
@@ -2226,7 +2367,7 @@
       if(!modes.length)modeHost.append(emptyState("No recall decisions yet","Use Hermes normally; attention-gate evidence will appear here."));
       modes.forEach(mode=>{const row=el("div","mode-row"),count=Number(mode.count||0),skipped=Number(mode.abstained||0);row.append(el("div","mode-name",humanize(mode.mode)),el("div","mode-copy",`${modeDescriptions[mode.mode]||"Adaptive recall plan"} · avg ${Math.round(Number(mode.avg_tokens||0))} tokens`),el("div","mode-stat",`${formatNum(count)} · ${percent(skipped,Math.max(1,count))}% empty`));modeHost.append(row);});
       renderBudgetLearning(budgets);
-      renderSleep(d.sleep_runs||[],d.sleep_proposals||[]);
+      renderSleep(d.sleep_runs||[],d.sleep_proposals||[],d.sleep_runtime||{});
       const strip=document.getElementById("recall-strip"),maxTokens=Math.max(1,...days.map(day=>Number(day.estimated_tokens||0)));strip.replaceChildren();
       if(!days.length)strip.append(emptyState("No token history yet","The chart begins after Cortex handles recall decisions."));
       days.forEach(day=>{const bar=el("div","recall-day");bar.style.height=`${Math.max(3,Number(day.estimated_tokens||0)/maxTokens*150)}px`;bar.title=`${day.day}: ${formatNum(day.estimated_tokens||0)} estimated tokens · ${formatNum(day.abstained||0)} abstained`;strip.append(bar);});
@@ -2247,7 +2388,7 @@
       budgets.slice(0,12).forEach(item=>{const samples=Number(item.sample_count||0),used=Number(item.used_count||0),helpful=Number(item.helpful_count||0),harmful=Number(item.harmful_count||0),ignored=Number(item.ignored_count||0),fill=Number(item.avg_estimated_tokens||0)/Math.max(1,Number(item.avg_requested_budget||0)),usedRate=used/Math.max(1,samples),ignoredRate=ignored/Math.max(1,samples);let signal="Hold";if(samples<8)signal="Learning";else if(harmful/Math.max(1,samples)>=.2)signal="Risk signal";else if(ignoredRate>=.65&&!helpful)signal="Reduce pressure";else if(helpful>=3&&usedRate>=.75&&fill>=.8)signal="Helpful saturation";const row=el("div","mode-row");row.append(el("div","mode-name",`${humanize(item.task_type)} · ${humanize(item.mode)}`),el("div","mode-copy",`${formatNum(samples)} outcomes · ${percent(used,samples)}% used · avg ${Math.round(Number(item.avg_estimated_tokens||0))}/${Math.round(Number(item.avg_requested_budget||0))} tokens`),el("div","mode-stat",signal));host.append(row);});
     }
 
-    function renderSleep(runs,proposals) {
+    function renderSleep(runs,proposals,runtime={}) {
       const byNewest=(left,right)=>{const a=Date.parse(left.completed_at||left.started_at||left.created_at||0),b=Date.parse(right.completed_at||right.started_at||right.created_at||0);return (Number.isFinite(b)?b:0)-(Number.isFinite(a)?a:0);};
       const latest=[...runs].sort(byNewest)[0],summaryHost=document.getElementById("sleep-cycle-summary"),metricHost=document.getElementById("sleep-metrics"),proposalHost=document.getElementById("sleep-proposal-list"),statusHost=document.getElementById("sleep-status"),recent=[...proposals].sort(byNewest).slice(0,12);
       summaryHost.replaceChildren();metricHost.replaceChildren();proposalHost.replaceChildren();
@@ -2274,9 +2415,35 @@
         addMetric("Reflection context",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:estimatedTokens?`${formatNum(estimatedTokens)} tok`:"—",tokenBudget?`${percent(estimatedTokens,tokenBudget)}% of the offline reflection budget estimated`:"No reflection-token budget recorded");
       }
 
+      renderSleepProgress(runtime);
       if(!recent.length){proposalHost.append(emptyState("No sleep proposals yet","A proposal appears only when offline review finds a possible connection, conflict, lifecycle move, or consolidation worth recording."));return;}
       recent.forEach(proposal=>{const row=el("div","sleep-proposal-row"),kind=humanize(proposal.kind||"proposal"),copy=el("div","sleep-proposal-copy"),created=proposal.created_at&&Number.isFinite(Date.parse(proposal.created_at))?timeAgo(new Date(proposal.created_at)):"Time not recorded",status=humanize(proposal.status||"proposed"),hasScore=proposal.score!==null&&proposal.score!==undefined&&proposal.score!=="",numericScore=Number(proposal.score),score=hasScore&&Number.isFinite(numericScore)?`${Math.round((numericScore<=1?numericScore*100:numericScore))}% score`:"No score";copy.append(el("p","",String(proposal.rationale||"No rationale was recorded for this proposal.")),el("small","",created));const meta=el("div","sleep-proposal-meta");meta.append(el("span","sleep-proposal-state",status),el("span","sleep-proposal-score",score));row.append(el("div","sleep-proposal-kind",kind),copy,meta);proposalHost.append(row);});
     }
+
+    function renderSleepProgress(runtime) {
+      const status=String(runtime.status||"idle").toLowerCase(),active=status==="starting"||status==="running",progress=Math.max(0,Math.min(100,Number(runtime.progress||0))),panel=document.getElementById("sleep-progress"),button=document.getElementById("sleep-start"),statusHost=document.getElementById("sleep-status"),steps=Array.isArray(runtime.steps)?runtime.steps:[];
+      button.disabled=active;button.textContent=active?"Sleep running…":"Start shadow Sleep";
+      panel.hidden=status==="idle";
+      if(status==="idle")return;
+      document.getElementById("sleep-progress-title").textContent=status==="completed"?"Sleep review complete":status==="failed"?"Sleep review stopped":humanize(runtime.phase||"working");
+      document.getElementById("sleep-progress-message").textContent=String(runtime.message||"Cortex is reviewing stored evidence.");
+      document.getElementById("sleep-progress-value").textContent=`${Math.round(progress)}%`;
+      document.getElementById("sleep-progress-fill").style.width=`${progress}%`;
+      const stepHost=document.getElementById("sleep-step-list");stepHost.replaceChildren();steps.slice(-5).forEach(step=>{const row=el("div","sleep-step");row.append(el("span","",humanize(step.phase||"step")),el("div","",String(step.message||"")));stepHost.append(row);});
+      if(active){statusHost.textContent=`Shadow · ${Math.round(progress)}%`;scheduleSleepPoll();}
+      else if(status==="completed")statusHost.textContent="Shadow · Completed";
+      else if(status==="failed")statusHost.textContent="Shadow · Failed";
+    }
+
+    async function startSleepSession() {
+      const button=document.getElementById("sleep-start");button.disabled=true;
+      try{const runtime=await authRequest("/api/sleep/start",{mode:"shadow"});app.data.sleep_runtime=runtime;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],runtime);showToast("Shadow Sleep started; watch the live review here.");scheduleSleepPoll();}
+      catch(error){button.disabled=false;showToast(`Could not start Sleep: ${error.message}`,true);}
+    }
+
+    function scheduleSleepPoll(){if(sleepPollTimer)return;sleepPollTimer=setTimeout(()=>{sleepPollTimer=null;pollSleepStatus();},900);}
+
+    async function pollSleepStatus(){try{const response=await fetch("/api/sleep/status",{cache:"no-store",credentials:"same-origin"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const runtime=await response.json();app.data.sleep_runtime=runtime;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],runtime);if(["starting","running"].includes(String(runtime.status)))scheduleSleepPoll();else await load(true);}catch(error){showToast(`Sleep status unavailable: ${error.message}`,true);}}
 
     function renderTools() {
       if(!app.data)return;
@@ -2341,7 +2508,7 @@
       const pages=Math.max(1,Math.ceil(rows.length/app.pageSize));app.explorerPage=Math.min(app.explorerPage,pages);const start=(app.explorerPage-1)*app.pageSize,visible=rows.slice(start,start+app.pageSize),host=document.getElementById("memory-list");host.replaceChildren();
       document.getElementById("result-count").textContent=`${formatNum(rows.length)} matching memories`;document.getElementById("page-label").textContent=`Page ${app.explorerPage} of ${pages}`;document.getElementById("page-prev").disabled=app.explorerPage<=1;document.getElementById("page-next").disabled=app.explorerPage>=pages;
       if(!visible.length){host.append(emptyState("No memories found","Try a broader phrase or remove one of the filters."));return;}
-      visible.forEach(memory=>{const row=el("div","memory-row");row.tabIndex=0;const content=el("div","memory-content");content.append(el("div","memory-title",truncate(cleanMemory(memory.content),155)),el("div","memory-source",sourceName(memory)));row.append(content,el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("div","row-date",shortDate(memory.observed_at)),scoreDots(memory.confidence),el("div","row-use",`${formatNum(memory.used_count)} uses`),el("div","row-arrow","›"));row.addEventListener("click",()=>selectMemory(memory.id));row.addEventListener("keydown",e=>{if(e.key==="Enter")selectMemory(memory.id)});host.append(row);});
+      visible.forEach(memory=>{const row=el("div","memory-row");row.tabIndex=0;const content=el("div","memory-content"),title=el("div","memory-title",truncate(cleanMemory(memory.content),320));title.title=cleanMemory(memory.content);content.append(title,el("div","memory-source",sourceName(memory)),el("div","memory-mobile-meta",`${humanize(memory.kind)} · ${shortDate(memory.observed_at)} · ${formatNum(memory.used_count)} uses · tap for full memory`));row.append(content,el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("div","row-date",shortDate(memory.observed_at)),scoreDots(memory.confidence),el("div","row-use",`${formatNum(memory.used_count)} uses`),el("div","row-arrow","›"));row.addEventListener("click",()=>selectMemory(memory.id));row.addEventListener("keydown",e=>{if(e.key==="Enter")selectMemory(memory.id)});host.append(row);});
     }
 
     async function selectMemory(id) {

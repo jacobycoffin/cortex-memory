@@ -17,7 +17,7 @@ import urllib.request
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .retrieval import MemoryRetriever
@@ -61,7 +61,42 @@ class SleepConfig:
             raise ValueError("reflection token budget must be between 0 and 100000")
 
 
-def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
+SleepProgressCallback = Callable[[dict[str, Any]], None]
+
+
+def _notify_progress(
+    callback: SleepProgressCallback | None,
+    *,
+    run_id: str,
+    phase: str,
+    progress: int,
+    message: str,
+    **details: Any,
+) -> None:
+    """Report bounded, non-sensitive progress without affecting the Sleep run."""
+
+    if callback is None:
+        return
+    try:
+        callback(
+            {
+                "run_id": run_id,
+                "phase": phase,
+                "progress": max(0, min(100, int(progress))),
+                "message": message,
+                **details,
+            }
+        )
+    except Exception:
+        # Dashboard feedback must never be able to interrupt consolidation.
+        return
+
+
+def run_sleep(
+    store: CortexStore,
+    config: SleepConfig,
+    progress_callback: SleepProgressCallback | None = None,
+) -> dict[str, Any]:
     """Run one idempotent offline replay and consolidation cycle."""
 
     run_id = str(uuid.uuid4())
@@ -75,6 +110,18 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
                ) VALUES(?,?,'running',?,?,?)""",
             (run_id, config.mode, cutoff_at, config.reflection_token_budget, started_at),
         )
+
+    _notify_progress(
+        progress_callback,
+        run_id=run_id,
+        phase="starting",
+        progress=4,
+        message=(
+            "Sleep session opened in shadow mode; memory remains unchanged."
+            if config.mode == "shadow"
+            else "Sleep session opened in apply mode; reversible safety gates are active."
+        ),
+    )
 
     report: dict[str, Any] = {
         "run_id": run_id,
@@ -98,21 +145,59 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
         "reflection_status": "disabled" if config.reflection_token_budget == 0 else "pending",
     }
     try:
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="episode_replay",
+            progress=12,
+            message="Replaying older episodes and looking for repeated evidence.",
+        )
         replay = _replay_episodes(store, run_id, config, cutoff_at)
         report.update(replay)
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="usage_replay",
+            progress=27,
+            message="Reviewing resolved memory use and task outcomes.",
+            episodes_replayed=report["episodes_replayed"],
+        )
         usage = _replay_usage(store, run_id)
         report["usage_tasks_replayed"] = usage["usage_tasks_replayed"]
         report["evidence_added"] += usage["evidence_added"]
 
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="connections",
+            progress=41,
+            message="Checking which memory connections have enough independent support.",
+        )
         associations = _propose_associations(store, run_id, config)
         report["association_proposals"] = associations["proposals"]
         report["applied_changes"] += associations["applied"]
 
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="pruning",
+            progress=55,
+            message="Looking for interference and stale connections that may need cooling.",
+            association_proposals=report["association_proposals"],
+        )
         report["interference_proposals"] = _propose_interference(store, run_id)
         decay = _propose_edge_decay(store, run_id, config)
         report["edge_decay_proposals"] = decay["proposals"]
         report["applied_changes"] += decay["applied"]
 
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="lifecycle",
+            progress=68,
+            message="Previewing which low-value memories could cool or archive safely.",
+            edge_decay_proposals=report["edge_decay_proposals"],
+        )
         lifecycle = store.maintenance(
             dry_run=True,
             cold_after_days=config.cold_after_days,
@@ -128,6 +213,14 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
         if config.mode == "apply":
             report["applied_changes"] += _apply_lifecycle(store, run_id, lifecycle)
 
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="consolidation",
+            progress=79,
+            message="Checking for near-duplicates that could sit behind one canonical memory.",
+            lifecycle_candidates=report["lifecycle_candidates"],
+        )
         consolidation = store.consolidate(dry_run=True)
         report["consolidation_candidates"] = int(consolidation["member_count"])
         _record_consolidation_proposals(store, run_id, consolidation)
@@ -136,6 +229,14 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
         report["dependency_candidates"] = int(dependencies["count"])
         _record_dependency_proposals(store, run_id, dependencies)
 
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="finalizing",
+            progress=92,
+            message="Writing the review report and organizing proposals for inspection.",
+            consolidation_candidates=report["consolidation_candidates"],
+        )
         try:
             reflection = _run_reflection(store, run_id, config)
         except Exception as error:
@@ -152,6 +253,18 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
         report.update(reflection)
         report["status"] = "completed"
         _finish_run(store, run_id, report)
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="completed",
+            progress=100,
+            message=(
+                "Sleep review complete. Proposals are ready; no memory was changed."
+                if config.mode == "shadow"
+                else "Sleep apply cycle complete. Applied changes remain auditable and reversible."
+            ),
+            report=report,
+        )
         return report
     except Exception as error:
         # Do not persist episode text, provider response bodies, or credentials in
@@ -160,6 +273,14 @@ def run_sleep(store: CortexStore, config: SleepConfig) -> dict[str, Any]:
         safe_error = normalize_text(str(error))[:300] or error.__class__.__name__
         report.update({"status": "failed", "error": safe_error})
         _finish_run(store, run_id, report)
+        _notify_progress(
+            progress_callback,
+            run_id=run_id,
+            phase="failed",
+            progress=100,
+            message="Sleep stopped before the review completed.",
+            error=safe_error,
+        )
         raise
 
 

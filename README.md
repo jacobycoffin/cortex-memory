@@ -144,14 +144,15 @@ cortex-memory --db ./cortex.db dashboard --no-open --port 8765
 
 For the Hermes plugin database, use `PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex dashboard --no-open --port 8765`.
 
-Open `http://127.0.0.1:8765`. The dashboard is read-only by default and includes:
+Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind explicit review controls. Its built-in Sleep action is shadow-only: it writes an audit report and proposals, but does not change memories, links, or lifecycle state. The dashboard includes:
 
 - a draggable 2D physics map and orbitable 3D constellation;
-- timeline, source, use-through, and tool-learning insights;
+- timeline, source, use-through, tool-learning insights, and daily trends for memories, connections, lifecycle pruning, and tool calls;
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
-- a Cortex Sleep view for offline replay, maintenance proposals, safety mode, and optional reflection-token use;
+- a Cortex Sleep view with an authenticated start control, live phase feedback, offline replay, maintenance proposals, and safety status;
 - plain-language health guidance, an inspectable memory index, and a one-decision-at-a-time reviewer for conflicts and unsupported inferences;
-- twelve characterful themes with responsive text wrapping and saved browser preference.
+- a tablet/PWA navigation layout with visible tab names and a readable card-style memory index;
+- a clickable memory-type guide plus a dedicated Settings view for themes and account controls.
 
 For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
 
@@ -205,7 +206,7 @@ The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created 
 - suspicious instruction-like memories are quarantined;
 - likely secrets are redacted before storage;
 - tool workflow guidance stores argument **keys**, not argument values;
-- the dashboard exposes no write endpoint.
+- the dashboard exposes no direct memory-write or hard-delete endpoint; authenticated dashboard Sleep is fixed to deterministic shadow mode and can write only its report, evidence, and review proposals.
 
 Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or importing a vault.
 

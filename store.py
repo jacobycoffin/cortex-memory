@@ -2222,6 +2222,24 @@ class CortexStore:
                 """SELECT substr(created_at,1,10) day,event,COUNT(*) count
                    FROM access_log GROUP BY day,event ORDER BY day DESC LIMIT 500"""
             ).fetchall()
+            memory_trend_rows = self._conn.execute(
+                """SELECT substr(created_at,1,10) day,COUNT(*) count
+                   FROM memories GROUP BY day ORDER BY day DESC LIMIT 365"""
+            ).fetchall()
+            connection_trend_rows = self._conn.execute(
+                """SELECT substr(created_at,1,10) day,COUNT(*) count
+                   FROM edges GROUP BY day ORDER BY day DESC LIMIT 365"""
+            ).fetchall()
+            prune_trend_rows = self._conn.execute(
+                """SELECT substr(created_at,1,10) day,COUNT(*) count
+                   FROM lifecycle_events
+                   WHERE to_state IN ('cold','archived','tombstoned')
+                   GROUP BY day ORDER BY day DESC LIMIT 365"""
+            ).fetchall()
+            tool_trend_rows = self._conn.execute(
+                """SELECT substr(created_at,1,10) day,COUNT(*) count
+                   FROM tool_executions GROUP BY day ORDER BY day DESC LIMIT 365"""
+            ).fetchall()
             usage_rows = self._conn.execute(
                 "SELECT outcome,COUNT(*) count FROM usage_records GROUP BY outcome"
             ).fetchall()
@@ -2337,6 +2355,27 @@ class CortexStore:
             ).fetchall()
         prepare_samples = sorted(float(row["prepare_ms"]) for row in recall_rows)
         token_samples = sorted(int(row["estimated_tokens"]) for row in recall_rows)
+        trend_days: dict[str, dict[str, Any]] = {}
+        for field, rows in (
+            ("memories_made", memory_trend_rows),
+            ("connections_made", connection_trend_rows),
+            ("memories_pruned", prune_trend_rows),
+            ("tool_calls", tool_trend_rows),
+        ):
+            for row in rows:
+                day = str(row["day"] or "")
+                if not day:
+                    continue
+                trend_days.setdefault(
+                    day,
+                    {
+                        "day": day,
+                        "memories_made": 0,
+                        "connections_made": 0,
+                        "memories_pruned": 0,
+                        "tool_calls": 0,
+                    },
+                )[field] = int(row["count"])
         return {
             "generated_at": utc_now(),
             "stats": self.stats(),
@@ -2347,6 +2386,7 @@ class CortexStore:
             "sources": [dict(row) for row in source_rows],
             "recent_access": [dict(row) for row in recent_access_rows],
             "access_by_day": [dict(row) for row in access_rows],
+            "activity_trends": [trend_days[day] for day in sorted(trend_days)],
             "usage_outcomes": {str(row["outcome"]): int(row["count"]) for row in usage_rows},
             "recall_runs": [dict(row) for row in recall_rows],
             "recall_modes": [dict(row) for row in recall_mode_rows],

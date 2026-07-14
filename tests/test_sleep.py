@@ -206,6 +206,22 @@ class CortexSleepTests(unittest.TestCase):
         self.assertEqual(report["reflection_status"], "disabled")
         self.assertEqual(report["reflection_estimated_tokens"], 0)
 
+    def test_progress_callback_reports_bounded_review_phases(self) -> None:
+        updates: list[dict[str, object]] = []
+        report = run_sleep(
+            self.store,
+            SleepConfig(mode="shadow", reflection_token_budget=0),
+            progress_callback=updates.append,
+        )
+
+        self.assertEqual(report["status"], "completed")
+        self.assertEqual(updates[0]["phase"], "starting")
+        self.assertEqual(updates[-1]["phase"], "completed")
+        self.assertEqual(updates[-1]["progress"], 100)
+        self.assertIn("connections", {update["phase"] for update in updates})
+        self.assertIn("pruning", {update["phase"] for update in updates})
+        self.assertTrue(all(0 <= int(update["progress"]) <= 100 for update in updates))
+
     def test_provider_failure_does_not_discard_deterministic_sleep(self) -> None:
         first, second = self._memory_pair()
         self._two_helpful_witnesses((first, second))

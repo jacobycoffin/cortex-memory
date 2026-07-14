@@ -78,7 +78,7 @@ HERMES_HOME="$HOME/.hermes" PORT=8100 ./scripts/install_dashboard_service.sh
 systemctl --user start cortex-dashboard
 ```
 
-The installer prints a one-time password. At first sign-in the dashboard requires a new password of at least 12 characters. Use the **Account** control in the top bar to change it again or sign out.
+The installer prints a one-time password. At first sign-in the dashboard requires a new password of at least 12 characters. Open **Settings → Account & security** to change it again or sign out.
 
 If the password is lost, reset it from the host and restart the service:
 
@@ -97,7 +97,7 @@ Place Caddy, Nginx, or Cloudflare Tunnel in front of `127.0.0.1:8100`; do not bi
 4. Correct it and confirm the old version remains.
 5. Run two related tool tasks and inspect the Tool notes and Cognition pages.
 6. Run the audit.
-7. Run one shadow Sleep cycle and inspect its proposal counts in Cognition.
+7. Start one shadow Sleep cycle from Cognition, watch its phase feedback, and inspect the resulting proposal counts.
 
 ```bash
 PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex audit

@@ -16,7 +16,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from .dashboard_auth import DashboardAuth, SESSION_COOKIE
-from .store import CortexStore
+from .sleep import SleepConfig, run_sleep
+from .store import CortexStore, utc_now
 
 
 def _basic_auth_valid(header: str | None, username: str, password: str) -> bool:
@@ -75,6 +76,84 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     }
     failed_logins: dict[str, list[float]] = {}
     failed_logins_lock = threading.RLock()
+    sleep_lock = threading.RLock()
+    sleep_runtime: dict[str, object] = {
+        "status": "idle",
+        "phase": "waiting",
+        "progress": 0,
+        "message": "Ready for a user-started shadow review.",
+        "started_at": None,
+        "completed_at": None,
+        "run_id": None,
+        "steps": [],
+        "report": None,
+        "error": None,
+    }
+    sleep_job: dict[str, threading.Thread | None] = {"thread": None}
+
+    def sleep_status() -> dict[str, object]:
+        with sleep_lock:
+            return json.loads(json.dumps(sleep_runtime, default=str))
+
+    def sleep_progress(update: dict[str, object]) -> None:
+        phase = str(update.get("phase") or "working")
+        with sleep_lock:
+            sleep_runtime.update(
+                {
+                    "status": "failed" if phase == "failed" else "completed" if phase == "completed" else "running",
+                    "phase": phase,
+                    "progress": int(update.get("progress") or 0),
+                    "message": str(update.get("message") or "Sleep review is running."),
+                    "run_id": update.get("run_id") or sleep_runtime.get("run_id"),
+                }
+            )
+            steps = sleep_runtime.setdefault("steps", [])
+            if isinstance(steps, list) and (not steps or steps[-1].get("phase") != phase):
+                steps.append(
+                    {
+                        "phase": phase,
+                        "progress": int(update.get("progress") or 0),
+                        "message": str(update.get("message") or ""),
+                        "at": utc_now(),
+                    }
+                )
+                del steps[:-8]
+            if update.get("report") is not None:
+                sleep_runtime["report"] = update["report"]
+            if update.get("error") is not None:
+                sleep_runtime["error"] = str(update["error"])
+
+    def run_dashboard_sleep() -> None:
+        try:
+            report = run_sleep(
+                store,
+                SleepConfig(mode="shadow", reflection_token_budget=0),
+                progress_callback=sleep_progress,
+            )
+            with sleep_lock:
+                sleep_runtime.update(
+                    {
+                        "status": "completed",
+                        "phase": "completed",
+                        "progress": 100,
+                        "message": "Sleep review complete. Proposals are ready; no memory was changed.",
+                        "completed_at": utc_now(),
+                        "run_id": report.get("run_id"),
+                        "report": report,
+                    }
+                )
+        except Exception as error:
+            with sleep_lock:
+                sleep_runtime.update(
+                    {
+                        "status": "failed",
+                        "phase": "failed",
+                        "progress": 100,
+                        "message": "Sleep stopped before the review completed.",
+                        "completed_at": utc_now(),
+                        "error": str(error)[:300],
+                    }
+                )
 
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
@@ -89,7 +168,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/status":
                 self._headers_only(HTTPStatus.OK, "application/json; charset=utf-8", 0)
                 return
-            if parsed.path in {"/api/snapshot", "/api/memory"}:
+            if parsed.path in {"/api/snapshot", "/api/memory", "/api/sleep/status"}:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
                 else:
@@ -123,7 +202,11 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/snapshot":
                 snapshot = store.dashboard_snapshot()
                 snapshot["review_writes_enabled"] = reviews_enabled
+                snapshot["sleep_runtime"] = sleep_status()
                 self._json(HTTPStatus.OK, snapshot)
+                return
+            if parsed.path == "/api/sleep/status":
+                self._json(HTTPStatus.OK, sleep_status())
                 return
             if parsed.path == "/api/memory":
                 raw_id = parse_qs(parsed.query).get("id", [""])[0]
@@ -143,6 +226,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/auth/logout",
                 "/api/review/conflict",
                 "/api/review/inference",
+                "/api/sleep/start",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -153,13 +237,17 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/login":
                 self._login()
                 return
-            if not self._require_auth(complete=parsed.path.startswith("/api/review/")):
+            needs_complete_auth = parsed.path.startswith("/api/review/") or parsed.path == "/api/sleep/start"
+            if not self._require_auth(complete=needs_complete_auth):
                 return
             if parsed.path == "/api/auth/logout":
                 self._json(HTTPStatus.OK, {"success": True}, set_cookie=self._expired_cookie())
                 return
             if parsed.path == "/api/auth/change-password":
                 self._change_password()
+                return
+            if parsed.path == "/api/sleep/start":
+                self._start_sleep()
                 return
             if not reviews_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
@@ -186,6 +274,36 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._json(HTTPStatus.CONFLICT, {"error": "This review item is no longer active. Refresh and try again."})
                 return
             self._json(HTTPStatus.OK, {"success": True})
+
+        def _start_sleep(self) -> None:
+            payload = self._read_json()
+            if payload is None:
+                return
+            if str(payload.get("mode") or "shadow").casefold() != "shadow":
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "dashboard Sleep sessions are shadow-only"})
+                return
+            with sleep_lock:
+                if sleep_runtime.get("status") in {"starting", "running"}:
+                    self._json(HTTPStatus.CONFLICT, {"error": "a Sleep session is already running"})
+                    return
+                sleep_runtime.update(
+                    {
+                        "status": "starting",
+                        "phase": "starting",
+                        "progress": 1,
+                        "message": "Opening a bounded shadow review.",
+                        "started_at": utc_now(),
+                        "completed_at": None,
+                        "run_id": None,
+                        "steps": [],
+                        "report": None,
+                        "error": None,
+                    }
+                )
+                worker = threading.Thread(target=run_dashboard_sleep, name="cortex-dashboard-sleep", daemon=True)
+                sleep_job["thread"] = worker
+                worker.start()
+            self._json(HTTPStatus.ACCEPTED, sleep_status())
 
         def _login(self) -> None:
             if not auth_enabled:
@@ -350,4 +468,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         pass
     finally:
         server.server_close()
+        worker = sleep_job.get("thread")
+        if worker and worker.is_alive():
+            worker.join()
         store.close()

@@ -109,6 +109,8 @@ CORTEX_DASHBOARD_REVIEWS=1
 
 Restart the service after changing the environment. These controls require an explicit browser confirmation, preserve prior memory versions and lifecycle history, and write audit records. They never hard-delete a memory. Leave the variable absent or set it to `0` if the site should remain observational only.
 
+The Cognition page also offers an authenticated **Start shadow Sleep** action. It is intentionally not controlled by `CORTEX_DASHBOARD_REVIEWS`: the dashboard endpoint always forces `mode=shadow`, disables provider reflection, rejects a second concurrent run, and shows phase-by-phase progress. A dashboard-started cycle may record replay evidence, its run report, and review proposals, but it cannot apply memory, connection, or lifecycle changes.
+
 ## 6. Verify the boundary
 
 The sign-in page itself is public, but the memory data must not be:
