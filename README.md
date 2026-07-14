@@ -151,7 +151,7 @@ Open `http://127.0.0.1:8765`. The dashboard is read-only by default and includes
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
 - a Cortex Sleep view for offline replay, maintenance proposals, safety mode, and optional reflection-token use;
 - plain-language health guidance, an inspectable memory index, and a one-decision-at-a-time reviewer for conflicts and unsupported inferences;
-- six characterful themes with responsive text wrapping.
+- twelve characterful themes with responsive text wrapping and saved browser preference.
 
 For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
 

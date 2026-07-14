@@ -123,6 +123,19 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("/api/review/conflict", html)
         self.assertIn("/api/review/inference", html)
 
+    def test_dashboard_theme_catalog_stays_complete(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        themes = {
+            "field", "ink", "dusk", "tide", "moss", "mono",
+            "midnight", "ember", "orchid", "glacier", "sepia", "terminal",
+        }
+        self.assertEqual(html.count('class="theme-option"'), len(themes))
+        for theme in themes:
+            self.assertIn(f'data-theme-choice="{theme}"', html)
+            self.assertIn(f'html[data-theme="{theme}"]', html)
+        self.assertIn('localStorage.setItem("cortex-theme", theme)', html)
+        self.assertIn('Choose a palette · 12', html)
+
     def test_dashboard_has_a_complete_favicon_set(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
         self.assertIn('rel="icon" href="/favicon.svg" type="image/svg+xml"', html)
