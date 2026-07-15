@@ -25,6 +25,9 @@
 - added schema 13 pre-storage durability/duplicate/contradiction/comprehensibility decisions plus reversible project/task-specific usefulness adaptation;
 - added schema 14 evidence-bearing graph links, explainable-link migration, source-aware storage quality flags, and a dashboard hygiene queue;
 - added schema 15 typed operator-review decisions and a unified, reversible Review Inbox for cleanup, connection, conflict, claim, and real-answer training;
+- added schema 16 policy candidates, evidence replay, new-review shadow gates, explicit scoped/core promotion, active policy versions, and rollback;
+- added a guided Train Kaya dashboard path with five progress stages, next-action guidance, inspectable proposed standards, and active-policy monitoring;
+- wired promoted operator policies into bounded automatic-write admission, Sleep connection witnesses, retrieval ranking, and lifecycle retention without allowing code self-modification or bypassing existing safety gates;
 - stopped promoting raw tool executions and aggregate telemetry into recallable memory while preserving the dedicated tool execution, statistics, and workflow ledgers;
 - made vault section revisions and file restoration reuse stable memory IDs with version history instead of producing repeated archived clones;
 - tightened reversible hygiene rules so lack of retrieval never prunes a memory, substantive TODO/TBD notes are preserved, and only deterministic telemetry/placeholder/status noise is staged;

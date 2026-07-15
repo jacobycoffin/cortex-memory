@@ -78,6 +78,15 @@ class DashboardInterfaceTests(unittest.TestCase):
             "review-focus",
             "review-learning-signals",
             "review-history-list",
+            "training-progress-value",
+            "training-progress-track",
+            "training-steps",
+            "training-next-action",
+            "policy-lab-heading",
+            "policy-compile",
+            "policy-candidate-list",
+            "active-policy-list",
+            "active-policy-total",
             "recall-funnel",
             "view-cognition",
             "cognition-metrics",
@@ -237,6 +246,12 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("/api/review/proposal", html)
         self.assertIn("/api/review/undo", html)
         self.assertIn("function renderReviewInbox", html)
+        self.assertIn("function renderPolicyTraining", html)
+        self.assertIn("function runPolicyAction", html)
+        self.assertIn("/api/policy/action", html)
+        self.assertIn("Teach the examples. Approve the standard.", html)
+        self.assertIn("Proposed standards", html)
+        self.assertIn("Active policy versions", html)
         self.assertIn("What each decision will do", html)
         self.assertIn("What Cortex is learning from you", html)
         self.assertIn("function renderLearning", html)
@@ -297,6 +312,9 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('path == "/api/sleep/trial/start"', server)
         self.assertIn('path == "/api/summary/review"', server)
         self.assertIn('path == "/api/prospective/create"', server)
+        self.assertIn('parsed.path == "/api/policy/action"', server)
+        self.assertIn("promote_policy_candidate", server)
+        self.assertIn("rollback_policy_version", server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 

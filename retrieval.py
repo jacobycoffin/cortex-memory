@@ -449,6 +449,15 @@ class MemoryRetriever:
             score -= 0.03
         if memory["state"] == "archived":
             score -= 0.10
+        operator_policy = self.store.active_policy_adjustment(
+            "retrieval",
+            {
+                "kind": str(memory.get("kind") or "semantic"),
+                "source_type": str(memory.get("source_type") or "conversation"),
+                "source_category": str(memory.get("source_category") or "AGENT_INFERENCE"),
+            },
+        )
+        score += float(operator_policy.get("score_adjustment") or 0.0)
         if context_components["context_gate"] < 1.0:
             score = min(score, 0.01)
 
@@ -472,6 +481,7 @@ class MemoryRetriever:
             "wrong_rate": min(1.0, wrong_rate),
             "superseded": float(superseded),
             "contradiction_risk": float(contradicted),
+            "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "context_candidate": min(1.0, float(memory.get("context_candidate_score", 0.0)) / 4.0),
             "context_historical_usefulness": float(context_feedback["usefulness"]),
             "context_feedback_observations": min(

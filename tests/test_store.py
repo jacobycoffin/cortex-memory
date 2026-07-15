@@ -140,6 +140,93 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIsNone(versions[-1]["system_to"])
         self.assertIsNotNone(next(row for row in versions if row["state"] == "tombstoned")["system_to"])
 
+    def test_operator_reviews_compile_test_promote_and_rollback_a_policy(self) -> None:
+        memory_ids = []
+        for index in range(8):
+            memory_id, _ = self.store.add_memory(
+                f"Cortex training example {index} preserves a verified project preference.",
+                kind="semantic",
+                source_type="conversation",
+                source_category="AGENT_INFERENCE",
+                source_ref=f"training-context-{index}",
+            )
+            memory_ids.append(memory_id)
+
+        for index, memory_id in enumerate(memory_ids[:5]):
+            self.store.record_operator_review(
+                item_type="outcome",
+                item_key=f"outcome:training-{index}",
+                action="helpful",
+                reason_code="memory_helped",
+                actor="test-operator",
+                src_id=memory_id,
+            )
+
+        training = self.store.policy_training_snapshot()
+        candidate = next(
+            row
+            for row in training["candidates"]
+            if row["domain"] == "retrieval" and row["direction"] == "boost"
+        )
+        self.assertEqual(candidate["stage"], "replay_ready")
+        self.assertEqual(candidate["support_count"], 5)
+        self.assertEqual(candidate["consistency"], 1.0)
+        self.assertEqual(
+            self.store.active_policy_adjustment(
+                "retrieval", {"kind": "semantic", "source_category": "AGENT_INFERENCE"}
+            )["score_adjustment"],
+            0.0,
+        )
+
+        replay = self.store.evaluate_policy_candidate(candidate["candidate_id"], actor="test-operator")
+        self.assertTrue(replay["passed"])
+        self.store.start_policy_shadow(candidate["candidate_id"], actor="test-operator")
+        for index, memory_id in enumerate(memory_ids[5:], 5):
+            self.store.record_operator_review(
+                item_type="outcome",
+                item_key=f"outcome:training-{index}",
+                action="helpful",
+                reason_code="memory_helped",
+                actor="test-operator",
+                src_id=memory_id,
+            )
+
+        candidate = next(
+            row
+            for row in self.store.policy_training_snapshot()["candidates"]
+            if row["candidate_id"] == candidate["candidate_id"]
+        )
+        self.assertEqual(candidate["stage"], "ready")
+        self.assertEqual(candidate["shadow"]["observation_count"], 3)
+        revision_before_promotion = self.store.retrieval_revision()
+        version = self.store.promote_policy_candidate(
+            candidate["candidate_id"], activation_scope="scoped", actor="test-operator"
+        )
+        self.assertNotEqual(self.store.retrieval_revision(), revision_before_promotion)
+        adjustment = self.store.active_policy_adjustment(
+            "retrieval", {"kind": "semantic", "source_category": "AGENT_INFERENCE"}
+        )
+        self.assertAlmostEqual(adjustment["score_adjustment"], 0.035)
+        self.assertIn(version["version_id"], adjustment["matched_versions"])
+
+        result = MemoryRetriever(self.store, threshold=0.0).search(
+            "verified project preference", limit=1
+        )[0]
+        self.assertAlmostEqual(result.components["operator_policy"], 0.035)
+        revision_before_rollback = self.store.retrieval_revision()
+        self.assertTrue(
+            self.store.rollback_policy_version(
+                version["version_id"], reason="test rollback", actor="test-operator"
+            )
+        )
+        self.assertNotEqual(self.store.retrieval_revision(), revision_before_rollback)
+        self.assertEqual(
+            self.store.active_policy_adjustment(
+                "retrieval", {"kind": "semantic", "source_category": "AGENT_INFERENCE"}
+            )["score_adjustment"],
+            0.0,
+        )
+
     def test_sqlite_bm25_more_negative_rank_is_more_relevant(self) -> None:
         self.assertGreater(_fts_relevance(-5.0), _fts_relevance(-0.01))
         self.assertGreater(_fts_relevance(-1.0), _fts_relevance(8.0))
@@ -937,6 +1024,9 @@ class CortexStoreTests(unittest.TestCase):
             self.assertIn("memory_write_decisions", tables)
             self.assertIn("memory_context_outcomes", tables)
             self.assertIn("memory_context_terms", tables)
+            self.assertIn("policy_candidates", tables)
+            self.assertIn("policy_versions", tables)
+            self.assertIn("policy_events", tables)
             context_terms = migrated._conn.execute(
                 "SELECT term_type,term_value FROM memory_context_terms WHERE memory_id='legacy-id'"
             ).fetchall()

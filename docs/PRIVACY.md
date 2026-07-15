@@ -35,6 +35,8 @@ Memory decision traces are intentionally more sensitive. They keep the task goal
 
 Operator review decisions may contain an optional free-text explanation in addition to the typed reason, affected memory IDs, before-state, and applied effect. They remain in the local database and authenticated dashboard. Connection approval stores the operator decision as link evidence. Trash is a reversible tombstone, not content erasure; use a separately reviewed database-retention process if permanent deletion is legally or operationally required.
 
+Policy candidates and versions store selectors, bounded adjustments, counts, review IDs, context keys, replay summaries, shadow progress, actor names, and lifecycle timestamps. They do not duplicate memory text, but selectors and context keys can still reveal source categories, projects, systems, or source-reference prefixes. This is private behavioral metadata. It remains in the Cortex database and authenticated dashboard, is included in normal backups, and must not be published as a sanitized evaluation report. Promotion and rollback preserve their complete event history.
+
 Applicability metadata can reveal project names, entities, operating state, and versions even when the memory text is not shown. `memory_write_decisions` stores candidate hashes and decision reasons; `memory_context_outcomes` stores task/memory IDs, normalized stable context, attributed use, and outcome. The quality and context-feedback reports are local operational reports, not privacy-sanitized publication artifacts.
 
 ## Operator responsibilities

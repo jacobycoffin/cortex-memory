@@ -556,6 +556,23 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
     for row in rows:
         src_id, dst_id = str(row["src_id"]), str(row["dst_id"])
         evidence_count = int(row["evidence_count"])
+        src_memory = store.get_memory(src_id) or {}
+        dst_memory = store.get_memory(dst_id) or {}
+        kinds = sorted(
+            [
+                str(src_memory.get("kind") or "semantic"),
+                str(dst_memory.get("kind") or "semantic"),
+            ]
+        )
+        connection_policy = store.active_policy_adjustment(
+            "connection",
+            {"proposal_kind": "association", "src_kind": kinds[0], "dst_kind": kinds[1]},
+        )
+        required_witnesses = config.min_association_witnesses + int(
+            connection_policy.get("min_independent_witnesses_delta") or 0
+        )
+        if int(row["witnesses"]) < required_witnesses:
+            continue
         with store._lock:
             prior_applied = store._conn.execute(
                 """SELECT MAX(evidence_count) n FROM sleep_proposals
@@ -582,7 +599,13 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
         kind = "association_reinforcement" if existing else "association"
         rationale = (
             f"The pair co-occurred in {int(row['witnesses'])} independent replay witnesses; "
-            "review or reinforce only because multiple observations agree."
+            f"the active threshold for this pattern is {required_witnesses}. "
+            "Review or reinforce only because multiple observations agree."
+            + (
+                " An operator-trained connection policy raised this evidence requirement."
+                if connection_policy.get("matched_versions")
+                else ""
+            )
         )
         proposal_id = _insert_proposal(
             store,
@@ -594,7 +617,11 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
             evidence_count=evidence_count,
             rationale=rationale,
             status="proposed",
-            details={"distinct_witnesses": int(row["witnesses"])},
+            details={
+                "distinct_witnesses": int(row["witnesses"]),
+                "required_witnesses": required_witnesses,
+                "operator_policy_versions": connection_policy.get("matched_versions", []),
+            },
         )
         proposed += 1
         if config.mode == "apply":

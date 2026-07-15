@@ -18,7 +18,12 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
+POLICY_MIN_SUPPORT = 5
+POLICY_MIN_CONSISTENCY = 0.80
+POLICY_SHADOW_MIN_OBSERVATIONS = 3
+POLICY_CORE_MIN_SUPPORT = 15
+POLICY_CORE_MIN_CONTEXTS = 3
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _UNRESOLVED_REFERENCE = re.compile(
     r"^\s*(?:this|that|it|they|he|she|those|these)\b|"
@@ -132,6 +137,7 @@ class CortexStore:
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
         self._conn.row_factory = sqlite3.Row
         self._local_retrieval_revision = 0
+        self._active_policy_cache: list[dict[str, Any]] | None = None
         self._conn.create_function("cortex_bump_revision", 0, self._bump_local_retrieval_revision)
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
@@ -781,6 +787,62 @@ class CortexStore:
             CREATE INDEX IF NOT EXISTS idx_operator_review_item
               ON operator_review_decisions(item_type,item_key,created_at DESC);
 
+            CREATE TABLE IF NOT EXISTS policy_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                signal_key TEXT NOT NULL UNIQUE,
+                domain TEXT NOT NULL,
+                title TEXT NOT NULL,
+                explanation TEXT NOT NULL,
+                selector_json TEXT NOT NULL DEFAULT '{}',
+                change_json TEXT NOT NULL DEFAULT '{}',
+                direction TEXT NOT NULL,
+                support_count INTEGER NOT NULL DEFAULT 0,
+                oppose_count INTEGER NOT NULL DEFAULT 0,
+                context_count INTEGER NOT NULL DEFAULT 0,
+                consistency REAL NOT NULL DEFAULT 0.0,
+                stage TEXT NOT NULL DEFAULT 'collecting',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                replay_json TEXT NOT NULL DEFAULT '{}',
+                shadow_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                decided_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_policy_candidates_stage
+              ON policy_candidates(stage,updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_policy_candidates_domain
+              ON policy_candidates(domain,updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS policy_versions (
+                version_id TEXT PRIMARY KEY,
+                candidate_id TEXT NOT NULL REFERENCES policy_candidates(candidate_id) ON DELETE RESTRICT,
+                domain TEXT NOT NULL,
+                activation_scope TEXT NOT NULL,
+                selector_json TEXT NOT NULL DEFAULT '{}',
+                change_json TEXT NOT NULL DEFAULT '{}',
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL DEFAULT 'active',
+                activated_by TEXT NOT NULL,
+                activated_at TEXT NOT NULL,
+                deactivated_at TEXT,
+                deactivated_by TEXT,
+                rollback_reason TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_policy_versions_active
+              ON policy_versions(status,domain,activated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS policy_events (
+                event_id TEXT PRIMARY KEY,
+                candidate_id TEXT REFERENCES policy_candidates(candidate_id) ON DELETE SET NULL,
+                version_id TEXT REFERENCES policy_versions(version_id) ON DELETE SET NULL,
+                event_type TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}',
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_policy_events_created
+              ON policy_events(created_at DESC);
+
             CREATE TABLE IF NOT EXISTS sleep_edge_changes (
                 change_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 run_id TEXT NOT NULL REFERENCES sleep_runs(run_id) ON DELETE CASCADE,
@@ -1009,6 +1071,7 @@ class CortexStore:
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
             (str(SCHEMA_VERSION),),
         )
+        self._compile_policy_candidates_tx(self._conn)
         self._conn.commit()
 
     def _bump_local_retrieval_revision(self) -> int:
@@ -1532,6 +1595,8 @@ class CortexStore:
                     and _periods_overlap(valid_from, valid_to, row["valid_from"], row["valid_to"])
                 ]
         duplicate_id = str(duplicate["id"]) if duplicate else None
+        if duplicate_id and "duplicate_candidate" not in quality_flags:
+            quality_flags.append("duplicate_candidate")
         decision = "updated" if duplicate_id else "created"
         reason = (
             "exact candidate in the same context should update the existing memory"
@@ -1568,6 +1633,21 @@ class CortexStore:
             reason = "context-dependent candidate lacks enough explicit scope metadata"
         elif contradictions:
             reason = "candidate may contradict active structured evidence and requires review"
+        policy_effect = self.active_policy_adjustment(
+            "admission",
+            {
+                "kind": kind,
+                "source_type": source_type_value,
+                "source_category": source_category_value,
+                "quality_flags": quality_flags,
+            },
+        )
+        if automatic and policy_effect.get("automatic_action") == "ignore":
+            decision = "ignored"
+            reason = (
+                "an operator-trained admission policy blocks this matching automatic write; "
+                f"policy versions: {', '.join(policy_effect['matched_versions'])}"
+            )
         return {
             "candidate_hash": digest,
             "kind": kind,
@@ -1584,6 +1664,7 @@ class CortexStore:
             "metadata_completeness": completeness,
             "decision": decision,
             "reason": reason,
+            "policy_effect": policy_effect,
         }
 
     def record_ignored_memory_candidate(
@@ -2100,8 +2181,8 @@ class CortexStore:
     def retrieval_revision(self) -> tuple[int, int]:
         """Return the durable revision used to invalidate retrieval caches.
 
-        The revision advances for material memory, association, and learned-tool
-        changes. Pure retrieval/injection counters intentionally do not advance
+        The revision advances for material memory, association, learned-tool,
+        and active operator-policy changes. Pure retrieval/injection counters intentionally do not advance
         it, so a short-lived cache can still be useful while every injection is
         recorded independently.
         """
@@ -5509,6 +5590,766 @@ class CortexStore:
             "schema_version": SCHEMA_VERSION,
         }
 
+    def _operator_policy_contributions_tx(
+        self, conn: sqlite3.Connection
+    ) -> list[dict[str, Any]]:
+        """Translate reversible operator decisions into bounded policy evidence."""
+
+        rows = conn.execute(
+            """SELECT d.*,p.kind proposal_kind
+               FROM operator_review_decisions d
+               LEFT JOIN sleep_proposals p ON p.proposal_id=d.proposal_id
+               WHERE d.reversed_at IS NULL ORDER BY d.created_at"""
+        ).fetchall()
+        prepared: list[tuple[dict[str, Any], set[str]]] = []
+        all_memory_ids: set[str] = set()
+        for row in rows:
+            item = dict(row)
+            effect = _trace_json_object(item.get("effect_json"))
+            memory_ids = {
+                str(value)
+                for value in (item.get("src_id"), item.get("dst_id"))
+                if value
+            }
+            memory_ids.update(str(value) for value in effect.get("memory_ids", []) if value)
+            all_memory_ids.update(memory_ids)
+            prepared.append((item, memory_ids))
+        memory_cache: dict[str, dict[str, Any]] = {}
+        ordered_ids = sorted(all_memory_ids)
+        for start in range(0, len(ordered_ids), 800):
+            batch = ordered_ids[start : start + 800]
+            placeholders = ",".join("?" for _ in batch)
+            for memory in conn.execute(
+                f"SELECT * FROM memories WHERE id IN ({placeholders})", tuple(batch)
+            ).fetchall():
+                memory_cache[str(memory["id"])] = dict(memory)
+        contributions: list[dict[str, Any]] = []
+        for item, memory_ids in prepared:
+            action = str(item.get("action") or "").casefold()
+            reason = str(item.get("reason_code") or "unspecified").casefold()
+            item_type = str(item.get("item_type") or "").casefold()
+            proposal_kind = str(item.get("proposal_kind") or "").casefold()
+            memories = [memory_cache[memory_id] for memory_id in sorted(memory_ids) if memory_id in memory_cache]
+
+            if proposal_kind in {"association", "association_reinforcement"} and len(memories) >= 2:
+                kinds = sorted(str(memory.get("kind") or "semantic") for memory in memories[:2])
+                selector = {
+                    "proposal_kind": "association",
+                    "src_kind": kinds[0],
+                    "dst_kind": kinds[1],
+                }
+                contributions.append(
+                    _policy_contribution(
+                        review_id=str(item["review_id"]),
+                        created_at=str(item["created_at"]),
+                        domain="connection",
+                        lever="independent_witness_requirement",
+                        selector=selector,
+                        direction="stricter" if action == "deny" else "baseline",
+                        context_key=_policy_context_key(memories[0], fallback=str(item["review_id"])),
+                        reason=reason,
+                    )
+                )
+
+            for memory in memories:
+                kind = str(memory.get("kind") or "semantic")
+                source_type = str(memory.get("source_type") or "conversation")
+                source_category = str(memory.get("source_category") or "AGENT_INFERENCE")
+                context_key = _policy_context_key(memory, fallback=str(item["review_id"]))
+
+                retrieval_direction: str | None = None
+                if item_type == "outcome":
+                    retrieval_direction = "boost" if action in {"helpful", "validated"} else "downrank"
+                elif item_type == "inference":
+                    retrieval_direction = "boost" if action == "confirm" else "downrank"
+                if retrieval_direction:
+                    contributions.append(
+                        _policy_contribution(
+                            review_id=str(item["review_id"]),
+                            created_at=str(item["created_at"]),
+                            domain="retrieval",
+                            lever="operator_rank_adjustment",
+                            selector={"kind": kind, "source_category": source_category},
+                            direction=retrieval_direction,
+                            context_key=context_key,
+                            reason=reason,
+                        )
+                    )
+
+                if item_type == "proposal" and proposal_kind not in {
+                    "association",
+                    "association_reinforcement",
+                    "edge_downscale",
+                    "interference_review",
+                }:
+                    if action in {"keep", "confirm"}:
+                        retention_direction = "preserve"
+                    elif action in {"archive", "trash", "quarantine"}:
+                        retention_direction = "cool_faster"
+                    else:
+                        retention_direction = None
+                    if retention_direction:
+                        contributions.append(
+                            _policy_contribution(
+                                review_id=str(item["review_id"]),
+                                created_at=str(item["created_at"]),
+                                domain="retention",
+                                lever="operator_retention_adjustment",
+                                selector={"kind": kind, "source_type": source_type},
+                                direction=retention_direction,
+                                context_key=context_key,
+                                reason=reason,
+                            )
+                        )
+
+                admission_flags = {
+                    "transient": "transient_automation_status",
+                    "duplicate": "duplicate_candidate",
+                    "not_durable": "low_durability",
+                    "unsupported_guess": "inferred_without_source_context",
+                }
+                quality_flag = admission_flags.get(reason)
+                if quality_flag and item_type in {"proposal", "inference"}:
+                    contributions.append(
+                        _policy_contribution(
+                            review_id=str(item["review_id"]),
+                            created_at=str(item["created_at"]),
+                            domain="admission",
+                            lever="automatic_write_gate",
+                            selector={
+                                "kind": kind,
+                                "source_type": source_type,
+                                "quality_flag": quality_flag,
+                            },
+                            direction=(
+                                "ignore"
+                                if action in {"archive", "trash", "quarantine"}
+                                else "baseline"
+                            ),
+                            context_key=context_key,
+                            reason=reason,
+                        )
+                    )
+        return contributions
+
+    def _compile_policy_candidates_tx(self, conn: sqlite3.Connection) -> dict[str, int]:
+        contributions = self._operator_policy_contributions_tx(conn)
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for item in contributions:
+            grouped.setdefault(str(item["signal_key"]), []).append(item)
+        created = 0
+        updated = 0
+        now = utc_now()
+        for signal_key, rows in grouped.items():
+            exemplar = rows[0]
+            directions: dict[str, list[dict[str, Any]]] = {}
+            for item in rows:
+                directions.setdefault(str(item["direction"]), []).append(item)
+            direction, support_rows = max(
+                directions.items(), key=lambda pair: (len({row["review_id"] for row in pair[1]}), pair[0])
+            )
+            support_ids = sorted({str(row["review_id"]) for row in support_rows})
+            opposing_rows = [row for value, items in directions.items() if value != direction for row in items]
+            oppose_ids = sorted({str(row["review_id"]) for row in opposing_rows})
+            support_count = len(support_ids)
+            oppose_count = len(oppose_ids)
+            consistency = support_count / max(1, support_count + oppose_count)
+            contexts = sorted({str(row["context_key"]) for row in support_rows})
+            domain = str(exemplar["domain"])
+            if domain in {"connection", "admission"} and direction == "baseline":
+                continue
+            selector = dict(exemplar["selector"])
+            title, explanation, change = _policy_candidate_copy(domain, direction, selector)
+            existing = conn.execute(
+                "SELECT * FROM policy_candidates WHERE signal_key=?", (signal_key,)
+            ).fetchone()
+            evidence = {
+                "supporting_review_ids": support_ids[-100:],
+                "opposing_review_ids": oppose_ids[-100:],
+                "contexts": contexts[-30:],
+                "reasons": sorted({str(row["reason"]) for row in support_rows}),
+            }
+            base_stage = (
+                "replay_ready"
+                if support_count >= POLICY_MIN_SUPPORT and consistency >= POLICY_MIN_CONSISTENCY
+                else "collecting"
+            )
+            if existing:
+                existing_stage = str(existing["stage"])
+                existing_direction = str(existing["direction"])
+                replay = _trace_json_object(existing["replay_json"])
+                shadow = _trace_json_object(existing["shadow_json"])
+                stage = existing_stage
+                if existing_direction != direction and existing_stage not in {"promoted", "rejected"}:
+                    stage, replay, shadow = base_stage, {}, {}
+                elif existing_stage in {"collecting", "replay_ready"}:
+                    stage = base_stage
+                elif existing_stage == "shadow":
+                    started_at = str(shadow.get("started_at") or "")
+                    baseline_ids = {str(value) for value in shadow.get("baseline_review_ids", [])}
+                    shadow_rows = [
+                        row
+                        for row in rows
+                        if str(row["review_id"]) not in baseline_ids
+                        and (not started_at or str(row["created_at"]) >= started_at)
+                    ]
+                    shadow_support = len(
+                        {str(row["review_id"]) for row in shadow_rows if row["direction"] == direction}
+                    )
+                    shadow_oppose = len(
+                        {str(row["review_id"]) for row in shadow_rows if row["direction"] != direction}
+                    )
+                    shadow_total = shadow_support + shadow_oppose
+                    shadow_consistency = shadow_support / max(1, shadow_total)
+                    shadow.update(
+                        {
+                            "observation_count": shadow_total,
+                            "support_count": shadow_support,
+                            "oppose_count": shadow_oppose,
+                            "consistency": round(shadow_consistency, 6),
+                            "required_observations": POLICY_SHADOW_MIN_OBSERVATIONS,
+                        }
+                    )
+                    if shadow_total >= POLICY_SHADOW_MIN_OBSERVATIONS:
+                        stage = "ready" if shadow_consistency >= POLICY_MIN_CONSISTENCY else "paused"
+                conn.execute(
+                    """UPDATE policy_candidates SET domain=?,title=?,explanation=?,selector_json=?,
+                         change_json=?,direction=?,support_count=?,oppose_count=?,context_count=?,
+                         consistency=?,stage=?,evidence_json=?,replay_json=?,shadow_json=?,updated_at=?
+                       WHERE candidate_id=?""",
+                    (
+                        domain,
+                        title,
+                        explanation,
+                        _trace_json(selector),
+                        _trace_json(change),
+                        direction,
+                        support_count,
+                        oppose_count,
+                        len(contexts),
+                        round(consistency, 6),
+                        stage,
+                        _trace_json(evidence),
+                        _trace_json(replay),
+                        _trace_json(shadow),
+                        now,
+                        existing["candidate_id"],
+                    ),
+                )
+                updated += 1
+            else:
+                candidate_id = str(uuid.uuid4())
+                conn.execute(
+                    """INSERT INTO policy_candidates(
+                       candidate_id,signal_key,domain,title,explanation,selector_json,change_json,
+                       direction,support_count,oppose_count,context_count,consistency,stage,
+                       evidence_json,replay_json,shadow_json,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        candidate_id,
+                        signal_key,
+                        domain,
+                        title,
+                        explanation,
+                        _trace_json(selector),
+                        _trace_json(change),
+                        direction,
+                        support_count,
+                        oppose_count,
+                        len(contexts),
+                        round(consistency, 6),
+                        base_stage,
+                        _trace_json(evidence),
+                        "{}",
+                        "{}",
+                        now,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """INSERT INTO policy_events(event_id,candidate_id,event_type,details_json,actor,created_at)
+                       VALUES(?,?,'compiled',?,'cortex-feedback-compiler',?)""",
+                    (
+                        str(uuid.uuid4()),
+                        candidate_id,
+                        _trace_json({"signal_key": signal_key, "support_count": support_count}),
+                        now,
+                    ),
+                )
+                created += 1
+        return {"mapped_evidence": len(contributions), "created": created, "updated": updated}
+
+    def compile_policy_candidates(self) -> dict[str, Any]:
+        with self.transaction() as conn:
+            result = self._compile_policy_candidates_tx(conn)
+        return {**result, "training": self.policy_training_snapshot()}
+
+    def evaluate_policy_candidate(
+        self, candidate_id: str, *, actor: str = "dashboard-operator"
+    ) -> dict[str, Any]:
+        """Run an inspectable ledger counterfactual before any shadow trial."""
+
+        now = utc_now()
+        with self.transaction() as conn:
+            candidate = conn.execute(
+                "SELECT * FROM policy_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if not candidate:
+                raise ValueError("policy candidate not found")
+            if int(candidate["support_count"]) < POLICY_MIN_SUPPORT:
+                raise ValueError(f"collect at least {POLICY_MIN_SUPPORT} supporting reviews first")
+            selector = _trace_json_object(candidate["selector_json"])
+            memories = [
+                dict(row)
+                for row in conn.execute("SELECT * FROM memories").fetchall()
+                if _policy_selector_matches(selector, dict(row))
+            ]
+            if str(candidate["domain"]) == "admission":
+                matched_writes = []
+                for row in conn.execute("SELECT * FROM memory_write_decisions").fetchall():
+                    write = dict(row)
+                    write["quality_flags"] = _trace_json_array(write.get("quality_flags_json"))
+                    if _policy_selector_matches(selector, write):
+                        matched_writes.append(write)
+                matched_memory_ids = {
+                    str(row["memory_id"]) for row in matched_writes if row.get("memory_id")
+                }
+                memories = [
+                    dict(row)
+                    for row in conn.execute("SELECT * FROM memories").fetchall()
+                    if str(row["id"]) in matched_memory_ids
+                ]
+            positive = sum(
+                int(row.get("helpful_count", 0)) + int(row.get("validated_count", 0))
+                for row in memories
+            )
+            negative = sum(
+                int(row.get("harmful_count", 0))
+                + int(row.get("correction_count", 0))
+                + int(row.get("false_positive_count", 0))
+                for row in memories
+            )
+            consistency = float(candidate["consistency"])
+            passed = consistency >= POLICY_MIN_CONSISTENCY
+            projected = len(matched_writes) if str(candidate["domain"]) == "admission" else len(memories)
+            domain = str(candidate["domain"])
+            if domain == "connection":
+                projected = int(candidate["support_count"])
+            replay = {
+                "method": "operator_evidence_counterfactual_v1",
+                "passed": passed,
+                "evaluated_at": now,
+                "affected_records": projected,
+                "historical_positive_outcomes": positive,
+                "historical_negative_outcomes": negative,
+                "support_count": int(candidate["support_count"]),
+                "oppose_count": int(candidate["oppose_count"]),
+                "consistency": consistency,
+                "summary": (
+                    f"The proposed {domain} standard agrees with "
+                    f"{consistency:.0%} of matching operator evidence across {projected} affected records."
+                ),
+                "claim_boundary": (
+                    "This replays stored decisions and outcomes. It does not prove whole-answer accuracy; "
+                    "new reviews must still agree during a shadow trial."
+                ),
+            }
+            next_stage = "shadow_ready" if passed else "collecting"
+            conn.execute(
+                "UPDATE policy_candidates SET replay_json=?,stage=?,updated_at=? WHERE candidate_id=?",
+                (_trace_json(replay), next_stage, now, candidate_id),
+            )
+            conn.execute(
+                """INSERT INTO policy_events(event_id,candidate_id,event_type,details_json,actor,created_at)
+                   VALUES(?,?,'replayed',?,?,?)""",
+                (str(uuid.uuid4()), candidate_id, _trace_json(replay), normalize_text(actor)[:80], now),
+            )
+        return replay
+
+    def start_policy_shadow(
+        self, candidate_id: str, *, actor: str = "dashboard-operator"
+    ) -> dict[str, Any]:
+        now = utc_now()
+        shadow = {
+            "started_at": now,
+            "baseline_review_ids": [],
+            "observation_count": 0,
+            "support_count": 0,
+            "oppose_count": 0,
+            "consistency": 0.0,
+            "required_observations": POLICY_SHADOW_MIN_OBSERVATIONS,
+        }
+        with self.transaction() as conn:
+            candidate = conn.execute(
+                "SELECT stage FROM policy_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if not candidate or str(candidate["stage"]) != "shadow_ready":
+                raise ValueError("run and pass the evidence replay before starting shadow observation")
+            evidence = _trace_json_object(
+                self._conn.execute(
+                    "SELECT evidence_json FROM policy_candidates WHERE candidate_id=?", (candidate_id,)
+                ).fetchone()["evidence_json"]
+            )
+            shadow["baseline_review_ids"] = sorted(
+                {
+                    str(value)
+                    for value in evidence.get("supporting_review_ids", []) + evidence.get("opposing_review_ids", [])
+                }
+            )
+            conn.execute(
+                "UPDATE policy_candidates SET stage='shadow',shadow_json=?,updated_at=? WHERE candidate_id=?",
+                (_trace_json(shadow), now, candidate_id),
+            )
+            conn.execute(
+                """INSERT INTO policy_events(event_id,candidate_id,event_type,details_json,actor,created_at)
+                   VALUES(?,?,'shadow_started',?,?,?)""",
+                (str(uuid.uuid4()), candidate_id, _trace_json(shadow), normalize_text(actor)[:80], now),
+            )
+        return shadow
+
+    def promote_policy_candidate(
+        self,
+        candidate_id: str,
+        *,
+        activation_scope: str = "scoped",
+        actor: str = "dashboard-operator",
+    ) -> dict[str, Any]:
+        scope = normalize_text(activation_scope).casefold()
+        if scope not in {"scoped", "core"}:
+            raise ValueError("activation_scope must be scoped or core")
+        now = utc_now()
+        version_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            candidate = conn.execute(
+                "SELECT * FROM policy_candidates WHERE candidate_id=?", (candidate_id,)
+            ).fetchone()
+            if not candidate or str(candidate["stage"]) != "ready":
+                raise ValueError("the candidate must pass replay and shadow evidence before promotion")
+            if scope == "core" and (
+                int(candidate["support_count"]) < POLICY_CORE_MIN_SUPPORT
+                or int(candidate["context_count"]) < POLICY_CORE_MIN_CONTEXTS
+            ):
+                raise ValueError(
+                    f"core promotion needs {POLICY_CORE_MIN_SUPPORT} supporting reviews across "
+                    f"{POLICY_CORE_MIN_CONTEXTS} contexts"
+                )
+            evidence = {
+                "candidate_support": int(candidate["support_count"]),
+                "candidate_opposition": int(candidate["oppose_count"]),
+                "candidate_consistency": float(candidate["consistency"]),
+                "replay": _trace_json_object(candidate["replay_json"]),
+                "shadow": _trace_json_object(candidate["shadow_json"]),
+            }
+            conn.execute(
+                """INSERT INTO policy_versions(
+                   version_id,candidate_id,domain,activation_scope,selector_json,change_json,
+                   evidence_json,status,activated_by,activated_at
+                   ) VALUES(?,?,?,?,?,?,?,'active',?,?)""",
+                (
+                    version_id,
+                    candidate_id,
+                    candidate["domain"],
+                    scope,
+                    candidate["selector_json"],
+                    candidate["change_json"],
+                    _trace_json(evidence),
+                    normalize_text(actor)[:80],
+                    now,
+                ),
+            )
+            conn.execute(
+                "UPDATE policy_candidates SET stage='promoted',decided_at=?,updated_at=? WHERE candidate_id=?",
+                (now, now, candidate_id),
+            )
+            conn.execute(
+                """INSERT INTO policy_events(event_id,candidate_id,version_id,event_type,details_json,actor,created_at)
+                   VALUES(?,?,?,'promoted',?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    candidate_id,
+                    version_id,
+                    _trace_json({"activation_scope": scope}),
+                    normalize_text(actor)[:80],
+                    now,
+                ),
+            )
+        self._active_policy_cache = None
+        self._bump_local_retrieval_revision()
+        return {"version_id": version_id, "candidate_id": candidate_id, "activation_scope": scope}
+
+    def reject_policy_candidate(
+        self, candidate_id: str, *, reason: str = "operator rejected", actor: str = "dashboard-operator"
+    ) -> bool:
+        now = utc_now()
+        with self.transaction() as conn:
+            result = conn.execute(
+                """UPDATE policy_candidates SET stage='rejected',decided_at=?,updated_at=?
+                   WHERE candidate_id=? AND stage<>'promoted'""",
+                (now, now, candidate_id),
+            )
+            if not result.rowcount:
+                return False
+            conn.execute(
+                """INSERT INTO policy_events(event_id,candidate_id,event_type,details_json,actor,created_at)
+                   VALUES(?,?,'rejected',?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    candidate_id,
+                    _trace_json({"reason": normalize_text(reason)[:500]}),
+                    normalize_text(actor)[:80],
+                    now,
+                ),
+            )
+        return True
+
+    def rollback_policy_version(
+        self, version_id: str, *, reason: str, actor: str = "dashboard-operator"
+    ) -> bool:
+        now = utc_now()
+        with self.transaction() as conn:
+            version = conn.execute(
+                "SELECT * FROM policy_versions WHERE version_id=? AND status='active'", (version_id,)
+            ).fetchone()
+            if not version:
+                return False
+            conn.execute(
+                """UPDATE policy_versions SET status='rolled_back',deactivated_at=?,deactivated_by=?,
+                     rollback_reason=? WHERE version_id=?""",
+                (now, normalize_text(actor)[:80], normalize_text(reason)[:500], version_id),
+            )
+            conn.execute(
+                "UPDATE policy_candidates SET stage='ready',updated_at=? WHERE candidate_id=?",
+                (now, version["candidate_id"]),
+            )
+            conn.execute(
+                """INSERT INTO policy_events(event_id,candidate_id,version_id,event_type,details_json,actor,created_at)
+                   VALUES(?,?,?,'rolled_back',?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    version["candidate_id"],
+                    version_id,
+                    _trace_json({"reason": normalize_text(reason)[:500]}),
+                    normalize_text(actor)[:80],
+                    now,
+                ),
+            )
+        self._active_policy_cache = None
+        self._bump_local_retrieval_revision()
+        return True
+
+    def active_policy_adjustment(self, domain: str, features: dict[str, Any]) -> dict[str, Any]:
+        """Return the combined, versioned adjustment for one core policy decision."""
+
+        if self._active_policy_cache is None:
+            with self._lock:
+                rows = self._conn.execute(
+                    "SELECT * FROM policy_versions WHERE status='active' ORDER BY activated_at"
+                ).fetchall()
+            self._active_policy_cache = [dict(row) for row in rows]
+        result: dict[str, Any] = {
+            "score_adjustment": 0.0,
+            "min_independent_witnesses_delta": 0,
+            "automatic_action": None,
+            "matched_versions": [],
+        }
+        for row in self._active_policy_cache:
+            if str(row.get("domain")) != domain:
+                continue
+            selector = _trace_json_object(row.get("selector_json"))
+            if not _policy_selector_matches(selector, features):
+                continue
+            change = _trace_json_object(row.get("change_json"))
+            result["score_adjustment"] += float(change.get("score_adjustment") or 0.0)
+            result["min_independent_witnesses_delta"] = max(
+                int(result["min_independent_witnesses_delta"]),
+                int(change.get("min_independent_witnesses_delta") or 0),
+            )
+            if change.get("automatic_action"):
+                result["automatic_action"] = str(change["automatic_action"])
+            result["matched_versions"].append(str(row["version_id"]))
+        result["score_adjustment"] = max(-0.20, min(0.12, float(result["score_adjustment"])))
+        return result
+
+    def policy_training_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            candidate_rows = self._conn.execute(
+                "SELECT * FROM policy_candidates ORDER BY updated_at DESC"
+            ).fetchall()
+            version_rows = self._conn.execute(
+                "SELECT * FROM policy_versions ORDER BY activated_at DESC LIMIT 100"
+            ).fetchall()
+            event_rows = self._conn.execute(
+                "SELECT * FROM policy_events ORDER BY created_at DESC LIMIT 100"
+            ).fetchall()
+            decision_count = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) count FROM operator_review_decisions WHERE reversed_at IS NULL"
+                ).fetchone()["count"]
+            )
+            contributions = self._operator_policy_contributions_tx(self._conn)
+        candidates: list[dict[str, Any]] = []
+        for row in candidate_rows:
+            item = dict(row)
+            for field in ("selector_json", "change_json", "evidence_json", "replay_json", "shadow_json"):
+                item[field.removesuffix("_json")] = _trace_json_object(item.pop(field))
+            item["scoped_gate_ready"] = (
+                int(item["support_count"]) >= POLICY_MIN_SUPPORT
+                and float(item["consistency"]) >= POLICY_MIN_CONSISTENCY
+            )
+            item["core_gate_ready"] = (
+                int(item["support_count"]) >= POLICY_CORE_MIN_SUPPORT
+                and int(item["context_count"]) >= POLICY_CORE_MIN_CONTEXTS
+                and float(item["consistency"]) >= POLICY_MIN_CONSISTENCY
+            )
+            candidates.append(item)
+        versions: list[dict[str, Any]] = []
+        for row in version_rows:
+            item = dict(row)
+            for field in ("selector_json", "change_json", "evidence_json"):
+                item[field.removesuffix("_json")] = _trace_json_object(item.pop(field))
+            versions.append(item)
+        events: list[dict[str, Any]] = []
+        for row in event_rows:
+            item = dict(row)
+            item["details"] = _trace_json_object(item.pop("details_json"))
+            events.append(item)
+        active_versions = [row for row in versions if row["status"] == "active"]
+        mapped_decisions = len({str(row["review_id"]) for row in contributions})
+        ready_for_replay = sum(row["stage"] == "replay_ready" for row in candidates)
+        replayed = sum(bool(row["replay"]) for row in candidates)
+        shadowing = sum(row["stage"] == "shadow" for row in candidates)
+        ready = sum(row["stage"] == "ready" for row in candidates)
+        monitored = 0
+        if active_versions:
+            first_activation = min(str(row["activated_at"]) for row in active_versions)
+            with self._lock:
+                monitored = int(
+                    self._conn.execute(
+                        """SELECT COUNT(*) count FROM operator_review_decisions
+                           WHERE reversed_at IS NULL AND created_at>?""",
+                        (first_activation,),
+                    ).fetchone()["count"]
+                )
+        steps = [
+            {
+                "key": "review",
+                "label": "Review real examples",
+                "description": "Decide what Kaya should keep, connect, or trust and always choose why.",
+                "current": decision_count,
+                "target": POLICY_MIN_SUPPORT,
+            },
+            {
+                "key": "compile",
+                "label": "Form a proposed standard",
+                "description": "Five consistent decisions can become one scoped, explainable policy candidate.",
+                "current": sum(row["scoped_gate_ready"] for row in candidates),
+                "target": 1,
+            },
+            {
+                "key": "test",
+                "label": "Replay and observe in shadow",
+                "description": "Test stored evidence, then collect three new matching decisions without changing Kaya.",
+                "current": max(replayed, shadowing, ready),
+                "target": 1,
+            },
+            {
+                "key": "approve",
+                "label": "Approve a versioned policy",
+                "description": "You promote the standard only after its replay and shadow gates pass.",
+                "current": len(active_versions),
+                "target": 1,
+            },
+            {
+                "key": "monitor",
+                "label": "Monitor and correct",
+                "description": "Keep reviewing after activation so regressions are visible and rollback stays available.",
+                "current": monitored,
+                "target": POLICY_MIN_SUPPORT,
+            },
+        ]
+        for step in steps:
+            step["progress"] = round(min(1.0, int(step["current"]) / max(1, int(step["target"]))), 6)
+            step["status"] = "complete" if step["progress"] >= 1.0 else "current"
+        current_index = next((index for index, step in enumerate(steps) if step["progress"] < 1.0), len(steps) - 1)
+        for index, step in enumerate(steps):
+            if index < current_index:
+                step["status"] = "complete"
+            elif index == current_index:
+                step["status"] = "current"
+            else:
+                step["status"] = "waiting"
+        if decision_count < POLICY_MIN_SUPPORT:
+            next_action = {
+                "title": "Review real Kaya examples",
+                "description": f"Complete {POLICY_MIN_SUPPORT - decision_count} more decisions to give the compiler its first useful pattern.",
+                "action": "review",
+            }
+        elif ready_for_replay:
+            next_action = {
+                "title": "Run the first evidence replay",
+                "description": "A proposed standard has enough consistent support to test against stored evidence.",
+                "action": "replay",
+            }
+        elif any(row["stage"] == "shadow_ready" for row in candidates):
+            next_action = {
+                "title": "Start shadow observation",
+                "description": "The replay passed. Cortex can now watch three new matching decisions without changing behavior.",
+                "action": "shadow",
+            }
+        elif shadowing:
+            next_action = {
+                "title": "Keep reviewing matching examples",
+                "description": "Shadow mode needs three new decisions before the standard can be approved.",
+                "action": "review",
+            }
+        elif ready:
+            next_action = {
+                "title": "Approve a tested policy",
+                "description": "Replay and shadow evidence agree. Review the exact rule and activate it when ready.",
+                "action": "approve",
+            }
+        elif active_versions and monitored < POLICY_MIN_SUPPORT:
+            next_action = {
+                "title": "Monitor the active standard",
+                "description": f"Add {POLICY_MIN_SUPPORT - monitored} post-activation reviews so regressions can be detected.",
+                "action": "review",
+            }
+        else:
+            next_action = {
+                "title": "Keep building representative evidence",
+                "description": "Review different memory types and situations so the next proposal is not based on one narrow pattern.",
+                "action": "review",
+            }
+        return {
+            "overall_progress": round(sum(float(step["progress"]) for step in steps) / len(steps), 6),
+            "steps": steps,
+            "next_action": next_action,
+            "counts": {
+                "decisions": decision_count,
+                "mapped_decisions": mapped_decisions,
+                "candidates": len(candidates),
+                "ready_for_replay": ready_for_replay,
+                "shadowing": shadowing,
+                "ready": ready,
+                "active_policies": len(active_versions),
+                "post_activation_reviews": monitored,
+            },
+            "thresholds": {
+                "scoped_support": POLICY_MIN_SUPPORT,
+                "consistency": POLICY_MIN_CONSISTENCY,
+                "shadow_observations": POLICY_SHADOW_MIN_OBSERVATIONS,
+                "core_support": POLICY_CORE_MIN_SUPPORT,
+                "core_contexts": POLICY_CORE_MIN_CONTEXTS,
+            },
+            "candidates": candidates,
+            "versions": versions,
+            "events": events,
+            "claim_boundary": (
+                "Operator reviews generate explainable policy candidates. Only tested, explicitly promoted versions "
+                "affect the admission, connection, retrieval, or retention core, and every active version can be rolled back."
+            ),
+        }
+
     def review_inbox_snapshot(self, *, limit: int = 600) -> dict[str, Any]:
         """Return one decision-ready queue plus the operator-learning trail."""
 
@@ -5798,6 +6639,7 @@ class CortexStore:
                     utc_now(),
                 ),
             )
+            self._compile_policy_candidates_tx(conn)
         return review_id
 
     def decide_review_proposal(
@@ -6009,6 +6851,7 @@ class CortexStore:
                     json.dumps(signal, sort_keys=True), normalize_text(actor)[:80] or "dashboard-operator", now,
                 ),
             )
+            self._compile_policy_candidates_tx(conn)
         return {"review_id": review_id, "proposal_id": proposal_id, "action": action_value}
 
     def undo_review_decision(self, review_id: str, *, actor: str = "dashboard-operator") -> bool:
@@ -6077,6 +6920,7 @@ class CortexStore:
                     conn.execute("DELETE FROM edges WHERE src_id=? AND dst_id=? AND relation=?", key)
             conn.execute("UPDATE sleep_proposals SET status='proposed' WHERE proposal_id=?", (decision["proposal_id"],))
             conn.execute("UPDATE operator_review_decisions SET reversed_at=? WHERE review_id=?", (now, review_id))
+            self._compile_policy_candidates_tx(conn)
         return True
 
     def dashboard_snapshot(self, *, memory_limit: int = 1000) -> dict[str, Any]:
@@ -6574,6 +7418,7 @@ class CortexStore:
                 "unsupported_inferences": [dict(row) for row in unsupported_inference_rows],
             },
             "review_inbox": self.review_inbox_snapshot(),
+            "policy_training": self.policy_training_snapshot(),
             "memory_hygiene": self.memory_hygiene_summary(),
             "audit": self.audit(),
         }
@@ -7086,6 +7931,15 @@ class CortexStore:
             except (TypeError, ValueError):
                 continue
             retention = _retention_score(dict(row))
+            policy_effect = self.active_policy_adjustment(
+                "retention",
+                {
+                    "kind": str(row["kind"]),
+                    "source_type": str(row["source_type"]),
+                    "source_category": str(row["source_category"]),
+                },
+            )
+            retention = _clamp(retention + float(policy_effect.get("score_adjustment") or 0.0))
             retention_scores[str(row["id"])] = round(retention, 6)
             cold_threshold = cold_after_days * (0.55 + retention)
             archive_threshold = archive_after_days * (0.65 + retention)
@@ -7093,11 +7947,21 @@ class CortexStore:
                 candidates["cold"].append(row["id"])
                 reasons[str(row["id"])] = (
                     "Low retention evidence plus age make this memory eligible to cool; recency alone is not enough."
+                    + (
+                        " An active operator-trained retention policy contributed to this score."
+                        if policy_effect.get("matched_versions")
+                        else ""
+                    )
                 )
             elif row["state"] == "cold" and age >= archive_threshold and retention < 0.58:
                 candidates["archived"].append(row["id"])
                 reasons[str(row["id"])] = (
                     "The memory was already cold and still has low usefulness evidence after the archive window."
+                    + (
+                        " An active operator-trained retention policy contributed to this score."
+                        if policy_effect.get("matched_versions")
+                        else ""
+                    )
                 )
         if not dry_run:
             for state, ids in candidates.items():
@@ -7290,6 +8154,120 @@ def _trace_json_object(value: Any) -> dict[str, Any]:
     except (json.JSONDecodeError, TypeError, ValueError):
         return {}
     return dict(parsed) if isinstance(parsed, dict) else {}
+
+
+def _policy_context_key(memory: dict[str, Any], *, fallback: str) -> str:
+    scope = _trace_json_object(memory.get("scope_json"))
+    project = normalize_text(str(scope.get("project") or scope.get("active_project") or ""))
+    systems = _trace_json_array(memory.get("applicable_systems_json"))
+    source_ref = normalize_text(str(memory.get("source_ref") or ""))
+    session_id = normalize_text(str(memory.get("session_id") or ""))
+    if project:
+        return f"project:{project.casefold()}"
+    if systems:
+        return f"system:{normalize_text(str(systems[0])).casefold()}"
+    if source_ref:
+        return f"source:{source_ref.split('#', 1)[0].casefold()[:160]}"
+    if session_id:
+        return f"session:{session_id.casefold()[:160]}"
+    return (
+        f"unscoped:{normalize_text(str(memory.get('source_type') or 'unknown')).casefold()}:"
+        f"{normalize_text(str(memory.get('kind') or 'memory')).casefold()}"
+    )
+
+
+def _policy_contribution(
+    *,
+    review_id: str,
+    created_at: str,
+    domain: str,
+    lever: str,
+    selector: dict[str, Any],
+    direction: str,
+    context_key: str,
+    reason: str,
+) -> dict[str, Any]:
+    signature = _trace_json({"domain": domain, "lever": lever, "selector": selector})
+    signal_key = f"{domain}:{lever}:{hashlib.sha256(signature.encode('utf-8')).hexdigest()[:20]}"
+    return {
+        "review_id": review_id,
+        "created_at": created_at,
+        "domain": domain,
+        "lever": lever,
+        "selector": selector,
+        "direction": direction,
+        "context_key": context_key,
+        "reason": reason,
+        "signal_key": signal_key,
+    }
+
+
+def _policy_candidate_copy(
+    domain: str, direction: str, selector: dict[str, Any]
+) -> tuple[str, str, dict[str, Any]]:
+    kind = str(selector.get("kind") or "memory")
+    source = str(selector.get("source_category") or selector.get("source_type") or "matching")
+    if domain == "retrieval":
+        if direction == "boost":
+            return (
+                f"Give helpful {source} {kind} memories a small ranking lift",
+                "Repeated outcome reviews say this source-and-kind pattern tends to help Kaya. "
+                "The adjustment is bounded and still cannot bypass scope, relevance, or context gates.",
+                {"score_adjustment": 0.035},
+            )
+        return (
+            f"Downrank misleading {source} {kind} memories",
+            "Repeated outcome reviews say this source-and-kind pattern needs more caution. "
+            "The adjustment lowers rank without deleting the underlying evidence.",
+            {"score_adjustment": -0.05},
+        )
+    if domain == "retention":
+        if direction == "preserve":
+            return (
+                f"Preserve useful {source} {kind} memories longer",
+                "Repeated cleanup decisions say this pattern is being proposed for pruning too aggressively.",
+                {"score_adjustment": 0.08},
+            )
+        return (
+            f"Move low-value {source} {kind} memories toward review sooner",
+            "Repeated cleanup decisions say this pattern consumes memory capacity without enough durable value. "
+            "The adjustment changes lifecycle scoring but still produces reviewable proposals.",
+            {"score_adjustment": -0.08},
+        )
+    if domain == "connection":
+        left = str(selector.get("src_kind") or "memory")
+        right = str(selector.get("dst_kind") or "memory")
+        return (
+            f"Require another independent witness for {left} ↔ {right} links",
+            "Repeated denials say co-occurrence alone is producing links that do not make conceptual sense. "
+            "Future Sleep proposals in this pattern must clear a higher evidence threshold.",
+            {"min_independent_witnesses_delta": 1},
+        )
+    quality_flag = str(selector.get("quality_flag") or "low-quality")
+    return (
+        f"Block automatic {source} {kind} writes flagged {quality_flag}",
+        "Repeated cleanup decisions identify a reusable admission failure. Explicit writes remain possible, "
+        "but matching automatic candidates are kept out of recallable memory.",
+        {"automatic_action": "ignore", "quality_flag": quality_flag},
+    )
+
+
+def _policy_selector_matches(selector: dict[str, Any], features: dict[str, Any]) -> bool:
+    for key, expected in selector.items():
+        if key == "quality_flag":
+            flags = features.get("quality_flags") or features.get("quality_flag") or []
+            if isinstance(flags, str):
+                flags = [flags]
+            if str(expected).casefold() not in {str(value).casefold() for value in flags}:
+                return False
+            continue
+        actual = features.get(key)
+        if isinstance(actual, (list, tuple, set)):
+            if str(expected).casefold() not in {str(value).casefold() for value in actual}:
+                return False
+        elif str(actual or "").casefold() != str(expected or "").casefold():
+            return False
+    return True
 
 
 def _normalize_retrieval_context(value: dict[str, Any] | None) -> dict[str, Any]:

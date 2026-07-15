@@ -74,6 +74,7 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 | --- | --- | --- |
 | Scheduled maintenance cycle | Implemented early in 0.3; shadow evidence accumulating. | Reports consolidation, interference, dependencies, lifecycle previews, resource use, and reversible apply changes. |
 | Learned retention thresholds | Never train on retrieval count alone. | Storage/interference improves within a preregistered regret ceiling. |
+| Operator policy training | Compiled rules are bounded, replayed, shadow-observed, explicitly promoted, versioned, and reversible; no code self-modification. | Admission, connection, retrieval, or retention changes pass review consistency and post-activation regret gates. |
 | Pruning simulation | Replay archived candidates before applying. | Estimated benefit and regret are visible per proposed transition. |
 | Dependency repair | Changed evidence marks derived memory dirty before demotion. | Unsupported active inference rate decreases. |
 | Longitudinal evaluation | No private memory text in published results. | Several weeks of regret, restoration, correction, and utility evidence. |
@@ -92,15 +93,16 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 ## Dashboard feedback controls
 
-Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. The `testing` branch now includes a deliberately smaller opt-in surface for resolving one contradiction or unsupported inference at a time. It includes:
+Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. The `testing` branch now includes a unified Review Inbox and guided Kaya Training path. It includes:
 
 - authenticated signed sessions and same-origin request verification;
 - explicit confirmation before an archive, confirmation, supersession, or contextual relationship;
 - preserved versions, lifecycle events, provenance, and maintenance-log audit records;
 - request-size bounds and no hard-delete operation;
+- typed review evidence, explainable policy compilation, stored-evidence replay, shadow observation, explicit promotion, and active-version rollback;
 - `CORTEX_DASHBOARD_REVIEWS=1` as an explicit switch that leaves the dashboard read-only by default.
 
-Broader helpful/wrong/important controls, actor identity in audit rows, write-specific rate limits, and a dashboard undo flow remain future work.
+The first policy engine is deliberately limited to bounded admission, independent-link-witness, retrieval-rank, and retention-score adjustments. Representative longitudinal regret evidence, write-specific rate limits, and automated pause recommendations remain active follow-up work.
 
 ## Stable non-goals
 

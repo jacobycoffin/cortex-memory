@@ -369,6 +369,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/review/inference",
                 "/api/review/proposal",
                 "/api/review/undo",
+                "/api/policy/action",
                 "/api/sleep/start",
                 "/api/benchmark/start",
                 "/api/evaluation/start",
@@ -392,7 +393,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._login()
                 return
             needs_complete_auth = (
-                parsed.path.startswith("/api/review/")
+                parsed.path.startswith(("/api/review/", "/api/policy/"))
                 or parsed.path in {
                     "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
                     "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
@@ -431,6 +432,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             try:
                 actor = auth.username() if auth_enabled else "local-operator"
+                if parsed.path == "/api/policy/action":
+                    self._policy_action(payload, actor=actor)
+                    return
                 if parsed.path == "/api/review/proposal":
                     result = store.decide_review_proposal(
                         str(payload.get("proposal_id") or ""),
@@ -496,6 +500,44 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     src_id=memory_id,
                 )
             self._json(HTTPStatus.OK, {"success": True})
+
+        def _policy_action(self, payload: dict[str, object], *, actor: str) -> None:
+            action = str(payload.get("action") or "").casefold()
+            candidate_id = str(payload.get("candidate_id") or "")
+            if action == "compile":
+                result = store.compile_policy_candidates()
+            elif action == "replay":
+                result = store.evaluate_policy_candidate(candidate_id, actor=actor)
+            elif action == "start_shadow":
+                result = store.start_policy_shadow(candidate_id, actor=actor)
+            elif action == "promote":
+                result = store.promote_policy_candidate(
+                    candidate_id,
+                    activation_scope=str(payload.get("activation_scope") or "scoped"),
+                    actor=actor,
+                )
+            elif action == "reject":
+                changed = store.reject_policy_candidate(
+                    candidate_id,
+                    reason=str(payload.get("reason") or "operator rejected"),
+                    actor=actor,
+                )
+                if not changed:
+                    raise ValueError("this policy candidate cannot be rejected")
+                result = {"changed": True, "candidate_id": candidate_id}
+            elif action == "rollback":
+                version_id = str(payload.get("version_id") or "")
+                reason = str(payload.get("reason") or "operator requested rollback")
+                changed = store.rollback_policy_version(version_id, reason=reason, actor=actor)
+                if not changed:
+                    raise ValueError("this policy version is not active")
+                result = {"changed": True, "version_id": version_id}
+            else:
+                raise ValueError("unsupported policy action")
+            self._json(
+                HTTPStatus.OK,
+                {"success": True, "result": result, "policy_training": store.policy_training_snapshot()},
+            )
 
         def _start_sleep(self) -> None:
             payload = self._read_json()

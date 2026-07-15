@@ -163,6 +163,14 @@ The dashboard's Review Inbox is the operator boundary for uncertain memory mutat
 
 `operator_review_decisions` is an append-only training ledger for these choices. It stores the item key, action, required reason code, optional explanation, actor, before-state, applied effect, and a typed learning signal. The dashboard aggregates repeated signals so pruning and linking standards can be evaluated across decisions. A single decision never changes a global threshold or policy automatically.
 
+## Operator policy training
+
+The Feedback Compiler maps review evidence only onto four bounded core levers: automatic write admission, independent-witness requirements for Sleep links, retrieval-score adjustment, and lifecycle-retention adjustment. It groups evidence by an inspectable selector such as memory kind plus source category; it does not infer arbitrary executable code or edit Python.
+
+`policy_candidates` stores the proposed selector, adjustment, supporting and opposing review IDs, independent-context count, consistency, replay result, shadow progress, and stage. Five supporting reviews with at least 80% agreement permit an operator-evidence counterfactual replay. A passing rule then waits for three new matching reviews in shadow mode. Only an authenticated operator can promote a ready candidate. Core-wide promotion has the stronger gate of 15 supporting reviews across at least three contexts.
+
+`policy_versions` is the only operator-training table read by the live core. Active versions are matched deterministically and contribute bounded adjustments; they cannot bypass applicability gates, hard relevance requirements, state exclusions, or the proposal-only lifecycle boundary. `policy_events` records compilation, replay, shadow start, promotion, rejection, and rollback. Rolling back deactivates the version without deleting the proposal, evidence, or earlier outcomes.
+
 ## Offline Sleep cycle
 
 `sleep.py` runs outside normal agent inference. A cycle selects only old, unprocessed episodes and resolved usage tasks, replays them through local graph-free retrieval, and stores hashed witness evidence. An association requires at least two independent session/task witnesses; one burst or raw retrieval count cannot qualify it.
@@ -189,4 +197,4 @@ Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_re
 
 Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.
 
-Schema 15 adds the reversible `operator_review_decisions` ledger used by the unified Review Inbox. Schema 10 adds controlled assignments, agent-task observations, matched Sleep trials, cited summary review, prospective state, and reconsolidation events. Schema 9 added auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.
+Schema 16 adds compiled `policy_candidates`, active and rolled-back `policy_versions`, and append-only `policy_events` for the guided Kaya Training workflow. Schema 15 adds the reversible `operator_review_decisions` ledger used by the unified Review Inbox. Schema 10 adds controlled assignments, agent-task observations, matched Sleep trials, cited summary review, prospective state, and reconsolidation events. Schema 9 added auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.
