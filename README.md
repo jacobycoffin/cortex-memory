@@ -56,6 +56,7 @@ Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing buil
 - **Paired tool-call evaluation:** recorded observations or explicit live provider fixtures compare tool choice, argument shape, task success, latency, and tokens without executing arbitrary tools.
 - **Release automation:** Python 3.10–3.14 CI now covers unit tests, clean install, in-place upgrade, schema migration, syntax, public-file privacy, and SVG validation.
 - **Cortex Sleep:** a nightly offline replay cycle reviews older sessions and resolved outcomes, requires independent witnesses before proposing associations, surfaces interference, previews maintenance, and records every decision for the dashboard.
+- **Controlled learning lab:** randomized adaptive/fixed/no-memory tasks, matched reversible Sleep trials, explicit agent-level outcomes, a failure explorer, cited summary approval, prospective-memory states, and reconsolidation follow-through share one local task/evidence ledger.
 - **Budgeted idle reflection:** optional model review can spend a separate per-run token ceiling on evidence-linked proposals. It is off by default, normally billed, privacy-sensitive, and never applies its own conclusions.
 - **Harness-neutral API:** `CortexMemory` and `RecallBatch` expose storage, bounded recall, outcome feedback, episodes, audit, and Sleep without depending on a particular agent framework.
 
@@ -153,6 +154,8 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 - an Accuracy × capacity view that plots daily outcome-backed memory helpfulness against stored memory count and reports average recall context alongside it; it is a memory-quality proxy, not a claim of general answer accuracy;
 - an authenticated local benchmark lab that runs the versioned synthetic retrieval suite on the dashboard host, records a transparent quality/speed score, and graphs compatible runs without claiming model-inference speed;
 - an Outcome & Causality Lab for reversible task-level labels and a paired private real-history evaluation that compares adaptive and fixed retrieval without persisting queries, memory text, or IDs in its report;
+- a Learning Lab that assigns future Kaya tasks to balanced randomized adaptive, fixed, or no-memory conditions before recall, graphs explicit daily agent accuracy, and keeps task completion, tool results, context, and latency as separate diagnostics;
+- a failure explorer, reversible matched Sleep apply trials, source-cited summary candidates that remain outside recall until approval, prospective commitments with due/completed/abandoned states, and reconsolidation records that preserve the replaced version;
 - an evidence hierarchy that keeps raw memories addressable, shows source links for supported claims, and treats higher-level bundles as read-only candidates rather than automatic truths;
 - a Trust monitor that logs a pre-outcome reliability estimate for every recalled memory, explains the proposed use/verify/abstain decision, plots calibration only after enough explicit outcomes exist, and holds enforcement in shadow until a hard evidence gate passes;
 - Sleep hypotheses and tool-guidance follow-through that state what future evidence would count, while keeping after-event comparisons explicitly observational;
@@ -162,7 +165,7 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 
 For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
 
-Guided review changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable the confirmed choices. Conflict review can archive one superseded memory or keep both as contextual; inference review can explicitly confirm or archive one unsupported claim. Every action preserves history and writes an audit record. There is no hard-delete action.
+Guided review and Learning Lab changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable confirmed choices. Conflict review can archive one superseded memory or keep both as contextual; inference review can explicitly confirm or archive one unsupported claim. Summary approval and prospective commitments are explicit source-backed writes. Controlled Sleep trials apply only randomized treatment links and expose a one-click reversal. Every action preserves history and writes an audit record. There is no hard-delete action.
 
 The Insights benchmark button is independent of guided review. It is authenticated, allows only one bounded run at a time, uses a temporary synthetic database, and makes no model or provider calls. Its overall score is a versioned operating index: 85% retrieval quality and 15% local p95 retrieval speed. Compare only runs from the same suite version under similar host load; use the paired live-model benchmark for whole-agent latency claims.
 
@@ -204,7 +207,7 @@ systemctl --user list-timers cortex-sleep.timer
 
 Model reflection is a separate opt-in stage. A positive `--reflection-token-budget` is a ceiling for a normal provider call, not banked or free conversational tokens. Remote reflection can expose selected memory text to that provider, and validated output is stored only as a review proposal. Read the [design, research basis, and exact boundaries](docs/SLEEP.md).
 
-The dashboard keeps **proposed**, **applied**, and **reversed** maintenance records separate. Selecting a Sleep run shows the memory text and IDs behind each connection, downscale, conflict, lifecycle move, consolidation, or dependency repair. Follow-up recall and outcome counts are labeled as observations after the run; they are not attributed to Sleep without a controlled evaluation.
+The dashboard keeps **proposed**, **applied**, and **reversed** maintenance records separate. Selecting a Sleep run shows the memory text and IDs behind each connection, downscale, conflict, lifecycle move, consolidation, or dependency repair. Follow-up recall and outcome counts are labeled as observations after the run. The Learning Lab can separately randomize matched association proposals into applied treatment and withheld control arms; even there, it waits for enough explicit outcomes before enabling an initial causal estimate.
 
 The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created mode `0600` with `CORTEX_SLEEP_TOKEN_BUDGET=0`. To test idle reflection later, set `CORTEX_SLEEP_ENDPOINT`, `CORTEX_SLEEP_MODEL`, the token budget, and the API-key variable named by `CORTEX_SLEEP_API_KEY_ENV`; then run one manual shadow cycle before leaving it scheduled.
 
@@ -220,7 +223,7 @@ The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created 
 - suspicious instruction-like memories are quarantined;
 - likely secrets are redacted before storage;
 - tool workflow guidance stores argument **keys**, not argument values;
-- the dashboard exposes no direct memory-write or hard-delete endpoint; authenticated dashboard Sleep is fixed to deterministic shadow mode and can write only its report, evidence, and review proposals.
+- the dashboard exposes no hard-delete endpoint; ordinary dashboard Sleep is fixed to deterministic shadow mode, while authenticated opt-in Learning Lab actions can approve a cited summary, create or resolve a prospective commitment, or run and reverse a matched association trial.
 
 Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or importing a vault.
 

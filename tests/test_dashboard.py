@@ -130,6 +130,18 @@ class DashboardInterfaceTests(unittest.TestCase):
             "metacognition-predictions",
             "kind-guide",
             "view-settings",
+            "view-learning",
+            "experiment-toggle",
+            "experiment-conditions",
+            "experiment-task-list",
+            "agent-accuracy-chart",
+            "failure-list",
+            "sleep-trial-start",
+            "sleep-trial-list",
+            "summary-candidate-list",
+            "prospective-form",
+            "prospective-list",
+            "reconsolidation-list",
             "settings-theme-slot",
             "settings-account-slot",
             "lifecycle-feed",
@@ -204,6 +216,18 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Both are valid in different situations", html)
         self.assertIn("/api/review/conflict", html)
         self.assertIn("/api/review/inference", html)
+        self.assertIn("function renderLearning", html)
+        self.assertIn("function renderExperimentCenter", html)
+        self.assertIn("function renderAgentAccuracyChart", html)
+        self.assertIn("function renderFailureExplorer", html)
+        self.assertIn("function renderSleepTrials", html)
+        self.assertIn("function renderSummaryCandidates", html)
+        self.assertIn("function renderProspective", html)
+        self.assertIn("function renderReconsolidation", html)
+        self.assertIn("/api/experiment/control", html)
+        self.assertIn("/api/sleep/trial/start", html)
+        self.assertIn("/api/summary/review", html)
+        self.assertIn("/api/prospective/update", html)
 
     def test_dashboard_keeps_ipad_navigation_and_index_content_readable(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
@@ -246,6 +270,10 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('snapshot["sleep_schedule"] = sleep_schedule()', server)
         self.assertIn('parsed.path == "/api/benchmark/start"', server)
         self.assertIn("run_dashboard_benchmark", server)
+        self.assertIn('path == "/api/experiment/control"', server)
+        self.assertIn('path == "/api/sleep/trial/start"', server)
+        self.assertIn('path == "/api/summary/review"', server)
+        self.assertIn('path == "/api/prospective/create"', server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 

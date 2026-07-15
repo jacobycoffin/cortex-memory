@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -669,6 +669,153 @@ class CortexStore:
                 PRIMARY KEY(src_id,dst_id,relation)
             );
 
+            CREATE TABLE IF NOT EXISTS controlled_experiments (
+                experiment_id TEXT PRIMARY KEY,
+                experiment_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'stopped',
+                conditions_json TEXT NOT NULL,
+                assignment_rule TEXT NOT NULL,
+                primary_metric TEXT NOT NULL,
+                minimum_labeled_per_condition INTEGER NOT NULL DEFAULT 8,
+                started_at TEXT,
+                stopped_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_controlled_experiment_active
+              ON controlled_experiments(experiment_key) WHERE status='active';
+
+            CREATE TABLE IF NOT EXISTS recall_experiment_assignments (
+                assignment_id TEXT PRIMARY KEY,
+                experiment_id TEXT NOT NULL REFERENCES controlled_experiments(experiment_id) ON DELETE CASCADE,
+                task_id TEXT UNIQUE,
+                session_id TEXT,
+                query_hash TEXT NOT NULL,
+                task_type TEXT NOT NULL,
+                condition TEXT NOT NULL,
+                random_bucket INTEGER NOT NULL,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                outcome_source TEXT,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_recall_experiment_results
+              ON recall_experiment_assignments(experiment_id,condition,outcome_source,created_at);
+
+            CREATE TABLE IF NOT EXISTS agent_task_observations (
+                task_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                task_type TEXT NOT NULL,
+                query_hash TEXT NOT NULL,
+                query_preview TEXT,
+                recall_condition TEXT NOT NULL,
+                recall_mode TEXT NOT NULL,
+                memory_count INTEGER NOT NULL DEFAULT 0,
+                context_tokens INTEGER NOT NULL DEFAULT 0,
+                prepare_ms REAL NOT NULL DEFAULT 0,
+                response_ms REAL,
+                tool_calls INTEGER NOT NULL DEFAULT 0,
+                tool_successes INTEGER NOT NULL DEFAULT 0,
+                correction_detected INTEGER NOT NULL DEFAULT 0,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                outcome_source TEXT,
+                experiment_assignment_id TEXT REFERENCES recall_experiment_assignments(assignment_id),
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_agent_tasks_day
+              ON agent_task_observations(started_at,task_type,outcome);
+
+            CREATE TABLE IF NOT EXISTS sleep_trials (
+                trial_id TEXT PRIMARY KEY,
+                sleep_run_id TEXT REFERENCES sleep_runs(run_id) ON DELETE SET NULL,
+                status TEXT NOT NULL,
+                assignment_rule TEXT NOT NULL,
+                primary_metric TEXT NOT NULL,
+                pair_count INTEGER NOT NULL DEFAULT 0,
+                minimum_labeled_per_arm INTEGER NOT NULL DEFAULT 8,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS sleep_trial_items (
+                item_id TEXT PRIMARY KEY,
+                trial_id TEXT NOT NULL REFERENCES sleep_trials(trial_id) ON DELETE CASCADE,
+                pair_key TEXT NOT NULL,
+                proposal_id TEXT NOT NULL REFERENCES sleep_proposals(proposal_id) ON DELETE CASCADE,
+                assignment TEXT NOT NULL,
+                exposure TEXT NOT NULL,
+                src_id TEXT REFERENCES memories(id) ON DELETE CASCADE,
+                dst_id TEXT REFERENCES memories(id) ON DELETE CASCADE,
+                score REAL NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(trial_id,proposal_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_sleep_trial_items
+              ON sleep_trial_items(trial_id,assignment,pair_key);
+
+            CREATE TABLE IF NOT EXISTS summary_candidates (
+                candidate_id TEXT PRIMARY KEY,
+                source_signature TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                summary_text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'proposed',
+                approved_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                reviewed_by TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_summary_candidates_status
+              ON summary_candidates(status,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS summary_candidate_claims (
+                candidate_id TEXT NOT NULL REFERENCES summary_candidates(candidate_id) ON DELETE CASCADE,
+                ordinal INTEGER NOT NULL,
+                claim_text TEXT NOT NULL,
+                PRIMARY KEY(candidate_id,ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS summary_candidate_sources (
+                candidate_id TEXT NOT NULL,
+                claim_ordinal INTEGER NOT NULL,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                excerpt TEXT NOT NULL,
+                PRIMARY KEY(candidate_id,claim_ordinal,memory_id),
+                FOREIGN KEY(candidate_id,claim_ordinal)
+                  REFERENCES summary_candidate_claims(candidate_id,ordinal) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS prospective_items (
+                memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                status TEXT NOT NULL DEFAULT 'open',
+                due_at TEXT,
+                completed_at TEXT,
+                abandoned_at TEXT,
+                note TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_prospective_due
+              ON prospective_items(status,due_at);
+
+            CREATE TABLE IF NOT EXISTS reconsolidation_events (
+                event_id TEXT PRIMARY KEY,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                prior_version_id INTEGER REFERENCES memory_versions(version_id) ON DELETE SET NULL,
+                new_version_id INTEGER REFERENCES memory_versions(version_id) ON DELETE SET NULL,
+                trigger_access_at TEXT,
+                corrected_at TEXT NOT NULL,
+                first_reused_at TEXT,
+                stabilized_at TEXT,
+                failed_at TEXT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                outcome TEXT,
+                source_ref TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_reconsolidation_status
+              ON reconsolidation_events(status,corrected_at DESC);
+
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 memory_id UNINDEXED,
                 content,
@@ -871,7 +1018,7 @@ class CortexStore:
         state = "quarantine" if quarantine_reason else state
         with self.transaction() as conn:
             existing = conn.execute(
-                "SELECT id FROM memories WHERE content_hash=? ORDER BY created_at LIMIT 1", (digest,)
+                "SELECT id,kind FROM memories WHERE content_hash=? ORDER BY created_at LIMIT 1", (digest,)
             ).fetchone()
             if existing:
                 memory_id = str(existing["id"])
@@ -904,6 +1051,13 @@ class CortexStore:
                             "INSERT OR IGNORE INTO memory_dependencies(memory_id,evidence_id,relation,weight,active,created_at) VALUES(?,?,'derived_from',1.0,1,?)",
                             (memory_id, evidence_id, now),
                         )
+                if str(existing["kind"]) == "prospective":
+                    conn.execute(
+                        """INSERT OR IGNORE INTO prospective_items(
+                             memory_id,status,due_at,created_at,updated_at
+                           ) VALUES(?,'open',?,?,?)""",
+                        (memory_id, valid_from or valid_to, now, now),
+                    )
                 return memory_id, False
 
             memory_id = str(uuid.uuid4())
@@ -971,6 +1125,12 @@ class CortexStore:
             self._link_structured_contradictions(
                 conn, memory_id, subject, predicate, object_value, valid_from, valid_to, now
             )
+            if kind == "prospective":
+                conn.execute(
+                    """INSERT INTO prospective_items(memory_id,status,due_at,created_at,updated_at)
+                       VALUES(?,'open',?,?,?)""",
+                    (memory_id, valid_from or valid_to, now, now),
+                )
             return memory_id, True
 
     def correct_memory(
@@ -986,16 +1146,23 @@ class CortexStore:
         if not new_content:
             raise ValueError("corrected content cannot be empty")
         now = utc_now()
+        from .research import record_reconsolidation_correction_tx
+
         with self.transaction() as conn:
             current = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
             if not current:
                 return False
+            prior_version = conn.execute(
+                """SELECT version_id FROM memory_versions
+                   WHERE memory_id=? AND system_to IS NULL ORDER BY version_id DESC LIMIT 1""",
+                (memory_id,),
+            ).fetchone()
             next_confidence = _clamp(confidence if confidence is not None else max(0.55, current["confidence"]))
             conn.execute(
                 "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
                 (now, memory_id),
             )
-            conn.execute(
+            inserted_version = conn.execute(
                 """INSERT INTO memory_versions(
                     memory_id, content, confidence, state, valid_from, valid_to,
                     system_from, reason, source_ref
@@ -1024,6 +1191,15 @@ class CortexStore:
             conn.execute(
                 "INSERT INTO access_log(memory_id,event,query,created_at) VALUES(?,?,?,?)",
                 (memory_id, "corrected", reason, now),
+            )
+            record_reconsolidation_correction_tx(
+                conn,
+                memory_id=memory_id,
+                prior_version_id=int(prior_version["version_id"]) if prior_version else None,
+                new_version_id=int(inserted_version.lastrowid) if inserted_version.lastrowid else None,
+                trigger_access_at=current["last_used_at"] or current["last_retrieved_at"],
+                corrected_at=now,
+                source_ref=source_ref,
             )
             self._mark_dependents_dirty_tx(conn, memory_id, f"evidence corrected: {reason}")
             return True
@@ -1946,6 +2122,8 @@ class CortexStore:
             "irrelevant": ("false_positive_count", "last_used_at"),
         }
         now = utc_now()
+        from .research import record_reconsolidation_reuse_tx
+
         with self.transaction() as conn:
             conn.execute(
                 "INSERT INTO access_log(memory_id,event,query,session_id,score,created_at) VALUES(?,?,?,?,?,?)",
@@ -1972,6 +2150,8 @@ class CortexStore:
                         "UPDATE memories SET false_positive_count=false_positive_count+1 WHERE id=?",
                         (memory_id,),
                     )
+            if event in {"retrieved", "selected", "injected", "used"}:
+                record_reconsolidation_reuse_tx(conn, memory_id, now)
 
     def record_recall_run(
         self,
@@ -2063,8 +2243,9 @@ class CortexStore:
         estimated_tokens: int = 0,
         metacognitive_assessments: Sequence[dict[str, Any]] = (),
         metacognition_mode: str = "shadow",
+        task_id: str | None = None,
     ) -> str:
-        task_id = str(uuid.uuid4())
+        task_id = task_id or str(uuid.uuid4())
         now = utc_now()
         task_type_value = normalize_text(task_type or "general")[:80] or "general"
         recall_mode_value = normalize_text(recall_mode or "unknown")[:40] or "unknown"
@@ -2170,6 +2351,8 @@ class CortexStore:
     def apply_task_outcome(self, task_id: str, outcome: str) -> list[str]:
         if outcome not in {"helpful", "harmful", "validated", "corrected"}:
             raise ValueError("invalid task outcome")
+        from .research import sync_task_outcome_tx
+
         with self.transaction() as conn:
             rows = conn.execute("SELECT memory_id FROM usage_records WHERE task_id=? AND used=1", (task_id,)).fetchall()
             ids = [str(row["memory_id"]) for row in rows]
@@ -2190,6 +2373,13 @@ class CortexStore:
                    WHERE task_id=? AND used_count>0""",
                 (outcome, utc_now(), task_id),
             )
+            sync_task_outcome_tx(
+                conn,
+                task_id,
+                outcome,
+                source="conversation_feedback",
+                resolved_at=utc_now(),
+            )
         for memory_id in ids:
             self.log_access(memory_id, outcome if outcome != "harmful" else "wrong")
         return ids
@@ -2201,6 +2391,8 @@ class CortexStore:
             raise ValueError("outcome must be helpful, harmful, validated, or corrected")
         actor_value = normalize_text(actor)[:80] or "dashboard-operator"
         now = utc_now()
+        from .research import sync_task_outcome_tx
+
         with self.transaction() as conn:
             rows = conn.execute(
                 """SELECT u.memory_id,u.query,u.session_id,u.outcome,m.content
@@ -2208,14 +2400,23 @@ class CortexStore:
                    WHERE u.task_id=? AND u.used=1 ORDER BY u.created_at,u.memory_id""",
                 (task_id,),
             ).fetchall()
-            if not rows:
-                raise ValueError("this task has no attributed memories to label")
+            agent_task = conn.execute(
+                "SELECT * FROM agent_task_observations WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if not rows and not agent_task:
+                raise ValueError("task not found")
             active = conn.execute(
                 "SELECT * FROM task_outcome_labels WHERE task_id=? AND active=1", (task_id,)
             ).fetchone()
             if active and str(active["outcome"]) == outcome:
                 return {"changed": False, "label_id": active["label_id"], "outcome": outcome, "task_id": task_id}
-            prior_outcome = str(active["prior_outcome"] if active else rows[0]["outcome"] or "used")
+            prior_outcome = str(
+                active["prior_outcome"]
+                if active
+                else (rows[0]["outcome"] if rows else agent_task["outcome"] if agent_task else "used")
+                or "used"
+            )
             if prior_outcome not in {"used", "helpful", "harmful", "validated", "corrected"}:
                 prior_outcome = "used"
             if active:
@@ -2229,15 +2430,16 @@ class CortexStore:
             )
             memory_ids = [str(row["memory_id"]) for row in rows]
             placeholders = ",".join("?" for _ in memory_ids)
-            conn.execute(
-                f"UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND memory_id IN ({placeholders})",
-                (outcome, now, task_id, *memory_ids),
-            )
-            conn.execute(
-                f"""UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
-                    WHERE task_id=? AND memory_id IN ({placeholders})""",
-                (outcome, now, task_id, *memory_ids),
-            )
+            if memory_ids:
+                conn.execute(
+                    f"UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND memory_id IN ({placeholders})",
+                    (outcome, now, task_id, *memory_ids),
+                )
+                conn.execute(
+                    f"""UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
+                        WHERE task_id=? AND memory_id IN ({placeholders})""",
+                    (outcome, now, task_id, *memory_ids),
+                )
             conn.execute(
                 "UPDATE recall_budget_observations SET outcome=?,resolved_at=? WHERE task_id=?",
                 (outcome, now, task_id),
@@ -2248,7 +2450,7 @@ class CortexStore:
                 "validated": "validated_count",
                 "corrected": "correction_count",
             }
-            if prior_outcome != outcome:
+            if memory_ids and prior_outcome != outcome:
                 if prior_outcome in count_columns:
                     prior_column = count_columns[prior_outcome]
                     conn.execute(
@@ -2266,12 +2468,21 @@ class CortexStore:
             marker = f"task-outcome:{label_id}"
             conn.executemany(
                 "INSERT INTO access_log(memory_id,event,query,session_id,score,created_at) VALUES(?,?,?,?,NULL,?)",
-                [(memory_id, event, marker, rows[0]["session_id"], now) for memory_id in memory_ids],
+                [
+                    (
+                        memory_id,
+                        event,
+                        marker,
+                        rows[0]["session_id"] if rows else agent_task["session_id"],
+                        now,
+                    )
+                    for memory_id in memory_ids
+                ],
             )
             task_type_row = conn.execute(
                 "SELECT task_type FROM recall_budget_observations WHERE task_id=?", (task_id,)
             ).fetchone()
-            if outcome in {"helpful", "validated"}:
+            if outcome in {"helpful", "validated"} and memory_ids:
                 conn.execute(
                     """INSERT INTO evaluation_cases(
                          case_id,task_id,query,relevant_memory_ids,task_type,source_label_id,active,created_at,updated_at
@@ -2283,7 +2494,7 @@ class CortexStore:
                     (
                         str(uuid.uuid4()),
                         task_id,
-                        str(rows[0]["query"] or ""),
+                        str(rows[0]["query"] if rows else agent_task["query_preview"] or ""),
                         json.dumps(memory_ids),
                         str(task_type_row["task_type"] if task_type_row else "general"),
                         label_id,
@@ -2297,6 +2508,7 @@ class CortexStore:
                 "UPDATE tool_guidance_exposures SET task_outcome=? WHERE task_id=?",
                 (outcome, task_id),
             )
+            sync_task_outcome_tx(conn, task_id, outcome, source="dashboard", resolved_at=now)
         return {
             "changed": True,
             "label_id": label_id,
@@ -2375,6 +2587,15 @@ class CortexStore:
         conn.execute(
             "UPDATE tool_guidance_exposures SET task_outcome=? WHERE task_id=?",
             (prior_outcome if prior_outcome != "used" else None, task_id),
+        )
+        from .research import sync_task_outcome_tx
+
+        sync_task_outcome_tx(
+            conn,
+            task_id,
+            prior_outcome,
+            source=None if prior_outcome == "used" else "restored_prior",
+            resolved_at=now,
         )
 
     def record_episode(self, user_content: str, assistant_content: str, *, session_id: str | None = None) -> bool:
@@ -3200,7 +3421,7 @@ class CortexStore:
         }
 
     def evidence_hierarchy_snapshot(self, *, limit: int = 24) -> dict[str, Any]:
-        """Build a read-only hierarchy of raw evidence, supported claims, and bundle candidates."""
+        """Build the hierarchy of raw evidence, supported claims, and reviewed bundles."""
 
         bounded = max(1, min(int(limit), 80))
         with self._lock:
@@ -3235,6 +3456,9 @@ class CortexStore:
             dependency_count = int(
                 self._conn.execute("SELECT COUNT(*) count FROM memory_dependencies WHERE active=1").fetchone()["count"]
             )
+            summary_candidate_count = int(
+                self._conn.execute("SELECT COUNT(*) count FROM summary_candidates").fetchone()["count"]
+            )
             supported: list[dict[str, Any]] = []
             for row in supported_rows:
                 item = dict(row)
@@ -3253,17 +3477,15 @@ class CortexStore:
             "supported_claims": supported,
             "structured_bundles": [dict(row) for row in structured_rows],
             "source_bundles": [dict(row) for row in source_rows],
-            "summary_candidates": sum(
-                1 for row in structured_rows if int(row["dirty_count"] or 0) == 0 and int(row["member_count"] or 0) >= 3
-            ),
+            "summary_candidates": summary_candidate_count,
             "levels": [
                 {"level": "raw", "label": "Raw episodes and observations", "mutable": False},
                 {"level": "claim", "label": "Claims with explicit evidence links", "mutable": True},
-                {"level": "bundle", "label": "Read-only summary candidates", "mutable": False},
+                {"level": "bundle", "label": "Cited summaries after operator approval", "mutable": True},
             ],
             "claim_boundary": (
-                "Bundles are navigation and evaluation candidates, not generated truths. Raw evidence remains "
-                "addressable and no summary memory is written automatically."
+                "Candidates are non-recallable until an operator approves them. Every approved summary keeps "
+                "dependency links to its cited raw evidence, and no summary is written automatically."
             ),
         }
 
@@ -3336,6 +3558,12 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
                 "(SELECT COUNT(*) FROM sleep_runs) sleep_runs, "
                 "(SELECT COUNT(*) FROM sleep_proposals WHERE status='proposed') sleep_proposals, "
+                "(SELECT COUNT(*) FROM agent_task_observations) agent_tasks, "
+                "(SELECT COUNT(*) FROM controlled_experiments WHERE status='active') active_experiments, "
+                "(SELECT COUNT(*) FROM sleep_trials) sleep_trials, "
+                "(SELECT COUNT(*) FROM summary_candidates WHERE status='proposed') summary_candidates, "
+                "(SELECT COUNT(*) FROM prospective_items WHERE status='open') prospective_open, "
+                "(SELECT COUNT(*) FROM reconsolidation_events) reconsolidation_events, "
                 "(SELECT COUNT(*) FROM document_sources WHERE status='active') documents, "
                 "(SELECT COUNT(*) FROM document_chunks WHERE active=1) document_chunks"
             ).fetchone()
@@ -3760,6 +3988,8 @@ class CortexStore:
                 parsed_features = {}
             item["features"] = parsed_features if isinstance(parsed_features, dict) else {}
             metacognition_recent.append(item)
+        from .research import research_snapshot
+
         return {
             "generated_at": utc_now(),
             "stats": self.stats(),
@@ -3800,6 +4030,7 @@ class CortexStore:
             "evaluations": self.evaluation_snapshot(),
             "evidence_hierarchy": self.evidence_hierarchy_snapshot(),
             "tool_evaluation": self.tool_evaluation_snapshot(),
+            "research": research_snapshot(self),
             "metacognition": {
                 "mode": str(metacognition_summary.get("latest_mode") or "shadow"),
                 "summary": metacognition_summary,
@@ -3876,6 +4107,20 @@ class CortexStore:
                 """SELECT COUNT(*) n FROM sleep_proposals p
                    LEFT JOIN sleep_runs r ON r.run_id=p.run_id WHERE r.run_id IS NULL"""
             ).fetchone()["n"]
+            orphan_experiment_assignments = self._conn.execute(
+                """SELECT COUNT(*) n FROM recall_experiment_assignments a
+                   LEFT JOIN controlled_experiments e ON e.experiment_id=a.experiment_id
+                   WHERE e.experiment_id IS NULL"""
+            ).fetchone()["n"]
+            orphan_agent_assignments = self._conn.execute(
+                """SELECT COUNT(*) n FROM agent_task_observations t
+                   LEFT JOIN recall_experiment_assignments a ON a.assignment_id=t.experiment_assignment_id
+                   WHERE t.experiment_assignment_id IS NOT NULL AND a.assignment_id IS NULL"""
+            ).fetchone()["n"]
+            orphan_prospective_items = self._conn.execute(
+                """SELECT COUNT(*) n FROM prospective_items p
+                   LEFT JOIN memories m ON m.id=p.memory_id WHERE m.id IS NULL OR m.kind<>'prospective'"""
+            ).fetchone()["n"]
         return {
             "ok": not (
                 duplicate_groups
@@ -3889,6 +4134,9 @@ class CortexStore:
                 or stuck_usage
                 or orphan_document_chunks
                 or orphan_sleep_proposals
+                or orphan_experiment_assignments
+                or orphan_agent_assignments
+                or orphan_prospective_items
             ),
             "duplicate_groups": len(duplicate_groups),
             "orphan_fts_rows": orphan_fts,
@@ -3902,6 +4150,9 @@ class CortexStore:
             "stuck_pending_usage": stuck_usage,
             "orphan_document_chunks": orphan_document_chunks,
             "orphan_sleep_proposals": orphan_sleep_proposals,
+            "orphan_experiment_assignments": orphan_experiment_assignments,
+            "orphan_agent_assignments": orphan_agent_assignments,
+            "orphan_prospective_items": orphan_prospective_items,
         }
 
     def consolidate(self, *, dry_run: bool = True, similarity_threshold: float = 0.78) -> dict[str, Any]:

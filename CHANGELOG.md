@@ -19,6 +19,8 @@
 - added schema 9 audited task-outcome labels, private evaluation cases and aggregate paired-run ledgers, plus tool-guidance exposure follow-through;
 - added an Outcome & Causality Lab that turns reversible positive task labels into a private fixed-versus-adaptive retrieval evaluation after eight cases;
 - added a read-only evidence hierarchy, proposal-level Sleep hypotheses, observational tool/workflow evaluation, and a metacognition enforcement gate that keeps configured enforcement in shadow until calibration and selective-risk thresholds pass;
+- added schema 10 controlled recall assignments, agent-task evaluation, randomized matched Sleep apply trials, a failure explorer, approval-gated cited summaries, prospective-memory state, and reconsolidation follow-through;
+- added a Learning Lab with explicit daily accuracy, sparse-chart safeguards, condition confidence intervals, reversible treatment links, task-level labeling for no-memory controls, and evidence-first causal gates;
 - added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
 - added Sleep safety, idempotency, budget, outage, and reversibility tests.
 

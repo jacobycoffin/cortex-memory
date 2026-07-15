@@ -32,6 +32,15 @@ from .evaluation import (
     HistoryCase,
     compare_real_history,
 )
+from .research import (
+    create_prospective_item,
+    generate_summary_candidates,
+    review_summary_candidate,
+    set_recall_experiment,
+    start_sleep_apply_trial,
+    undo_sleep_apply_trial,
+    update_prospective_item,
+)
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
 
@@ -363,6 +372,13 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/evaluation/start",
                 "/api/outcome/label",
                 "/api/outcome/undo",
+                "/api/experiment/control",
+                "/api/sleep/trial/start",
+                "/api/sleep/trial/undo",
+                "/api/summary/generate",
+                "/api/summary/review",
+                "/api/prospective/create",
+                "/api/prospective/update",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -377,7 +393,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 parsed.path.startswith("/api/review/")
                 or parsed.path in {
                     "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
-                    "/api/outcome/label", "/api/outcome/undo",
+                    "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
+                    "/api/sleep/trial/start", "/api/sleep/trial/undo", "/api/summary/generate",
+                    "/api/summary/review", "/api/prospective/create", "/api/prospective/update",
                 }
             )
             if not self._require_auth(complete=needs_complete_auth):
@@ -399,6 +417,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             if parsed.path in {"/api/outcome/label", "/api/outcome/undo"}:
                 self._outcome_feedback(undo=parsed.path.endswith("/undo"))
+                return
+            if parsed.path.startswith(("/api/experiment/", "/api/sleep/trial/", "/api/summary/", "/api/prospective/")):
+                self._research_action(parsed.path)
                 return
             if not reviews_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
@@ -557,6 +578,55 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._json(HTTPStatus.OK, {"result": result, "outcome_lab": store.outcome_lab_snapshot()})
+
+        def _research_action(self, path: str) -> None:
+            if not reviews_enabled:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "research and memory changes are disabled on this dashboard"})
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            actor = auth.username() if auth_enabled else "local-operator"
+            try:
+                if path == "/api/experiment/control":
+                    action = str(payload.get("action") or "start").casefold()
+                    if action not in {"start", "stop"}:
+                        raise ValueError("experiment action must be start or stop")
+                    result = set_recall_experiment(store, active=action == "start")
+                elif path == "/api/sleep/trial/start":
+                    result = start_sleep_apply_trial(store, pair_limit=int(payload.get("pair_limit") or 8))
+                elif path == "/api/sleep/trial/undo":
+                    result = undo_sleep_apply_trial(store, str(payload.get("trial_id") or ""))
+                elif path == "/api/summary/generate":
+                    result = generate_summary_candidates(store, limit=int(payload.get("limit") or 6))
+                elif path == "/api/summary/review":
+                    result = review_summary_candidate(
+                        store,
+                        str(payload.get("candidate_id") or ""),
+                        action=str(payload.get("action") or "").casefold(),
+                        actor=actor,
+                    )
+                elif path == "/api/prospective/create":
+                    result = create_prospective_item(
+                        store,
+                        content=str(payload.get("content") or ""),
+                        due_at=str(payload.get("due_at") or "") or None,
+                        actor=actor,
+                    )
+                else:
+                    memory_id = store.resolve_id(str(payload.get("memory_id") or ""))
+                    if not memory_id:
+                        raise ValueError("prospective memory not found")
+                    result = update_prospective_item(
+                        store,
+                        memory_id,
+                        status=str(payload.get("status") or "open").casefold(),
+                        due_at=(str(payload.get("due_at")) if "due_at" in payload else None),
+                    )
+            except (TypeError, ValueError) as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._json(HTTPStatus.OK, {"result": result})
 
         def _login(self) -> None:
             if not auth_enabled:

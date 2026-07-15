@@ -41,8 +41,12 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 | Workstream | Safety rule | Acceptance evidence |
 | --- | --- | --- |
-| Multi-resolution memory | Read-only hierarchy preview implemented; raw evidence remains immutable and addressable. | Episodes, facts, procedures, and future summaries are ablated separately before summary writes are enabled. |
-| Evidence-backed summaries | Dependency-backed claim and bundle preview implemented; no automatic summary writes. | Every future summary statement names active source IDs and unsupported-claim rate plus retrieval cost improve together. |
+| Multi-resolution memory | Raw evidence, dependency-backed claims, and approval-gated cited summaries implemented. | Episodes, facts, procedures, and summaries are ablated separately before automatic candidate generation expands. |
+| Evidence-backed summaries | Extractive cited candidates and authenticated approval implemented; no automatic recallable summary writes. | Every statement names active source IDs and unsupported-claim rate plus retrieval cost improve together. |
+| Controlled recall experiment | Balanced randomized adaptive/fixed/no-memory assignment and explicit outcome gate implemented. | Each arm reaches its minimum label count across representative task types before policy changes are adopted. |
+| Controlled Sleep apply trial | Matched association treatment/control assignment and one-click reversal implemented. | Explicit future-task outcomes reach both-arm thresholds without reversal conflicts. |
+| Agent-level evaluation | Daily explicit accuracy, completion, tools, context, latency, corrections, and failure routing implemented. | Several weeks of coverage make task-type comparisons stable enough for configuration decisions. |
+| Prospective state and reconsolidation | Open/due/completed/abandoned commitments and correction replacement history implemented. | Notification delivery and longer-horizon replacement-rate evaluation remain external follow-ons. |
 | Contradiction and supersession detection | Detection is reviewable before state changes. | Current and historical accuracy improve on a time-labeled set. |
 | Confidence calibration | Shadow instrumentation and hard promotion gate implemented; confidence cannot rise from retrieval count alone. | At least 50 representative labels, Brier ≤ 0.20, ECE ≤ 0.15, and low selective risk pass before a controlled enforcement trial. |
 | Association reinforcement and decay | Co-use strengthens links; unused links decay without deleting evidence. | Graph-on beats graph-off without reducing precision. |

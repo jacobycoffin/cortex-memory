@@ -19,6 +19,30 @@ The authenticated Outcome & Causality Lab provides the operator path for ongoing
 
 Raw queries and relevant memory IDs remain in the local `evaluation_cases` table so the test can be rerun. Persisted `evaluation_runs` reports omit those private fields. Label coverage is a measurement-quality driver: an attractive helpfulness rate over a small or selectively labeled subset should not be treated as representative.
 
+### Controlled recall experiment
+
+The Learning Lab adds a prospective experiment rather than replaying only labeled history:
+
+1. An authenticated operator starts the experiment.
+2. Before each Cortex prefetch, the task is assigned inside a task-type stratum to the least-filled arm; a deterministic random bucket breaks ties. The three arms are adaptive recall, fixed recall, and no Cortex memory or tool guidance.
+3. Turn sync records completion, recalled-memory count, context tokens, provider preparation time, end-to-end elapsed time, and observed tool outcomes under the same task ID.
+4. The operator can label every completed task, including no-memory tasks with no usage rows.
+5. Accuracy is `helpful + validated` divided by all explicit positive and negative dashboard labels. Inferred conversational feedback is diagnostic only and never unlocks the causal gate.
+6. The dashboard requires at least eight explicit labels in every arm and shows Wilson intervals before describing an initial causal estimate.
+
+Assignment is balanced randomized blocking, not retrospective matching. Starting a new experiment creates a fresh experiment ID; stopping preserves all assignments and results.
+
+### Agent-level evaluation and failures
+
+The daily graph keeps the primary outcome and diagnostics separate:
+
+- primary outcome: explicit task accuracy;
+- drivers: explicit-label coverage and completed turn-sync records;
+- behavior diagnostics: tool result success, corrections, context tokens, provider preparation, and end-to-end elapsed time;
+- guardrails: negative outcomes, missing labels, and no-memory/control balance.
+
+The failure explorer applies bounded rules to negative labels and observed tool errors. Its candidate cause is a diagnostic routing hint—not a causal attribution—and links the operator to the task evidence and a specific improvement lever.
+
 ## Claim boundaries
 
 | Evaluation | Measures | Does not establish |

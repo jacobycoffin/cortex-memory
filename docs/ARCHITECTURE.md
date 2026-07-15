@@ -41,7 +41,7 @@ flowchart TD
 | Episodic | immutable `episodes`, `tool_executions`, episode memories | exact observations with deduplication |
 | Semantic | semantic/decision/preference/identity memories and optional claims | versioned and time-aware |
 | Procedural | procedure memories, tool stats, workflow stats | reinforced only after repeated outcomes |
-| Prospective | protected prospective kind and validity fields | retained; scheduling remains external |
+| Prospective | protected prospective kind, explicit lifecycle state, and due time | dashboard tracks open, overdue, completed, and abandoned; notification delivery remains external |
 
 This is functional decomposition, not a claim that a SQLite table is a hippocampus or cortex.
 
@@ -105,7 +105,9 @@ The dashboard's fixed synthetic benchmark runs outside the production retrieval 
 
 The private real-history path begins with one auditable `task_outcome_labels` decision over memories actually attributed to a task. Positive labels maintain a local `evaluation_cases` row containing the private query and relevant IDs. The dashboard evaluates fixed and adaptive retrieval over the same cases in a disposable consistent snapshot, then persists only a sanitized `evaluation_runs` report. The Outcome Lab exposes label coverage as a driver, observed helpfulness as the primary descriptive KPI, and calibration, selective risk, context size, latency, and pruning regret as guardrails.
 
-The evidence hierarchy is read-only: level one is raw active/cold evidence, level two contains memories with explicit `memory_dependencies`, and level three groups repeated structure into navigation candidates. It does not create summary memories. Sleep proposals are rendered as hypotheses with an exposure flag and later task outcomes; tool and workflow suggestions create `tool_guidance_exposures` rows so follow-through can be compared without calling it causal.
+The evidence hierarchy keeps level one raw active/cold evidence and level two memories with explicit `memory_dependencies`. Level three contains extractive summary candidates whose every claim names a source memory. Candidates remain outside recall until an authenticated operator approves them; approval creates one protected summary memory with dependencies to every cited source. Sleep proposals are rendered as hypotheses with an exposure flag and later task outcomes; tool and workflow suggestions create `tool_guidance_exposures` rows so follow-through can be compared without calling it causal.
+
+Schema 10 adds a shared research ledger. `controlled_experiments` and `recall_experiment_assignments` record balanced randomized assignment before recall. `agent_task_observations` keeps recall condition, context, timing, tool results, correction signals, and outcomes under the existing task ID. Explicit dashboard labels update that row and the assignment; inferred conversation feedback has a distinct source. `sleep_trials` and `sleep_trial_items` record matched treatment/control proposals. Summary candidates, prospective items, and reconsolidation events preserve citations, state transitions, and old/new version identity respectively.
 
 ## Feedback and attribution
 
@@ -158,4 +160,4 @@ Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_re
 
 Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.
 
-Schema 9 adds auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.
+Schema 10 adds controlled assignments, agent-task observations, matched Sleep trials, cited summary review, prospective state, and reconsolidation events. Schema 9 added auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.

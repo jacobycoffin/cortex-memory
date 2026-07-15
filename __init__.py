@@ -9,6 +9,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,11 @@ from .cognition import plan_recall
 from .extraction import extract_candidates
 from .metacognition import MetacognitiveAssessment, assess_retrieval
 from .retrieval import MemoryRetriever, RetrievalDiagnostics, RetrievalResult, token_overlap
+from .research import (
+    assign_recall_condition,
+    complete_agent_tasks,
+    record_agent_task_start,
+)
 from .security import safe_prompt_text, sanitize_memory
 from .store import CortexStore
 from .tooling import build_tool_workflow, classify_task, extract_tool_executions, task_fingerprint
@@ -159,6 +165,7 @@ class CortexMemoryProvider(MemoryProvider):
         self._pending_prefetches: dict[str, list[tuple[list[str], str | None]]] = {}
         self._used_by_session: dict[str, list[str]] = {}
         self._completed_task_by_session: dict[str, list[str]] = {}
+        self._task_started_monotonic: dict[str, float] = {}
 
     @property
     def name(self) -> str:
@@ -198,7 +205,23 @@ class CortexMemoryProvider(MemoryProvider):
             return ""
         sid = session_id or self._session_id or "default"
         prepare_start = time.perf_counter()
+        task_started = time.monotonic()
+        task_id = str(uuid.uuid4())
+        task_type = classify_task(query)
+        assignment = assign_recall_condition(
+            self._store,
+            session_id=sid,
+            query=query,
+            task_type=task_type,
+        )
+        recall_condition = str(assignment["condition"]) if assignment else (
+            "adaptive" if _as_bool(self._config.get("adaptive_recall", True)) else "fixed"
+        )
         adaptive_recall = _as_bool(self._config.get("adaptive_recall", True))
+        if recall_condition == "adaptive":
+            adaptive_recall = True
+        elif recall_condition in {"fixed", "no_memory"}:
+            adaptive_recall = False
         if adaptive_recall:
             plan = plan_recall(
                 query,
@@ -225,8 +248,50 @@ class CortexMemoryProvider(MemoryProvider):
                 1,
                 4,
             )
+        if recall_condition == "no_memory":
+            prepare_ms = (time.perf_counter() - prepare_start) * 1000
+            self._record_prefetch_task(
+                sid=sid,
+                task_id=task_id,
+                task_type=task_type,
+                query=query,
+                recall_condition=recall_condition,
+                recall_mode="controlled_no_memory",
+                memory_ids=[],
+                context_tokens=0,
+                prepare_ms=prepare_ms,
+                assignment_id=str(assignment["assignment_id"]) if assignment else None,
+                started_monotonic=task_started,
+            )
+            self._store.record_recall_run(
+                session_id=sid,
+                query=query,
+                mode="controlled_no_memory",
+                reason="randomized no-memory control; Cortex evidence withheld",
+                requested_limit=0,
+                token_budget=0,
+                candidate_count=0,
+                selected_count=0,
+                estimated_tokens=0,
+                prepare_ms=prepare_ms,
+                abstained=True,
+            )
+            return ""
         if not plan.needs_memory:
             prepare_ms = (time.perf_counter() - prepare_start) * 1000
+            self._record_prefetch_task(
+                sid=sid,
+                task_id=task_id,
+                task_type=task_type,
+                query=query,
+                recall_condition=recall_condition,
+                recall_mode=plan.mode,
+                memory_ids=[],
+                context_tokens=0,
+                prepare_ms=prepare_ms,
+                assignment_id=str(assignment["assignment_id"]) if assignment else None,
+                started_monotonic=task_started,
+            )
             self._store.record_recall_run(
                 session_id=sid,
                 query=query,
@@ -241,7 +306,6 @@ class CortexMemoryProvider(MemoryProvider):
                 abstained=True,
             )
             return ""
-        task_type = classify_task(query)
         if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
             budget_diagnostics = self._store.recommend_token_budget(
                 task_type,
@@ -401,8 +465,22 @@ class CortexMemoryProvider(MemoryProvider):
                         for assessment in assessments
                     ],
                     metacognition_mode=monitor_mode,
+                    task_id=task_id,
                 )
             prepare_ms = (time.perf_counter() - prepare_start) * 1000
+            self._record_prefetch_task(
+                sid=sid,
+                task_id=task_id,
+                task_type=task_type,
+                query=query,
+                recall_condition=recall_condition,
+                recall_mode=plan.mode,
+                memory_ids=[],
+                context_tokens=0,
+                prepare_ms=prepare_ms,
+                assignment_id=str(assignment["assignment_id"]) if assignment else None,
+                started_monotonic=task_started,
+            )
             self._store.record_recall_run(
                 session_id=sid,
                 query=query,
@@ -466,7 +544,7 @@ class CortexMemoryProvider(MemoryProvider):
                     f"- {chain}; {guidance['success_count']} ok/{guidance['failure_count']} failed"
                 )
         context = "\n".join(lines)
-        task_id = (
+        if results or assessments or tool_guidance or workflow_guidance:
             self._store.create_usage_batch(
                 [(result.memory["id"], result.score) for result in results],
                 query=query,
@@ -480,10 +558,8 @@ class CortexMemoryProvider(MemoryProvider):
                     for assessment in assessments
                 ],
                 metacognition_mode=monitor_mode,
+                task_id=task_id,
             )
-            if results or assessments or tool_guidance or workflow_guidance
-            else None
-        )
         if tool_guidance or workflow_guidance:
             self._store.record_tool_guidance_exposures(
                 session_id=sid,
@@ -492,19 +568,20 @@ class CortexMemoryProvider(MemoryProvider):
                 tool_guidance=tool_guidance,
                 workflow_guidance=workflow_guidance,
             )
-        dropped_pending: list[tuple[list[str], str | None]] = []
-        with self._cache_lock:
-            pending = self._pending_prefetches.setdefault(sid, [])
-            pending.append((ids, task_id))
-            if len(pending) > 128:
-                dropped_pending = pending[:-128]
-                del pending[:-128]
-        # A broken caller that prefetches forever without syncing a turn must
-        # not leave unbounded pending attribution records behind.
-        for _memory_ids, dropped_task_id in dropped_pending:
-            if dropped_task_id:
-                self._store.resolve_usage(dropped_task_id, {})
         prepare_ms = (time.perf_counter() - prepare_start) * 1000
+        self._record_prefetch_task(
+            sid=sid,
+            task_id=task_id,
+            task_type=task_type,
+            query=query,
+            recall_condition=recall_condition,
+            recall_mode=plan.mode,
+            memory_ids=ids,
+            context_tokens=(len(context) + 3) // 4,
+            prepare_ms=prepare_ms,
+            assignment_id=str(assignment["assignment_id"]) if assignment else None,
+            started_monotonic=task_started,
+        )
         self._store.record_recall_run(
             session_id=sid,
             query=query,
@@ -551,8 +628,12 @@ class CortexMemoryProvider(MemoryProvider):
         safe_user = sanitize_memory(user_content)
         safe_assistant = sanitize_memory(assistant_content)
         self._store.record_episode(safe_user.text, safe_assistant.text, session_id=sid)
-        if messages:
-            self._capture_tool_outcomes(messages, sid)
+        executions = self._capture_tool_outcomes(messages, sid) if messages else []
+        current_executions = [
+            execution
+            for execution in executions
+            if sanitize_memory(execution.task_context).text == safe_user.text
+        ]
 
         created_ids: list[str] = []
         if _as_bool(self._config.get("auto_capture", True)):
@@ -573,6 +654,14 @@ class CortexMemoryProvider(MemoryProvider):
                 attributions[memory["id"]] = attribution
         for current_task in current_tasks:
             self._store.resolve_usage(current_task, attributions)
+            started = self._task_started_monotonic.pop(current_task, None)
+            complete_agent_tasks(
+                self._store,
+                [current_task],
+                response_ms=(time.monotonic() - started) * 1000 if started is not None else 0.0,
+                tool_calls=len(current_executions),
+                tool_successes=sum(int(execution.success) for execution in current_executions),
+            )
         if current_tasks:
             self._completed_task_by_session[sid] = current_tasks
         self._used_by_session[sid] = used
@@ -650,7 +739,10 @@ class CortexMemoryProvider(MemoryProvider):
             self._used_by_session.pop(new_session_id, None)
             self._completed_task_by_session.pop(new_session_id, None)
             with self._cache_lock:
-                self._pending_prefetches.pop(new_session_id, None)
+                dropped = self._pending_prefetches.pop(new_session_id, None) or []
+                for _memory_ids, task_id in dropped:
+                    if task_id:
+                        self._task_started_monotonic.pop(task_id, None)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [CORTEX_MEMORY_SCHEMA]
@@ -902,6 +994,7 @@ class CortexMemoryProvider(MemoryProvider):
         with self._cache_lock:
             self._retrieval_cache.clear()
             self._pending_prefetches.clear()
+            self._task_started_monotonic.clear()
 
     def _capture(self, text: str, *, role: str, session_id: str) -> list[str]:
         if not self._store:
@@ -955,9 +1048,52 @@ class CortexMemoryProvider(MemoryProvider):
         task_ids = list(dict.fromkeys(task_id for _memory_ids, task_id in matches if task_id))
         return ids, task_ids
 
-    def _capture_tool_outcomes(self, messages: List[Dict[str, Any]], session_id: str) -> None:
+    def _record_prefetch_task(
+        self,
+        *,
+        sid: str,
+        task_id: str,
+        task_type: str,
+        query: str,
+        recall_condition: str,
+        recall_mode: str,
+        memory_ids: list[str],
+        context_tokens: int,
+        prepare_ms: float,
+        assignment_id: str | None,
+        started_monotonic: float,
+    ) -> None:
         if not self._store:
             return
+        record_agent_task_start(
+            self._store,
+            task_id=task_id,
+            session_id=sid,
+            task_type=task_type,
+            query=query,
+            recall_condition=recall_condition,
+            recall_mode=recall_mode,
+            memory_count=len(memory_ids),
+            context_tokens=context_tokens,
+            prepare_ms=prepare_ms,
+            assignment_id=assignment_id,
+        )
+        dropped_pending: list[tuple[list[str], str | None]] = []
+        with self._cache_lock:
+            self._task_started_monotonic[task_id] = started_monotonic
+            pending = self._pending_prefetches.setdefault(sid, [])
+            pending.append((memory_ids, task_id))
+            if len(pending) > 128:
+                dropped_pending = pending[:-128]
+                del pending[:-128]
+        for _memory_ids, dropped_task_id in dropped_pending:
+            if dropped_task_id:
+                self._store.resolve_usage(dropped_task_id, {})
+                self._task_started_monotonic.pop(dropped_task_id, None)
+
+    def _capture_tool_outcomes(self, messages: List[Dict[str, Any]], session_id: str) -> list[Any]:
+        if not self._store:
+            return []
         executions = extract_tool_executions(messages, session_id=session_id)
         observed_workflow = build_tool_workflow(executions)
         self._store.resolve_tool_guidance_exposures(
@@ -1066,6 +1202,7 @@ class CortexMemoryProvider(MemoryProvider):
                     extraction_method="tool_workflow_aggregator_v1",
                     evidence_ids=workflow_evidence_ids,
                 )
+        return executions
 
     def _resolve(self, value: Any) -> str | None:
         return self._store.resolve_id(str(value or "")) if self._store else None

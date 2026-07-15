@@ -382,7 +382,7 @@ class CortexStoreTests(unittest.TestCase):
         hierarchy = self.store.evidence_hierarchy_snapshot()
         self.assertEqual(hierarchy["dependency_count"], 1)
         self.assertEqual(hierarchy["supported_claims"][0]["id"], claim_id)
-        self.assertIn("no summary memory", hierarchy["claim_boundary"])
+        self.assertIn("no summary is written automatically", hierarchy["claim_boundary"])
 
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()
