@@ -15,6 +15,7 @@
 - added a daily Accuracy × capacity view that compares outcome-backed memory helpfulness, stored capacity, and average recall context with visible sample size and descriptive-only correlation;
 - fixed Timeline totals and memory-type charts to use complete daily aggregates instead of the 1,000-row interactive-detail cap;
 - added schema 7 metacognitive prediction records, conservative outcome-band calibration, shadow use/verify/abstain decisions, and a dedicated Trust monitor with Brier/ECE evidence;
+- added schema 8 dashboard benchmark runs with an authenticated fixed-suite runner, transparent quality/speed score, persisted history graph, host environment record, and measured improvement guidance;
 - added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
 - added Sleep safety, idempotency, budget, outage, and reversibility tests.
 

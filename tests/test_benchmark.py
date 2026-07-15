@@ -15,6 +15,7 @@ from cortex.benchmarks.core import (
     run_benchmark,
     summarize_latencies,
 )
+from cortex.benchmarking import benchmark_recommendations, summarize_dashboard_benchmark
 from cortex.scripts.benchmark_aggregate import aggregate_reports
 
 
@@ -52,6 +53,38 @@ class CortexBenchmarkTests(unittest.TestCase):
         markdown = render_markdown(report)
         self.assertIn("does **not** measure LLM inference speed", markdown)
         self.assertIn("Required caveats", markdown)
+
+    def test_dashboard_score_keeps_quality_primary_and_speed_bounded(self) -> None:
+        report = {
+            "results": [
+                {
+                    "corpus_memories": 2000,
+                    "queries": 80,
+                    "default_built_in": {"answer_coverage_rate": 0.02},
+                    "cortex": {
+                        "recall_at_k": 0.90,
+                        "mrr": 0.80,
+                        "precision_at_k": 0.16,
+                        "query_latency": {"p50_ms": 40.0, "p95_ms": 100.0},
+                        "context_approx_tokens": {"p50": 173.0},
+                    },
+                }
+            ]
+        }
+        summary = summarize_dashboard_benchmark(report)
+        self.assertEqual(summary["quality_score"], 86.5)
+        self.assertEqual(summary["speed_score"], 50.0)
+        self.assertEqual(summary["score"], 81.0)
+        self.assertIn("does not measure model inference speed", summary["claim_boundary"])
+        self.assertEqual(len(benchmark_recommendations(summary)), 3)
+
+    def test_offline_runner_can_report_scale_progress(self) -> None:
+        updates: list[dict] = []
+        run_benchmark([24, 48], query_count=4, progress_callback=updates.append)
+        self.assertEqual([item["state"] for item in updates], [
+            "starting_scale", "completed_scale", "starting_scale", "completed_scale"
+        ])
+        self.assertEqual(updates[-1]["corpus_memories"], 48)
 
     def test_live_aggregate_accepts_independent_query_seeds(self) -> None:
         def live_report(seed: int) -> dict:

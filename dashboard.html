@@ -1149,6 +1149,52 @@
     .capacity-line, .accuracy-line { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
     .accuracy-line { stroke-width: 3; }
     .capacity-impact-note { margin: 8px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: .61rem; line-height: 1.48; }
+    .benchmark-lab { margin-bottom: 18px; padding: 0; overflow: hidden; }
+    .benchmark-lab-head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; padding: 20px; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--violet) 5%,var(--surface)); }
+    .benchmark-lab-head h2 { margin: 5px 0 6px; font-family: var(--display); font-size: 1.35rem; font-weight: 540; }
+    .benchmark-lab-head p { max-width: 790px; margin: 0; color: var(--muted); font-size: .68rem; line-height: 1.5; }
+    .benchmark-controls { display: flex; align-items: center; justify-content: flex-end; gap: 9px; }
+    .benchmark-boundary { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 0; border-bottom: 1px solid var(--border); }
+    .benchmark-boundary div { padding: 13px 20px; background: var(--surface-2); }
+    .benchmark-boundary div + div { border-left: 1px solid var(--border); }
+    .benchmark-boundary strong { display: block; margin-bottom: 4px; font-size: .62rem; }
+    .benchmark-boundary span { color: var(--muted); font-size: .59rem; line-height: 1.45; }
+    .benchmark-progress { margin: 16px 20px 0; padding: 13px 14px; border: 1px solid var(--border); background: var(--surface-2); }
+    .benchmark-progress[hidden] { display: none; }
+    .benchmark-progress-head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 12px; align-items: start; }
+    .benchmark-progress-head strong { display: block; font-size: .68rem; }
+    .benchmark-progress-head p { margin: 4px 0 0; color: var(--muted); font-size: .61rem; line-height: 1.4; }
+    .benchmark-progress-value { color: var(--violet); font-family: ui-monospace,monospace; font-size: .6rem; }
+    .benchmark-progress-track { height: 5px; margin-top: 10px; background: var(--surface); overflow: hidden; }
+    .benchmark-progress-fill { height: 100%; width: 0; background: var(--violet); transition: width .25s ease; }
+    .benchmark-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 16px 20px; border: 1px solid var(--border); background: var(--surface-2); }
+    .benchmark-stat { min-width: 0; padding: 15px; }
+    .benchmark-stat + .benchmark-stat { border-left: 1px solid var(--border); }
+    .benchmark-stat span { color: var(--muted); font-family: ui-monospace,monospace; font-size: .52rem; letter-spacing: .08em; text-transform: uppercase; }
+    .benchmark-stat strong { display: block; margin-top: 7px; font: 540 1.45rem/1 var(--display); overflow-wrap: anywhere; }
+    .benchmark-stat small { display: block; margin-top: 7px; color: var(--muted); font-size: .57rem; line-height: 1.38; }
+    .benchmark-body { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(280px,.6fr); gap: 14px; padding: 0 20px 20px; }
+    .benchmark-chart { display: block; width: 100%; height: auto; min-height: 330px; overflow: visible; }
+    .benchmark-score-line, .benchmark-recall-line, .benchmark-latency-line { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .benchmark-target { stroke: var(--muted); stroke-width: 1.2; stroke-dasharray: 5 5; }
+    .benchmark-chart-note { margin: 8px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: .59rem; line-height: 1.45; }
+    .benchmark-recommendations { display: grid; gap: 8px; }
+    .benchmark-recommendation { padding: 12px; border: 1px solid var(--border); background: var(--surface-2); }
+    .benchmark-recommendation > span { color: var(--muted); font-family: ui-monospace,monospace; font-size: .5rem; letter-spacing: .07em; text-transform: uppercase; }
+    .benchmark-recommendation.healthy { border-left: 3px solid var(--green); }
+    .benchmark-recommendation.watch { border-left: 3px solid var(--amber); }
+    .benchmark-recommendation.improve { border-left: 3px solid var(--red); }
+    .benchmark-recommendation strong { display: block; margin-top: 6px; font-size: .66rem; }
+    .benchmark-recommendation p { margin: 5px 0 0; color: var(--muted); font-size: .58rem; line-height: 1.45; }
+    .benchmark-recommendation small { display: block; margin-top: 7px; color: var(--text-soft); font-size: .56rem; line-height: 1.42; }
+    .benchmark-footer { display: grid; grid-template-columns: minmax(0,1.4fr) minmax(280px,.6fr); gap: 14px; padding: 0 20px 20px; }
+    .benchmark-run-list { display: grid; gap: 0; }
+    .benchmark-run-row { display: grid; grid-template-columns: minmax(140px,1fr) repeat(3,minmax(75px,.45fr)); gap: 10px; align-items: center; padding: 10px 0; border-top: 1px solid var(--border); font-size: .59rem; }
+    .benchmark-run-row:first-child { border-top: 0; }
+    .benchmark-run-row strong { font-size: .64rem; }
+    .benchmark-run-row span { color: var(--muted); }
+    .benchmark-method { margin: 0; color: var(--muted); font-size: .62rem; line-height: 1.55; }
+    .benchmark-method strong { color: var(--text); }
     .metacognition-banner { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; padding: 18px 20px; border-left: 3px solid var(--blue); background: color-mix(in srgb,var(--blue) 5%,var(--surface)); }
     .metacognition-banner h2 { margin: 4px 0 6px; font-family: var(--display); font-size: 1.2rem; font-weight: 540; }
     .metacognition-banner p { max-width: 760px; margin: 0; color: var(--muted); font-size: .69rem; line-height: 1.5; }
@@ -1217,9 +1263,9 @@
     .settings-security-card strong { display: block; font-size: .75rem; }
     .settings-security-card p { margin: 6px 0 13px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
     @media (max-width: 1100px) { .sleep-process { grid-template-columns: repeat(3,minmax(0,1fr)); } .sleep-process article:nth-child(4) { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:nth-child(5), .sleep-process article:nth-child(6) { border-top: 1px solid var(--border); } .health-domain-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .health-domain-grid .health-area:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(4) { border-top: 1px solid var(--border); } }
-    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid, .sleep-command-grid, .sleep-audit-layout { grid-template-columns: 1fr; } .sleep-run-browser { position: static; } #sleep-run-history { max-height: 290px; } }
+    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid, .sleep-command-grid, .sleep-audit-layout, .benchmark-body, .benchmark-footer { grid-template-columns: 1fr; } .sleep-run-browser { position: static; } #sleep-run-history { max-height: 290px; } }
     @media (max-width: 920px) { .settings-grid { grid-template-columns: 1fr; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-observatory-head { align-items: stretch; flex-direction: column; } .sleep-controls { justify-content: flex-start; margin-bottom: 12px; } .sleep-process { grid-template-columns: 1fr; } .sleep-process article + article { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-run-stats, .health-domain-grid, .capacity-impact-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-run-stat:nth-child(3), .capacity-impact-stat:nth-child(3) { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } .sleep-run-stat:nth-child(4), .capacity-impact-stat:nth-child(4) { border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(even) { border-left: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(odd) { border-left: 0; } .health-domain-grid .health-area:nth-child(n+3) { border-top: 1px solid var(--border); } .sleep-effect-board { grid-template-columns: 1fr; } .sleep-ledger-head { align-items: flex-start; flex-direction: column; } .sleep-ledger-filters { justify-content: flex-start; } .sleep-cycle-head { align-items: stretch; flex-direction: column; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
+    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-observatory-head { align-items: stretch; flex-direction: column; } .sleep-controls { justify-content: flex-start; margin-bottom: 12px; } .sleep-process { grid-template-columns: 1fr; } .sleep-process article + article { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-run-stats, .health-domain-grid, .capacity-impact-summary, .benchmark-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-run-stat:nth-child(3), .capacity-impact-stat:nth-child(3), .benchmark-stat:nth-child(3) { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } .sleep-run-stat:nth-child(4), .capacity-impact-stat:nth-child(4), .benchmark-stat:nth-child(4) { border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(even) { border-left: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(odd) { border-left: 0; } .health-domain-grid .health-area:nth-child(n+3) { border-top: 1px solid var(--border); } .sleep-effect-board { grid-template-columns: 1fr; } .sleep-ledger-head { align-items: flex-start; flex-direction: column; } .sleep-ledger-filters { justify-content: flex-start; } .sleep-cycle-head, .benchmark-lab-head { align-items: stretch; grid-template-columns: 1fr; } .benchmark-controls { justify-content: flex-start; } .benchmark-boundary { grid-template-columns: 1fr; } .benchmark-boundary div + div { border-left: 0; border-top: 1px solid var(--border); } .benchmark-body, .benchmark-footer { padding-inline: 12px; } .benchmark-summary { margin-inline: 12px; } .benchmark-progress { margin-inline: 12px; } .benchmark-run-row { grid-template-columns: minmax(0,1fr) repeat(2,minmax(60px,.45fr)); } .benchmark-run-row > :last-child { display: none; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
     @media (max-width: 430px) { .sleep-metric-grid { grid-template-columns: 1fr; } .sleep-proposal-row { grid-template-columns: 1fr; gap: 6px; } .sleep-proposal-meta { grid-column: 1; } }
     @media (max-width: 1100px) { .metacognition-flow { grid-template-columns: repeat(2,minmax(0,1fr)); } .metacognition-step:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:nth-child(4) { border-top: 1px solid var(--border); } }
     @media (max-width: 620px) { .metacognition-banner { grid-template-columns: 1fr; } .monitor-mode { text-align: left; } .metacognition-flow { grid-template-columns: 1fr; } .metacognition-step + .metacognition-step { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .source-monitor-row { grid-template-columns: minmax(0,1fr) 80px; } .source-monitor-row > :nth-child(3), .source-monitor-row > :nth-child(4) { display: none; } .prediction-row { grid-template-columns: minmax(0,1fr) 72px; } .prediction-row > .decision-chip:last-child { grid-column: 2; } }
@@ -1416,6 +1462,43 @@
         <section class="view" id="view-insights" aria-labelledby="insights-heading">
           <div class="page-heading"><div><div class="eyebrow">Patterns Cortex can already see</div><h1 id="insights-heading">Insights</h1><p>Useful signals derived from recall, connection, source, and tool-learning activity.</p></div></div>
           <div class="metric-grid" id="insight-metrics"></div>
+          <section class="panel benchmark-lab" id="cortex-benchmark" aria-labelledby="benchmark-heading">
+            <div class="benchmark-lab-head">
+              <div><div class="eyebrow">Local retrieval benchmark · fixed suite</div><h2 id="benchmark-heading">Test Cortex on this system</h2><p>Build an isolated synthetic brain, ask labeled retrieval questions at 100, 500, and 2,000 memories, then record quality, context size, and local retrieval latency. No production memories or model tokens are used.</p></div>
+              <div class="benchmark-controls"><span class="chip" id="benchmark-status" aria-live="polite">Not run</span><button class="primary-btn" id="benchmark-start" type="button">Run benchmark</button></div>
+            </div>
+            <div class="benchmark-boundary">
+              <div><strong>What it measures</strong><span>Recall@6, ranking quality, approximate returned context, and Cortex’s local query-time overhead on this dashboard host.</span></div>
+              <div><strong>What it does not measure</strong><span>Kaya’s complete answer quality, provider latency, model time to first token, or a universal speed advantage.</span></div>
+            </div>
+            <div class="benchmark-progress" id="benchmark-progress" hidden>
+              <div class="benchmark-progress-head"><div><strong id="benchmark-progress-title">Preparing benchmark</strong><p id="benchmark-progress-message">Opening the fixed local retrieval suite.</p></div><span class="benchmark-progress-value" id="benchmark-progress-value">0%</span></div>
+              <div class="benchmark-progress-track"><div class="benchmark-progress-fill" id="benchmark-progress-fill"></div></div>
+            </div>
+            <div class="benchmark-summary" id="benchmark-summary"></div>
+            <div class="benchmark-body">
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>Benchmark history</h2><p>Quality and retrieval speed from compatible version 1 runs on this host</p></div><span class="chip" id="benchmark-run-total">0 runs</span></div>
+                <div class="trend-legend" id="benchmark-legend"></div>
+                <svg class="benchmark-chart" id="benchmark-history-chart" viewBox="0 0 900 430" role="img" aria-label="Cortex benchmark score, recall, and p95 retrieval latency over time"></svg>
+                <p class="benchmark-chart-note" id="benchmark-chart-note">One run gives a measured baseline. Eight compatible runs are recommended before reading the line as a trend.</p>
+              </div>
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>How to improve it</h2><p>Measured levers, ordered by what the latest run found</p></div></div>
+                <div class="benchmark-recommendations" id="benchmark-recommendations"></div>
+              </div>
+            </div>
+            <div class="benchmark-footer">
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>Recent runs</h2><p>Exact score, retrieval quality, and p95 latency</p></div></div>
+                <div class="benchmark-run-list" id="benchmark-run-list"></div>
+              </div>
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>What the score means</h2><p>A transparent operating index, not an intelligence score</p></div></div>
+                <p class="benchmark-method" id="benchmark-method"><strong>Overall score:</strong> 85% retrieval quality and 15% local p95 speed. Retrieval quality is 65% recall@6 and 35% MRR. Speed gets full credit at 50 ms p95 or faster. Context size stays a separate guardrail so returning nothing cannot game the score.</p>
+              </div>
+            </div>
+          </section>
           <div class="panel panel-pad capacity-impact-panel">
             <div class="panel-heading"><div><h2>Accuracy × capacity</h2><p>Does observed memory usefulness hold up as the brain stores more? Daily outcomes are plotted against total stored memories.</p></div><select class="control" id="capacity-impact-range" aria-label="Accuracy and capacity date range"><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="365">Last year</option></select></div>
             <div class="capacity-impact-summary" id="capacity-impact-summary"></div>
@@ -1651,6 +1734,7 @@
     };
     const authState = { enabled: true, username: "", currentPassword: "" };
     let sleepPollTimer = null;
+    let benchmarkPollTimer = null;
 
     const settingsThemeSlot = document.getElementById("settings-theme-slot");
     const themePicker = document.querySelector(".topbar .theme-picker");
@@ -1809,6 +1893,7 @@
     document.getElementById("timeline-range").addEventListener("change", renderTimeline);
     document.getElementById("trends-range").addEventListener("change", renderTrendChart);
     document.getElementById("capacity-impact-range").addEventListener("change", renderCapacityImpactChart);
+    document.getElementById("benchmark-start").addEventListener("click", startBenchmark);
     document.getElementById("metacognition-filter").addEventListener("change", event => { app.metacognitionFilter=event.target.value||"all"; renderMetacognitivePredictions(); });
     document.getElementById("sleep-start").addEventListener("click", startSleepSession);
     document.getElementById("sleep-ledger-filters").addEventListener("click", event => {
@@ -2545,9 +2630,67 @@
       renderMemoryRanking("hub-list",[...active].sort((a,b)=>connectionCount(b.id)-connectionCount(a.id)).slice(0,6),memory=>`${connectionCount(memory.id)} connections · ${humanize(memory.kind)}`);
       renderInsightSources(sourceCounts,memories.length);
       renderInsightTools(tools);
+      renderBenchmark(d.benchmarks||{});
       renderCapacityImpactChart();
       renderTrendChart();
     }
+
+    function renderBenchmark(benchmark) {
+      const runs=Array.isArray(benchmark.runs)?benchmark.runs:[],active=benchmark.active||null,latest=benchmark.latest||null,delta=benchmark.delta||null,result=benchmark.latest_result||{},summary=result.dashboard_summary||latest||{},button=document.getElementById("benchmark-start"),status=document.getElementById("benchmark-status"),progress=document.getElementById("benchmark-progress"),current=active||runs[0]||null;
+      button.disabled=Boolean(active);button.textContent=active?"Benchmark running…":"Run benchmark";
+      status.textContent=active?`${humanize(active.phase)} · ${Math.round(Number(active.progress||0))}%`:latest?`Score ${Number(latest.score||0).toFixed(1)}`:current?.status==="failed"?"Last run failed":"Not run";
+      progress.hidden=!(active||current?.status==="failed");
+      if(!progress.hidden){const progressValue=Math.max(0,Math.min(100,Number((active||current).progress||0)));document.getElementById("benchmark-progress-title").textContent=active?humanize(active.phase||"running"):"Benchmark stopped";document.getElementById("benchmark-progress-message").textContent=String((active||current).error||(active||current).message||"Benchmark is running.");document.getElementById("benchmark-progress-value").textContent=`${Math.round(progressValue)}%`;document.getElementById("benchmark-progress-fill").style.width=`${progressValue}%`;}
+      const summaryHost=document.getElementById("benchmark-summary");summaryHost.replaceChildren();
+      const stats=latest?[
+        ["Overall score",`${Number(latest.score||0).toFixed(1)} / 100`,delta?`${signed(delta.score,1)} vs previous compatible run`:"First compatible baseline"],
+        ["Recall@6",`${(Number(latest.recall_at_k||0)*100).toFixed(1)}%`,`${formatNum(latest.queries||0)} labeled questions at ${formatNum(latest.corpus_memories||0)} memories`],
+        ["MRR",Number(latest.mrr||0).toFixed(3),"1.000 means the correct memory ranked first every time"],
+        ["p95 retrieval",`${Number(latest.p95_ms||0).toFixed(1)} ms`,`${Number(latest.p95_ms||0)<=50?"Inside":"Above"} the 50 ms local gate`]
+      ]:[
+        ["Overall score","—","Run the fixed suite to create a baseline"],["Recall@6","—","Correct memory present in the first six"],["MRR","—","How close the answer ranks to first"],["p95 retrieval","—","Local retrieval overhead, excluding the model"]
+      ];
+      stats.forEach(([label,value,note])=>{const card=el("div","benchmark-stat");card.append(el("span","",label),el("strong","",value),el("small","",note));summaryHost.append(card);});
+      renderBenchmarkHistory(runs,latest);
+      const recommendationHost=document.getElementById("benchmark-recommendations"),recommendations=Array.isArray(summary.recommendations)?summary.recommendations:[];recommendationHost.replaceChildren();
+      if(!recommendations.length)recommendationHost.append(emptyState("Run the benchmark first","Measured guidance will separate retrieval coverage, ranking, latency, and context efficiency."));
+      recommendations.forEach(item=>{const card=el("article",`benchmark-recommendation ${item.state||"watch"}`);card.append(el("span","",`${item.area||"Measured lever"} · ${item.state||"watch"}`),el("strong","",item.title||"Review this metric"),el("p","",item.explanation||""),el("small","",item.action||""));recommendationHost.append(card);});
+      const runHost=document.getElementById("benchmark-run-list");runHost.replaceChildren();
+      if(!runs.length)runHost.append(emptyState("No benchmark history yet","The first completed run becomes the baseline for later code and host changes."));
+      runs.slice(0,8).forEach(run=>{const row=el("div","benchmark-run-row"),identity=el("div","");identity.append(el("strong","",formatDate(run.started_at)),el("span","",`${humanize(run.status)} · suite v${run.suite_version}`));row.append(identity,el("strong","",run.status==="completed"?Number(run.score||0).toFixed(1):"—"),el("span","",run.status==="completed"?`${(Number(run.recall_at_k||0)*100).toFixed(1)}% recall`:humanize(run.phase)),el("span","",run.status==="completed"?`${Number(run.p95_ms||0).toFixed(1)} ms p95`:String(run.error||run.message||"")));runHost.append(row);});
+      const method=document.getElementById("benchmark-method"),environment=result.environment||{},suite=result.dashboard_suite||{};method.replaceChildren(el("strong","","Overall score: "),document.createTextNode("85% retrieval quality and 15% local p95 speed. Retrieval quality is 65% recall@6 and 35% MRR. Speed gets full credit at 50 ms p95 or faster. Context size stays a separate guardrail so returning nothing cannot game the score."));
+      if(latest){method.append(document.createElement("br"),document.createElement("br"),el("strong","","Latest run: "),document.createTextNode(`suite v${latest.suite_version} · ${formatNum(latest.corpus_memories)} memories · ${formatNum(latest.queries)} labeled queries · Python ${environment.python||"unknown"}${suite.seed!==undefined?` · seed ${suite.seed}`:""}. Compare only compatible suite versions on similar host load.`));}
+      if(active)scheduleBenchmarkPoll();
+    }
+
+    function renderBenchmarkHistory(runs,latest) {
+      const svg=document.getElementById("benchmark-history-chart"),legend=document.getElementById("benchmark-legend"),note=document.getElementById("benchmark-chart-note"),version=latest?.suite_version||"1",rows=runs.filter(row=>row.status==="completed"&&String(row.suite_version)===String(version)).slice(0,24).reverse();svg.replaceChildren();legend.replaceChildren();document.getElementById("benchmark-run-total").textContent=`${formatNum(rows.length)} compatible ${rows.length===1?"run":"runs"}`;
+      const series=[{label:"Overall score",color:cssVar("--violet"),note:latest?Number(latest.score||0).toFixed(1):"—"},{label:"Recall@6",color:cssVar("--green"),note:latest?`${(Number(latest.recall_at_k||0)*100).toFixed(1)}%`:"—"},{label:"p95 retrieval",color:cssVar("--amber"),note:latest?`${Number(latest.p95_ms||0).toFixed(1)} ms`:"—"}];series.forEach(item=>{const entry=el("span","trend-legend-item"),swatch=el("i","");swatch.style.background=item.color;entry.append(swatch,el("span","",item.label),el("strong","",item.note));legend.append(entry);});
+      const W=900,H=430,L=64,R=26,topT=34,topH=205,bottomT=292,bottomH=78,plotW=W-L-R,x=index=>rows.length===1?L+plotW/2:L+index*plotW/(rows.length-1),qualityY=value=>topT+(100-value)*topH/100,maxLatency=Math.max(100,...rows.map(row=>Number(row.p95_ms||0))),latencyY=value=>bottomT+(maxLatency-value)*bottomH/maxLatency;
+      const desc=svgEl("desc");desc.textContent="Version-compatible synthetic benchmark runs. The upper panel shows score and recall on a 0 to 100 scale; the lower panel shows local p95 retrieval milliseconds.";svg.append(desc);
+      if(!rows.length){svg.append(svgText(W/2,185,"Run the benchmark to create the first measured point","chart-title","middle"),svgText(W/2,214,"The suite uses synthetic facts and does not read production memory","chart-label","middle"));note.textContent="One run gives a measured baseline. Eight compatible runs are recommended before reading the line as a trend.";return;}
+      for(let index=0;index<5;index++){const value=100-index*25,y=topT+index*topH/4;svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,class:"chart-grid"}),svgText(L-10,y+4,`${value}`,"chart-label","end"));}
+      const recallTarget=qualityY(98);svg.append(svgEl("line",{x1:L,y1:recallTarget,x2:W-R,y2:recallTarget,class:"benchmark-target"}),svgText(W-R,recallTarget-7,"98% recall target","chart-label","end"));
+      svg.append(svgText(L,topT-13,"Quality · 0–100","chart-label"),svgEl("line",{x1:L,y1:bottomT+bottomH,x2:W-R,y2:bottomT+bottomH,class:"chart-axis"}),svgText(L,bottomT-14,`Speed · p95 milliseconds (0–${Math.ceil(maxLatency)})`,"chart-label"));
+      const latencyTarget=latencyY(50);svg.append(svgEl("line",{x1:L,y1:latencyTarget,x2:W-R,y2:latencyTarget,class:"benchmark-target"}),svgText(W-R,latencyTarget-7,"50 ms gate","chart-label","end"));
+      const scorePoints=rows.map((row,index)=>({x:x(index),y:qualityY(Number(row.score||0)),value:Number(row.score||0),row})),recallPoints=rows.map((row,index)=>({x:x(index),y:qualityY(Number(row.recall_at_k||0)*100),value:Number(row.recall_at_k||0)*100,row})),latencyPoints=rows.map((row,index)=>({x:x(index),y:latencyY(Number(row.p95_ms||0)),value:Number(row.p95_ms||0),row}));
+      if(rows.length>=8){[[scorePoints,"--violet","benchmark-score-line"],[recallPoints,"--green","benchmark-recall-line"],[latencyPoints,"--amber","benchmark-latency-line"]].forEach(([points,color,className])=>svg.append(svgEl("path",{d:points.map((point,index)=>`${index?"L":"M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),stroke:cssVar(color),class:className})));}
+      [[scorePoints,"--violet","score"],[recallPoints,"--green","recall"],[latencyPoints,"--amber","latency"]].forEach(([points,color,label])=>points.forEach(point=>{const dot=svgEl("circle",{cx:point.x,cy:point.y,r:4.2,fill:cssVar("--surface"),stroke:cssVar(color),"stroke-width":"2.2"}),title=svgEl("title");title.textContent=`${formatDate(point.row.started_at)} · ${label} ${label==="latency"?`${point.value.toFixed(1)} ms`:point.value.toFixed(1)}`;dot.append(title);svg.append(dot);}));
+      const labelEvery=Math.max(1,Math.ceil(rows.length/6));rows.forEach((row,index)=>{if(index%labelEvery===0||index===rows.length-1)svg.append(svgText(x(index),H-18,shortDate(row.started_at),"chart-label","middle"));});
+      note.textContent=rows.length===1?"This is one measured baseline, not a trend. Re-run after code or host changes with similar load.":rows.length<8?`${rows.length} compatible runs are shown as individual comparisons. Reach eight before interpreting a trend line.`:"Lines connect compatible suite-version runs. Host load can move latency, so read quality and speed together.";
+    }
+
+    async function startBenchmark() {
+      const button=document.getElementById("benchmark-start");button.disabled=true;
+      try{const benchmark=await authRequest("/api/benchmark/start",{suite:"standard"});app.data.benchmarks=benchmark;renderBenchmark(benchmark);showToast("Benchmark started on this Cortex host; it usually takes about 10–20 seconds.");scheduleBenchmarkPoll();}
+      catch(error){button.disabled=false;showToast(`Could not start benchmark: ${error.message}`,true);}
+    }
+
+    function scheduleBenchmarkPoll(){if(benchmarkPollTimer)return;benchmarkPollTimer=setTimeout(()=>{benchmarkPollTimer=null;pollBenchmarkStatus();},800);}
+
+    async function pollBenchmarkStatus(){try{const response=await fetch("/api/benchmark/status",{cache:"no-store",credentials:"same-origin"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const benchmark=await response.json();app.data.benchmarks=benchmark;renderBenchmark(benchmark);if(benchmark.active)scheduleBenchmarkPoll();else await load(true);}catch(error){showToast(`Benchmark status unavailable: ${error.message}`,true);}}
+
+    function signed(value,digits=1){const number=Number(value||0);return`${number>=0?"+":""}${number.toFixed(digits)}`;}
 
     function renderCapacityImpactChart() {
       if(!app.data)return;

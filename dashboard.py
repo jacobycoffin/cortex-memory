@@ -17,6 +17,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .benchmarking import (
+    DASHBOARD_BENCHMARK_QUERIES,
+    DASHBOARD_BENCHMARK_SIZES,
+    DASHBOARD_BENCHMARK_SUITE,
+    DASHBOARD_BENCHMARK_VERSION,
+    run_dashboard_benchmark,
+)
 from .dashboard_auth import DashboardAuth, SESSION_COOKIE
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
@@ -114,6 +121,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     subsequent password changes invalidate older signed sessions.
     """
     store = CortexStore(db_path)
+    store.abandon_active_benchmarks()
     html_path = Path(__file__).with_name("dashboard.html")
     html = html_path.read_bytes()
     public_assets = {
@@ -152,6 +160,8 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         "error": None,
     }
     sleep_job: dict[str, threading.Thread | None] = {"thread": None}
+    benchmark_lock = threading.RLock()
+    benchmark_job: dict[str, threading.Thread | None] = {"thread": None}
     schedule_cache: dict[str, object] = {"checked_at": 0.0, "value": None}
 
     def sleep_schedule() -> dict[str, object]:
@@ -227,6 +237,20 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     }
                 )
 
+    def run_dashboard_benchmark_job(run_id: str) -> None:
+        try:
+            report = run_dashboard_benchmark(
+                progress_callback=lambda update: store.update_benchmark_progress(
+                    run_id,
+                    phase=str(update.get("phase") or "running"),
+                    progress=int(update.get("progress") or 0),
+                    message=str(update.get("message") or "Benchmark is running."),
+                )
+            )
+            store.complete_benchmark_run(run_id, report)
+        except Exception as error:
+            store.fail_benchmark_run(run_id, str(error))
+
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
@@ -240,7 +264,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/status":
                 self._headers_only(HTTPStatus.OK, "application/json; charset=utf-8", 0)
                 return
-            if parsed.path in {"/api/snapshot", "/api/memory", "/api/sleep/status"}:
+            if parsed.path in {"/api/snapshot", "/api/memory", "/api/sleep/status", "/api/benchmark/status"}:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
                 else:
@@ -281,6 +305,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/sleep/status":
                 self._json(HTTPStatus.OK, sleep_status())
                 return
+            if parsed.path == "/api/benchmark/status":
+                self._json(HTTPStatus.OK, store.benchmark_snapshot())
+                return
             if parsed.path == "/api/memory":
                 raw_id = parse_qs(parsed.query).get("id", [""])[0]
                 memory_id = store.resolve_id(raw_id)
@@ -300,6 +327,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/review/conflict",
                 "/api/review/inference",
                 "/api/sleep/start",
+                "/api/benchmark/start",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -310,7 +338,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/login":
                 self._login()
                 return
-            needs_complete_auth = parsed.path.startswith("/api/review/") or parsed.path == "/api/sleep/start"
+            needs_complete_auth = (
+                parsed.path.startswith("/api/review/")
+                or parsed.path in {"/api/sleep/start", "/api/benchmark/start"}
+            )
             if not self._require_auth(complete=needs_complete_auth):
                 return
             if parsed.path == "/api/auth/logout":
@@ -321,6 +352,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             if parsed.path == "/api/sleep/start":
                 self._start_sleep()
+                return
+            if parsed.path == "/api/benchmark/start":
+                self._start_benchmark()
                 return
             if not reviews_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
@@ -377,6 +411,35 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 sleep_job["thread"] = worker
                 worker.start()
             self._json(HTTPStatus.ACCEPTED, sleep_status())
+
+        def _start_benchmark(self) -> None:
+            payload = self._read_json()
+            if payload is None:
+                return
+            if str(payload.get("suite") or "standard").casefold() != "standard":
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "only the fixed standard benchmark is available"})
+                return
+            with benchmark_lock:
+                worker = benchmark_job.get("thread")
+                active = store.benchmark_snapshot(limit=5).get("active")
+                if (worker and worker.is_alive()) or active:
+                    self._json(HTTPStatus.CONFLICT, {"error": "a benchmark is already running"})
+                    return
+                run_id = store.begin_benchmark_run(
+                    suite=DASHBOARD_BENCHMARK_SUITE,
+                    suite_version=DASHBOARD_BENCHMARK_VERSION,
+                    corpus_memories=max(DASHBOARD_BENCHMARK_SIZES),
+                    queries=DASHBOARD_BENCHMARK_QUERIES,
+                )
+                worker = threading.Thread(
+                    target=run_dashboard_benchmark_job,
+                    args=(run_id,),
+                    name="cortex-dashboard-benchmark",
+                    daemon=True,
+                )
+                benchmark_job["thread"] = worker
+                worker.start()
+            self._json(HTTPStatus.ACCEPTED, store.benchmark_snapshot())
 
         def _login(self) -> None:
             if not auth_enabled:
@@ -544,4 +607,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         worker = sleep_job.get("thread")
         if worker and worker.is_alive():
             worker.join()
+        benchmark_worker = benchmark_job.get("thread")
+        if benchmark_worker and benchmark_worker.is_alive():
+            benchmark_worker.join()
         store.close()

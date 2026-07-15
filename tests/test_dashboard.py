@@ -97,6 +97,15 @@ class DashboardInterfaceTests(unittest.TestCase):
             "capacity-impact-legend",
             "capacity-impact-summary",
             "capacity-impact-range",
+            "cortex-benchmark",
+            "benchmark-start",
+            "benchmark-status",
+            "benchmark-progress",
+            "benchmark-summary",
+            "benchmark-history-chart",
+            "benchmark-recommendations",
+            "benchmark-run-list",
+            "benchmark-method",
             "view-trust",
             "metacognition-mode",
             "metacognition-metrics",
@@ -144,6 +153,12 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("app.data.memory_timeline_by_day_kind", html)
         self.assertIn("renderTimelineBars(timelineRows)", html)
         self.assertIn("function renderCapacityImpactChart", html)
+        self.assertIn("function renderBenchmark", html)
+        self.assertIn("function renderBenchmarkHistory", html)
+        self.assertIn("function startBenchmark", html)
+        self.assertIn("/api/benchmark/start", html)
+        self.assertIn("Test Cortex on this system", html)
+        self.assertIn("What it does not measure", html)
         self.assertIn("outcome-backed memory accuracy proxy", html)
         self.assertIn("function renderMetacognition", html)
         self.assertIn("function renderCalibrationChart", html)
@@ -208,6 +223,8 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('parsed.path == "/api/sleep/start"', server)
         self.assertIn('SleepConfig(mode="shadow", reflection_token_budget=0)', server)
         self.assertIn('snapshot["sleep_schedule"] = sleep_schedule()', server)
+        self.assertIn('parsed.path == "/api/benchmark/start"', server)
+        self.assertIn("run_dashboard_benchmark", server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 

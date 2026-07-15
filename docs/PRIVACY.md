@@ -25,6 +25,8 @@ The Trust monitor stores one `metacognitive_predictions` row for each memory con
 
 These rows are sensitive behavioral metadata. They remain in the local Cortex database, follow the database's existing backup and retention policy, disappear when their referenced memory is hard-deleted, and are only exposed through the authenticated dashboard snapshot. Shadow mode records them without changing Kaya's prompt; enforcement is opt-in.
 
+Dashboard benchmark runs use generated synthetic facts in an isolated temporary database. Cortex stores the run configuration, host Python/platform description, aggregate retrieval metrics, score, progress, and error state in `benchmark_runs`; it does not copy production memory content into a benchmark record and does not call a model provider. Benchmark history is authenticated dashboard data and follows the main database's backup and retention policy.
+
 ## Operator responsibilities
 
 - protect the Hermes home directory with host-level permissions and backups;

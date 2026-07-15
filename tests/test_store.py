@@ -221,6 +221,47 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(capacity["helpful_outcomes"], 1)
         self.assertEqual(capacity["resolved_outcomes"], 1)
 
+    def test_benchmark_lifecycle_is_persisted_in_dashboard_snapshot(self) -> None:
+        run_id = self.store.begin_benchmark_run(
+            suite="cortex-retrieval-standard",
+            suite_version="1",
+            corpus_memories=2000,
+            queries=80,
+        )
+        self.assertTrue(
+            self.store.update_benchmark_progress(
+                run_id,
+                phase="retrieval",
+                progress=55,
+                message="Testing the 500-memory corpus.",
+            )
+        )
+        active = self.store.benchmark_snapshot()["active"]
+        self.assertEqual(active["run_id"], run_id)
+        report = {
+            "environment": {"python": "test"},
+            "dashboard_summary": {
+                "score": 97.5,
+                "quality_score": 97.1,
+                "speed_score": 100.0,
+                "recall_at_k": 0.99,
+                "mrr": 0.96,
+                "precision_at_k": 0.16,
+                "p50_ms": 12.0,
+                "p95_ms": 34.0,
+                "context_tokens_p50": 173.0,
+                "default_coverage": 0.015,
+                "corpus_memories": 2000,
+                "queries": 80,
+                "recommendations": [],
+            },
+        }
+        self.assertTrue(self.store.complete_benchmark_run(run_id, report))
+        snapshot = self.store.dashboard_snapshot(memory_limit=1)
+        self.assertEqual(snapshot["benchmarks"]["latest"]["score"], 97.5)
+        self.assertEqual(snapshot["benchmarks"]["latest_result"]["environment"]["python"], "test")
+        self.assertEqual(snapshot["stats"]["benchmark_runs"], 1)
+
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()
         db_path = Path(self.tmp.name) / "legacy.db"

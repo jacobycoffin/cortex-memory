@@ -99,6 +99,10 @@ Every judgment is stored in `metacognitive_predictions` before its outcome. Expl
 
 The default `metacognition_mode=shadow` records what the policy would do without changing the evidence block. `enforce` is experimental: it can withhold `abstain` candidates and labels `verify` candidates inside the model-facing evidence block. Calibration learns conservatively within probability bands, preferring task-and-source evidence and requiring progressively larger samples before task-wide or global fallback. Retrieval frequency alone never changes the probability.
 
+## Local benchmark ledger
+
+The dashboard's fixed synthetic benchmark runs outside the production retrieval database, one background job at a time. `benchmark_runs` persists progress, suite version, host-level aggregate metrics, the transparent score components, and the raw synthetic report. The dashboard compares only compatible completed versions and keeps local retrieval overhead separate from model or provider latency.
+
 ## Feedback and attribution
 
 Every injected set becomes a pending usage batch. After the answer, Cortex credits only memories with evidence of use:

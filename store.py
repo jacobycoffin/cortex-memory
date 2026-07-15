@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -417,6 +417,34 @@ class CortexStore:
               ON metacognitive_predictions(task_type,source_category,outcome,created_at);
             CREATE INDEX IF NOT EXISTS idx_metacognitive_created
               ON metacognitive_predictions(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS benchmark_runs (
+                run_id TEXT PRIMARY KEY,
+                suite TEXT NOT NULL,
+                suite_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'queued',
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                score REAL,
+                quality_score REAL,
+                speed_score REAL,
+                recall_at_k REAL,
+                mrr REAL,
+                precision_at_k REAL,
+                p50_ms REAL,
+                p95_ms REAL,
+                context_tokens_p50 REAL,
+                default_coverage REAL,
+                corpus_memories INTEGER NOT NULL,
+                queries INTEGER NOT NULL,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_benchmark_runs_started
+              ON benchmark_runs(started_at DESC);
 
             CREATE TABLE IF NOT EXISTS lifecycle_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2297,6 +2325,174 @@ class CortexStore:
             "recent_access": [dict(r) for r in accesses],
         }
 
+    def begin_benchmark_run(
+        self,
+        *,
+        suite: str,
+        suite_version: str,
+        corpus_memories: int,
+        queries: int,
+    ) -> str:
+        """Persist a bounded dashboard benchmark before its worker starts."""
+
+        run_id = str(uuid.uuid4())
+        now = utc_now()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO benchmark_runs(
+                       run_id,suite,suite_version,status,phase,progress,message,
+                       corpus_memories,queries,started_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    suite,
+                    suite_version,
+                    "running",
+                    "preparing",
+                    1,
+                    "Opening the fixed local retrieval suite.",
+                    max(1, int(corpus_memories)),
+                    max(1, int(queries)),
+                    now,
+                ),
+            )
+            self._conn.commit()
+        return run_id
+
+    def update_benchmark_progress(
+        self,
+        run_id: str,
+        *,
+        phase: str,
+        progress: int,
+        message: str,
+    ) -> bool:
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE benchmark_runs
+                   SET status='running',phase=?,progress=?,message=?
+                   WHERE run_id=? AND status='running'""",
+                (str(phase)[:64], max(0, min(99, int(progress))), str(message)[:300], run_id),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def complete_benchmark_run(self, run_id: str, report: dict[str, Any]) -> bool:
+        summary = report.get("dashboard_summary") or {}
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE benchmark_runs SET
+                     status='completed',phase='completed',progress=100,message=?,
+                     score=?,quality_score=?,speed_score=?,recall_at_k=?,mrr=?,precision_at_k=?,
+                     p50_ms=?,p95_ms=?,context_tokens_p50=?,default_coverage=?,
+                     corpus_memories=?,queries=?,result_json=?,error=NULL,completed_at=?
+                   WHERE run_id=? AND status='running'""",
+                (
+                    f"Benchmark complete. Cortex scored {float(summary.get('score') or 0.0):.1f} out of 100.",
+                    summary.get("score"),
+                    summary.get("quality_score"),
+                    summary.get("speed_score"),
+                    summary.get("recall_at_k"),
+                    summary.get("mrr"),
+                    summary.get("precision_at_k"),
+                    summary.get("p50_ms"),
+                    summary.get("p95_ms"),
+                    summary.get("context_tokens_p50"),
+                    summary.get("default_coverage"),
+                    max(1, int(summary.get("corpus_memories") or 1)),
+                    max(1, int(summary.get("queries") or 1)),
+                    json.dumps(report, sort_keys=True),
+                    utc_now(),
+                    run_id,
+                ),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def fail_benchmark_run(self, run_id: str, error: str) -> bool:
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE benchmark_runs
+                   SET status='failed',phase='failed',progress=100,
+                       message='Benchmark stopped before completion.',error=?,completed_at=?
+                   WHERE run_id=? AND status='running'""",
+                (str(error)[:500], utc_now(), run_id),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def abandon_active_benchmarks(self) -> int:
+        """Close benchmark rows left running by an interrupted dashboard."""
+
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE benchmark_runs
+                   SET status='failed',phase='interrupted',progress=100,
+                       message='Dashboard restarted before this run completed.',
+                       error='interrupted by dashboard restart',completed_at=?
+                   WHERE status='running'""",
+                (utc_now(),),
+            )
+            self._conn.commit()
+        return int(result.rowcount)
+
+    def benchmark_snapshot(self, *, limit: int = 40) -> dict[str, Any]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT run_id,suite,suite_version,status,phase,progress,message,score,
+                          quality_score,speed_score,recall_at_k,mrr,precision_at_k,p50_ms,p95_ms,
+                          context_tokens_p50,default_coverage,corpus_memories,queries,
+                          result_json,error,started_at,completed_at
+                   FROM benchmark_runs ORDER BY started_at DESC LIMIT ?""",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+        runs: list[dict[str, Any]] = []
+        latest_result: dict[str, Any] = {}
+        for row in rows:
+            item = dict(row)
+            raw_result = item.pop("result_json", "{}")
+            if not latest_result and item.get("status") == "completed":
+                try:
+                    parsed = json.loads(str(raw_result or "{}"))
+                except json.JSONDecodeError:
+                    parsed = {}
+                latest_result = parsed if isinstance(parsed, dict) else {}
+            runs.append(item)
+        active = next((row for row in runs if row.get("status") == "running"), None)
+        completed = [row for row in runs if row.get("status") == "completed"]
+        latest = completed[0] if completed else None
+        previous = None
+        if latest:
+            previous = next(
+                (
+                    row
+                    for row in completed[1:]
+                    if row.get("suite") == latest.get("suite")
+                    and row.get("suite_version") == latest.get("suite_version")
+                ),
+                None,
+            )
+        delta = None
+        if latest and previous:
+            delta = {
+                "score": round(float(latest.get("score") or 0.0) - float(previous.get("score") or 0.0), 3),
+                "recall_at_k": round(
+                    float(latest.get("recall_at_k") or 0.0) - float(previous.get("recall_at_k") or 0.0),
+                    6,
+                ),
+                "mrr": round(float(latest.get("mrr") or 0.0) - float(previous.get("mrr") or 0.0), 6),
+                "p95_ms": round(float(latest.get("p95_ms") or 0.0) - float(previous.get("p95_ms") or 0.0), 3),
+            }
+        return {
+            "runs": runs,
+            "active": active,
+            "latest": latest,
+            "previous": previous,
+            "delta": delta,
+            "latest_result": latest_result,
+            "completed_count": len(completed),
+        }
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             state_rows = self._conn.execute("SELECT state,COUNT(*) AS n FROM memories GROUP BY state").fetchall()
@@ -2314,6 +2510,7 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM metacognitive_predictions) metacognitive_predictions, "
                 "(SELECT COUNT(*) FROM metacognitive_predictions "
                 " WHERE outcome IN ('helpful','validated','harmful','corrected')) metacognitive_labels, "
+                "(SELECT COUNT(*) FROM benchmark_runs WHERE status='completed') benchmark_runs, "
                 "(SELECT COUNT(*) FROM pruning_regret) pruning_regrets, "
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
                 "(SELECT COUNT(*) FROM sleep_runs) sleep_runs, "
@@ -2791,6 +2988,7 @@ class CortexStore:
                     "expected_calibration_error": "Weighted gap between predicted reliability and observed helpfulness across five probability bands; lower is better.",
                 },
             },
+            "benchmarks": self.benchmark_snapshot(),
             "version_count": int(version_count),
             "contradiction_count": int(contradiction_count),
             "unsupported_inference_ids": [str(row["id"]) for row in unsupported_inference_rows],

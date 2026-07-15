@@ -46,6 +46,23 @@ Metrics:
 
 The checked-in 0.2 result is saved as a [human-readable report](../benchmark-results/cortex-v020-retrieval.md) with its [raw JSON](../benchmark-results/cortex-v020-retrieval.json). The fixture deliberately gives each project eight competing attributes, so matching the project alone is insufficient and paraphrase cases are harder for FTS-only retrieval. Cortex achieved 99.0%, 98.5%, and 99.5% recall@6 as the corpus grew, with MRR between 0.947 and 0.985, 12.0–34.0 ms p95 retrieval, and roughly 173 median context tokens. The built-in 2,200-character snapshot held 18 synthetic facts and covered 18.0%, 3.0%, and 1.5% of the sampled questions. These results are a capacity/retrieval finding, not yet an inference-speed finding. An earlier [comparison run](../benchmark-results/cortex-compare-20260713T123444Z.md) is included as a cross-check.
 
+### Dashboard standard suite
+
+The authenticated **Run benchmark** control in Insights runs a fixed, bounded version of this test directly on the dashboard host. Version 1 uses 100, 500, and 2,000 synthetic memories, 80 labeled queries per scale, seed 7, recall@6, and an approximate 700-token retrieval budget. It uses an isolated temporary database, never reads production memories, makes no provider requests, and permits only one run at a time.
+
+The dashboard records the raw local result and four headline measures from the 2,000-memory scale:
+
+| Measure | Dashboard role |
+| --- | --- |
+| Recall@6 | Primary retrieval-coverage outcome; target at least 98%. |
+| MRR | Ranking-quality driver; target at least 0.95. |
+| p95 retrieval latency | Local speed guardrail; target at most 50 ms on the benchmark host. |
+| Approximate context tokens | Efficiency guardrail; kept outside the score so an empty result cannot look good. |
+
+The version 1 overall score is `85% × retrieval quality + 15% × speed`. Retrieval quality is `65% × recall@6 + 35% × MRR`. Speed receives 100 points at 50 ms p95 or faster and otherwise receives `100 × 50 / measured p95`. The formula is deliberately quality-heavy: making retrieval faster cannot compensate for missing the correct memory. A score is comparable only to the same suite version under similar host load.
+
+One run is a baseline, not a trend. The dashboard plots individual points immediately but waits for eight compatible runs before connecting them as a trend line. The recorded environment, exact components, and plain-language improvement guidance remain visible for diagnosis.
+
 During development, this test found an inverted relevance transform: SQLite FTS5 intentionally makes better BM25 matches numerically lower (usually more negative), while the prototype's transform rewarded values closest to zero. It later caught a 0.2 regression where generic semantic features outweighed exact project identifiers. The regression suite and rarity-weighted hybrid ranker now protect both cases. See the [official SQLite FTS5 documentation](https://www.sqlite.org/fts5.html#the_bm25_function).
 
 ## Test 2: adaptive prompt-preparation ablation

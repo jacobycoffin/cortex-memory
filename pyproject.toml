@@ -18,7 +18,7 @@ Documentation = "https://github.com/jacobycoffin/cortex-memory#readme"
 Issues = "https://github.com/jacobycoffin/cortex-memory/issues"
 
 [tool.setuptools]
-packages = ["cortex"]
+packages = ["cortex", "cortex.benchmarks"]
 package-dir = {cortex = "."}
 include-package-data = true
 

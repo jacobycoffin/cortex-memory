@@ -19,7 +19,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 from ..retrieval import MemoryRetriever
 from ..store import CortexStore
@@ -328,19 +328,40 @@ def run_benchmark(
     top_k: int = 6,
     token_budget: int = 700,
     default_char_limit: int = DEFAULT_MEMORY_CHAR_LIMIT,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     started_at = datetime.now(timezone.utc)
-    rows = [
-        benchmark_scale(
-            size,
-            query_count=min(query_count, size),
-            seed=seed,
-            top_k=top_k,
-            token_budget=token_budget,
-            default_char_limit=default_char_limit,
+    selected_sizes = [int(size) for size in sizes]
+    rows: list[dict[str, Any]] = []
+    for index, size in enumerate(selected_sizes, start=1):
+        if progress_callback:
+            progress_callback(
+                {
+                    "state": "starting_scale",
+                    "index": index,
+                    "total": len(selected_sizes),
+                    "corpus_memories": size,
+                }
+            )
+        rows.append(
+            benchmark_scale(
+                size,
+                query_count=min(query_count, size),
+                seed=seed,
+                top_k=top_k,
+                token_budget=token_budget,
+                default_char_limit=default_char_limit,
+            )
         )
-        for size in sizes
-    ]
+        if progress_callback:
+            progress_callback(
+                {
+                    "state": "completed_scale",
+                    "index": index,
+                    "total": len(selected_sizes),
+                    "corpus_memories": size,
+                }
+            )
     return {
         "schema_version": 1,
         "benchmark": "cortex-vs-hermes-built-in-synthetic",

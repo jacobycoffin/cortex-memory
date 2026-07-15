@@ -29,6 +29,7 @@ printf 'Testing a clean install in %s\n' "$HERMES_HOME"
 for relative_path in \
   __init__.py \
   __main__.py \
+  benchmarking.py \
   cli.py \
   client.py \
   dashboard.py \
