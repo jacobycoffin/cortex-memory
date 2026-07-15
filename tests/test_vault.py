@@ -55,7 +55,9 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertTrue(result["applied"])
         self.assertTrue(result["audit"]["ok"])
         self.assertEqual(result["stats"]["documents"], 2)
-        self.assertGreaterEqual(result["redacted_chunks"], 1)
+        # A credential-only fragment is rejected before storage, rather than
+        # becoming a recallable redacted placeholder.
+        self.assertEqual(result["redacted_chunks"], 0)
         self.assertGreaterEqual(result["quarantined_chunks"], 1)
         self.assertEqual(result["vault_links_created"], 1)
         self.assertEqual(before, {path: file_hash(path) for path in (self.home, self.project)})
@@ -70,8 +72,14 @@ class VaultIndexerTests(unittest.TestCase):
             for row in self.store.document_chunks("Home.md", active_only=True)
         ]
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz123456", "\n".join(memory["content"] for memory in home_memories))
+        home_id = self.store.document_chunks("Home.md", active_only=True)[0]["memory_id"]
+        vault_edge = next(
+            edge for edge in self.store.explain(home_id)["edges"] if edge["relation"] == "vault_link"
+        )
+        self.assertIn("Source context", vault_edge["explanation"])
+        self.assertIn("assistant runs Hermes", vault_edge["explanation"])
 
-    def test_reindex_is_idempotent_then_supersedes_and_archives(self) -> None:
+    def test_reindex_is_idempotent_then_revises_in_place_and_archives(self) -> None:
         indexer = VaultIndexer(self.store, self.vault)
         first = indexer.apply()
         first_total = first["stats"]["memories"]
@@ -87,8 +95,11 @@ class VaultIndexerTests(unittest.TestCase):
         )
         changed = indexer.apply()
         self.assertEqual(changed["changed_files"], 1)
-        self.assertGreaterEqual(changed["memories_superseded"], 1)
-        self.assertEqual(self.store.get_memory(prior_id)["state"], "archived")
+        self.assertGreaterEqual(changed["memories_updated"], 1)
+        self.assertEqual(changed["memories_superseded"], 0)
+        self.assertEqual(self.store.document_chunks("projects/Operations.md", active_only=True)[0]["memory_id"], prior_id)
+        self.assertEqual(self.store.get_memory(prior_id)["state"], "active")
+        self.assertGreaterEqual(len(self.store.versions(prior_id)), 2)
 
         self.home.unlink()
         removed = indexer.apply()
@@ -96,6 +107,73 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertEqual(self.store.document_manifest()["Home.md"]["status"], "missing")
         self.assertEqual(self.store.document_chunks("Home.md", active_only=True), [])
         self.assertTrue(removed["audit"]["ok"])
+
+    def test_removed_then_restored_file_reuses_its_memory_ids(self) -> None:
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+        original = {
+            row["chunk_key"]: row["memory_id"]
+            for row in self.store.document_chunks("Home.md", active_only=True)
+        }
+        content = self.home.read_text(encoding="utf-8")
+        self.home.unlink()
+        indexer.apply()
+        self.home.write_text(content, encoding="utf-8")
+
+        restored = indexer.apply()
+        current = {
+            row["chunk_key"]: row["memory_id"]
+            for row in self.store.document_chunks("Home.md", active_only=True)
+        }
+        self.assertEqual(current, original)
+        self.assertEqual(restored["memories_created"], 0)
+        self.assertEqual(restored["memories_reactivated"], len(original))
+
+    def test_reindex_repairs_importer_archive_but_preserves_operator_archive(self) -> None:
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+        memory_id = self.store.document_chunks("Home.md", active_only=True)[0]["memory_id"]
+        self.store.set_state(memory_id, "archived", reason="vault chunk superseded")
+
+        _scan, plan = indexer.plan()
+        self.assertEqual(plan["chunks_reactivate"], 1)
+        repaired = indexer.apply()
+        self.assertEqual(repaired["memories_reactivated"], 1)
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "active")
+
+        self.store.set_state(memory_id, "archived", reason="operator chose to archive this memory")
+        preserved = indexer.apply()
+        self.assertEqual(preserved["memories_reactivated"], 0)
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "archived")
+
+    def test_link_lists_and_placeholders_do_not_become_memories(self) -> None:
+        links = self.vault / "Links.md"
+        links.write_text(
+            "# Links\n\n## Related\n\n[[Home]] [[Operations]]\n\n## Notes\n\nTODO add detail here.\n",
+            encoding="utf-8",
+        )
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+        self.assertEqual(self.store.document_chunks("Links.md", active_only=True), [])
+
+        tech = self.vault / "Tech.md"
+        tech.write_text(
+            "# Tech\n\n## MCP Tools\n\n`prowlarr_get_indexers`, `prowlarr_test_indexer`\n\n"
+            "## Live URL\n\nhttps://brain.jacobycoffin.com\n\n"
+            "## Related\n\n[[Home]], [[Operations]]\n"
+            "Mission Control triage notes track active zombie sweeps every day.\n",
+            encoding="utf-8",
+        )
+        second = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(second["audit"]["ok"])
+        tech_memories = [
+            self.store.get_memory(row["memory_id"])["content"]
+            for row in self.store.document_chunks("Tech.md", active_only=True)
+        ]
+        self.assertEqual(len(tech_memories), 3)
+        self.assertTrue(any("prowlarr_get_indexers" in content for content in tech_memories))
+        self.assertTrue(any("https://brain.jacobycoffin.com" in content for content in tech_memories))
+        self.assertTrue(any("zombie sweeps" in content for content in tech_memories))
 
 
 if __name__ == "__main__":

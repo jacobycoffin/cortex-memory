@@ -21,6 +21,7 @@ _STOP = {
 }
 _CONCEPT_GROUPS: tuple[tuple[str, frozenset[str]], ...] = (
     ("host", frozenset({"host", "server", "vps", "machine", "computer", "backend", "node"})),
+    ("database", frozenset({"database", "datastore", "store", "storage", "sql", "sqlite", "backend"})),
     ("location", frozenset({"where", "location", "path", "directory", "folder", "stored", "runs"})),
     ("preference", frozenset({"prefer", "preference", "favorite", "style", "usually", "default"})),
     ("decision", frozenset({"decision", "decide", "chosen", "chose", "choice", "approved", "picked"})),

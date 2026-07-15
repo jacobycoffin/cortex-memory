@@ -291,6 +291,7 @@ def generate_summary_candidates(store: CortexStore, *, limit: int = 6) -> dict[s
                FROM edges e
                JOIN memories s ON s.id=e.src_id JOIN memories d ON d.id=e.dst_id
                WHERE s.state IN ('active','cold') AND d.state IN ('active','cold')
+                 AND e.relation NOT IN ('contradicts','supersedes','consolidates')
                  AND (e.relation IN ('derived_from','supports','sleep_replay','co_used')
                       OR e.evidence_count>=2 OR e.weight>=0.30)
                ORDER BY e.evidence_count DESC,e.weight DESC,e.last_reinforced_at DESC LIMIT 200"""

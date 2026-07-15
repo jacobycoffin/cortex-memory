@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 from tests._bootstrap import ROOT
 
-from cortex.retrieval import MemoryRetriever, _fts_relevance
+from cortex.retrieval import MemoryRetriever, RetrievalContext, _fts_relevance
 from cortex.security import sanitize_memory
 from cortex.store import SCHEMA_VERSION, CortexStore
 
@@ -46,10 +46,412 @@ class CortexStoreTests(unittest.TestCase):
         memory = self.store.get_memory(memory_id)
         self.assertEqual(memory["injected_count"], 1)
         self.assertEqual(memory["success_count"], 1)
+        write_rows = self.store.memory_write_decisions(limit=2)
+        self.assertEqual([row["decision"] for row in write_rows], ["updated", "created"])
+        self.assertEqual(write_rows[0]["duplicate_memory_id"], memory_id)
+
+    def test_review_inbox_approves_explained_connections_and_undoes_them(self) -> None:
+        first_id, _ = self.store.add_memory("The production API runs in the Cortex service.")
+        second_id, _ = self.store.add_memory("Cortex production deploys through the Hermes host.")
+        left, right = sorted((first_id, second_id))
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("review-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,?,'proposed',0.72,2,?,'{}',?)""",
+                (
+                    "review-link", "review-run", "association", left, right,
+                    "Two independent tasks used both memories.", now,
+                ),
+            )
+
+        inbox = self.store.review_inbox_snapshot()
+        item = next(row for row in inbox["items"] if row["item_key"] == "proposal:review-link")
+        self.assertEqual(item["category"], "connections")
+        self.assertEqual(len(item["memories"]), 2)
+
+        decision = self.store.decide_review_proposal(
+            "review-link",
+            "approve",
+            reason_code="meaningful_dependency",
+            reason_text="Both facts explain the same deployment path.",
+            actor="test-operator",
+        )
+        with self.store._lock:
+            edge = self.store._conn.execute(
+                "SELECT * FROM edges WHERE src_id=? AND dst_id=? AND relation='sleep_replay'",
+                (left, right),
+            ).fetchone()
+            evidence = self.store._conn.execute(
+                "SELECT * FROM edge_evidence WHERE evidence_key=?",
+                (decision["review_id"],),
+            ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertEqual(evidence["evidence_type"], "operator_review")
+        self.assertIn("operator", evidence["summary"].casefold())
+        learning = self.store.review_inbox_snapshot()["learning_signals"]
+        self.assertTrue(any(row["signal"].endswith("meaningful_dependency") for row in learning))
+
+        self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
+        with self.store._lock:
+            edge = self.store._conn.execute(
+                "SELECT 1 FROM edges WHERE src_id=? AND dst_id=? AND relation='sleep_replay'",
+                (left, right),
+            ).fetchone()
+            status = self.store._conn.execute(
+                "SELECT status FROM sleep_proposals WHERE proposal_id='review-link'"
+            ).fetchone()["status"]
+        self.assertIsNone(edge)
+        self.assertEqual(status, "proposed")
+
+    def test_review_inbox_trash_is_a_reversible_tombstone(self) -> None:
+        memory_id, _ = self.store.add_memory("Temporary code execution heartbeat completed.")
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("cleanup-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,'proposed',0.95,1,?,? ,?)""",
+                (
+                    "cleanup-item", "cleanup-run", "lifecycle", memory_id,
+                    "Transient execution status has no durable retrieval value.",
+                    '{"next_state":"archived"}', now,
+                ),
+            )
+        decision = self.store.decide_review_proposal(
+            "cleanup-item", "trash", reason_code="transient", actor="test-operator"
+        )
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "tombstoned")
+        self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "active")
+        versions = self.store.versions(memory_id)
+        self.assertEqual(versions[-1]["state"], "active")
+        self.assertIsNone(versions[-1]["system_to"])
+        self.assertIsNotNone(next(row for row in versions if row["state"] == "tombstoned")["system_to"])
 
     def test_sqlite_bm25_more_negative_rank_is_more_relevant(self) -> None:
         self.assertGreater(_fts_relevance(-5.0), _fts_relevance(-0.01))
         self.assertGreater(_fts_relevance(-1.0), _fts_relevance(8.0))
+
+    def test_detailed_retrieval_records_selected_and_rejected_candidate_reasons(self) -> None:
+        first, _ = self.store.add_memory("The service port is 8123.", kind="operational")
+        second, _ = self.store.add_memory("The service port is 9123 in staging.", kind="operational")
+        results, diagnostics = MemoryRetriever(self.store, threshold=0.0).search_detailed(
+            "service port",
+            limit=1,
+            token_budget=700,
+        )
+        self.assertEqual(len(results), 1)
+        decisions = list(diagnostics.candidate_decisions)
+        self.assertGreaterEqual(len(decisions), 2)
+        self.assertEqual(sum(int(item["selected"]) for item in decisions), 1)
+        self.assertEqual({first, second}, {item["memory_id"] for item in decisions[:2]})
+        self.assertTrue(all(item["reason"] for item in decisions))
+        self.assertTrue(all("lexical" in item["components"] for item in decisions))
+        rejected = next(item for item in decisions if not item["selected"])
+        self.assertIn("selected result limit", rejected["reason"])
+
+    def test_context_dependent_memory_requires_and_enforces_explicit_scope(self) -> None:
+        scoped_id, created = self.store.add_memory(
+            "The deployment gateway is blue.",
+            kind="operational",
+            context_mode="context_dependent",
+            scope={"project": "Cortex", "task_type": "deployment"},
+            entities=["Cortex", "blue gateway"],
+            preconditions={"environment": "production"},
+            source_context="Verified during the Cortex production deployment.",
+            applicable_systems=["Hermes"],
+            applicable_versions=["0.3"],
+        )
+        self.assertTrue(created)
+        stored = self.store.get_memory(scoped_id)
+        self.assertEqual(stored["context_mode"], "context_dependent")
+        self.assertEqual(stored["scope"]["project"], "Cortex")
+        self.assertIn("Hermes", stored["applicable_systems"])
+        self.assertGreater(stored["metadata_completeness"], 0.8)
+
+        missing, missing_diagnostics = MemoryRetriever(self.store, threshold=0.0).search_detailed(
+            "Which deployment gateway is blue?",
+            context=RetrievalContext(active_project="Cortex", scope={"task_type": "deployment"}),
+        )
+        self.assertEqual(missing, [])
+        decision = next(
+            item for item in missing_diagnostics.candidate_decisions if item["memory_id"] == scoped_id
+        )
+        self.assertEqual(decision["components"]["context_gate"], 0.0)
+        self.assertIn("preconditions", decision["reason"])
+
+        matched = MemoryRetriever(self.store, threshold=0.0).search(
+            "Which deployment gateway is blue?",
+            context=RetrievalContext(
+                active_project="Cortex",
+                scope={"task_type": "deployment"},
+                system_state={"environment": "production"},
+                applicable_systems=("Hermes",),
+                applicable_versions=("0.3",),
+            ),
+        )
+        self.assertEqual(matched[0].memory["id"], scoped_id)
+        self.assertEqual(matched[0].components["context_gate"], 1.0)
+        self.assertEqual(matched[0].components["project_match"], 1.0)
+
+    def test_scope_candidates_do_not_require_keyword_similarity_and_do_not_cross_projects(self) -> None:
+        cortex_id, _ = self.store.add_memory(
+            "Use the blue route after the health check.",
+            context_mode="context_dependent",
+            scope={"project": "Cortex"},
+        )
+        temple_id, _ = self.store.add_memory(
+            "Use the green route after the health check.",
+            context_mode="context_dependent",
+            scope={"project": "Temple"},
+        )
+        retriever = MemoryRetriever(self.store, threshold=0.0)
+        results, diagnostics = retriever.search_detailed(
+            "What should I do next?",
+            context=RetrievalContext(active_project="Cortex"),
+            limit=4,
+        )
+        self.assertIn(cortex_id, {result.memory["id"] for result in results})
+        self.assertNotIn(temple_id, {result.memory["id"] for result in results})
+        cortex = next(item for item in diagnostics.candidate_decisions if item["memory_id"] == cortex_id)
+        self.assertLess(cortex["components"]["lexical"], 0.05)
+        self.assertEqual(cortex["components"]["context_candidate"], 0.5)
+
+        state_id, _ = self.store.add_memory(
+            "Rotate the opaque release marker.",
+            context_mode="context_dependent",
+            preconditions={"environment": "production"},
+            applicable_systems=["deployctl"],
+            applicable_versions=["3.1"],
+        )
+        state_candidates = self.store.context_search(
+            system_state={"environment": "production"},
+            applicable_systems=["deployctl"],
+            applicable_versions=["3.1"],
+        )
+        self.assertIn(state_id, {item["id"] for item in state_candidates})
+
+        self.store._conn.execute(
+            "UPDATE memories SET scope_json=? WHERE id=?",
+            ('{"project":"Garden"}', temple_id),
+        )
+        self.store._conn.commit()
+        self.assertNotIn(
+            temple_id,
+            {item["id"] for item in self.store.context_search(active_project="Temple")},
+        )
+        self.assertIn(
+            temple_id,
+            {item["id"] for item in self.store.context_search(active_project="Garden")},
+        )
+
+    def test_identical_content_in_different_scopes_is_not_collapsed(self) -> None:
+        first, first_created = self.store.add_memory(
+            "The service port is 8123.",
+            context_mode="context_dependent",
+            scope={"project": "Cortex"},
+        )
+        second, second_created = self.store.add_memory(
+            "The service port is 8123.",
+            context_mode="context_dependent",
+            scope={"project": "Temple"},
+        )
+        self.assertTrue(first_created)
+        self.assertTrue(second_created)
+        self.assertNotEqual(first, second)
+        self.assertTrue(self.store.audit()["ok"])
+        preview = self.store.consolidate(dry_run=True, similarity_threshold=0.5)
+        self.assertEqual(preview["member_count"], 0)
+        with self.assertRaises(ValueError):
+            self.store.add_memory(
+                "Contextless scoped memory.",
+                context_mode="context_dependent",
+            )
+
+    def test_storage_preflight_ignores_contextless_automatic_capture_and_flags_conflicts(self) -> None:
+        assessment = self.store.assess_storage_candidate(
+            "This one should be used again.",
+            kind="semantic",
+            automatic=True,
+        )
+        self.assertEqual(assessment["decision"], "ignored")
+        self.assertFalse(assessment["independently_understandable"])
+        self.store.record_ignored_memory_candidate(assessment, session_id="storage-test")
+
+        existing, _ = self.store.add_memory(
+            "The service listens on port 3000.",
+            subject="service",
+            predicate="port",
+            object_value="3000",
+        )
+        conflict, _ = self.store.add_memory(
+            "The service listens on port 3001.",
+            subject="service",
+            predicate="port",
+            object_value="3001",
+        )
+        decision = self.store.memory_write_decisions(limit=1)[0]
+        self.assertEqual(decision["memory_id"], conflict)
+        self.assertEqual(decision["contradiction_ids"], [existing])
+        summary = self.store.memory_write_summary()
+        self.assertEqual(summary["decisions"]["ignored"], 1)
+        self.assertEqual(summary["contradiction_candidates"], 1)
+
+    def test_automatic_tool_telemetry_is_rejected_from_recallable_memory(self) -> None:
+        with self.assertRaisesRegex(ValueError, "dedicated tool ledger"):
+            self.store.add_memory(
+                "Tool execution observation: tool=execute_code; task_type=shell; outcome=success.",
+                kind="operational",
+                source_type="tool_execution",
+                source_category="TOOL_VERIFIED",
+                extraction_method="tool_outcome_observer_v1",
+                storage_policy="automatic",
+            )
+        self.assertEqual(self.store.stats()["memories"], 0)
+        decision = self.store.memory_write_decisions(limit=1)[0]
+        self.assertEqual(decision["decision"], "ignored")
+        self.assertEqual(decision["source_type"], "tool_execution")
+        self.assertIn("dedicated_telemetry_not_memory", decision["quality_flags"])
+
+        substantive = self.store.assess_storage_candidate(
+            "The deployment procedure is verified; TODO refers only to documenting an optional rollback screenshot.",
+            kind="procedure",
+            source_category="USER_EXPLICIT",
+            importance=0.8,
+            automatic=True,
+        )
+        placeholder = self.store.assess_storage_candidate(
+            "TODO add detail here.",
+            kind="semantic",
+            source_category="USER_EXPLICIT",
+            automatic=True,
+        )
+        self.assertNotIn("placeholder_content", substantive["quality_flags"])
+        self.assertEqual(substantive["decision"], "created")
+        self.assertIn("placeholder_content", placeholder["quality_flags"])
+        self.assertEqual(placeholder["decision"], "ignored")
+
+    def test_hygiene_archives_legacy_tool_rows_but_not_durable_knowledge(self) -> None:
+        telemetry_id, _ = self.store.add_memory(
+            "Tool execution observation: tool=execute_code; task_type=shell; outcome=success.",
+            kind="operational",
+            source_type="tool_execution",
+            source_category="TOOL_VERIFIED",
+            extraction_method="tool_outcome_observer_v1",
+        )
+        procedure_id, _ = self.store.add_memory(
+            "Before deploying Cortex, run the complete unit test suite and verify the authenticated dashboard.",
+            kind="procedure",
+            source_type="user_turn",
+            source_category="USER_EXPLICIT",
+            importance=0.8,
+        )
+        preview = self.store.maintenance(dry_run=True)
+        self.assertIn(telemetry_id, preview["memory_ids"]["archived"])
+        self.assertNotIn(procedure_id, preview["memory_ids"]["archived"])
+        self.assertIn("tool execution/statistics ledger", preview["reasons"][telemetry_id])
+        hygiene = self.store.memory_hygiene_summary()
+        self.assertEqual(hygiene["by_reason"]["legacy_tool_telemetry"], 1)
+        self.assertEqual(hygiene["by_recommended_state"]["archived"], 1)
+        self.store.maintenance(dry_run=False)
+        self.assertEqual(self.store.memory_hygiene_summary()["candidate_count"], 0)
+
+    def test_context_feedback_adapts_retrieval_and_dashboard_labels_remain_reversible(self) -> None:
+        useful, _ = self.store.add_memory(
+            "For Cortex deployments use the verified blue gateway procedure."
+        )
+        irrelevant, _ = self.store.add_memory(
+            "For Cortex deployments use the legacy green gateway note."
+        )
+        retrieval_context = {
+            "active_project": "Cortex",
+            "scope": {"task_type": "deployment", "conversation": "ephemeral"},
+        }
+
+        def observe(memory_id: str, *, used: bool, outcome: str | None = None) -> str:
+            task_id = self.store.create_usage_batch(
+                [(memory_id, 0.8)],
+                query="Which Cortex deployment gateway should I use?",
+                session_id="context-feedback",
+                task_type="deployment",
+                recall_mode="focused",
+            )
+            self.store.record_memory_trace_decision(
+                task_id=task_id,
+                session_id="context-feedback",
+                goal="Choose the Cortex deployment gateway",
+                context_summary="active_project=Cortex; task_type=deployment",
+                task_type="deployment",
+                recall_mode="focused",
+                retrieval_used=True,
+                retrieval_reason="selected for contextual evaluation",
+                queries=["Which Cortex deployment gateway should I use?"],
+                candidate_memories=[
+                    {
+                        "memory_id": memory_id,
+                        "kind": "semantic",
+                        "selected": True,
+                        "score": 0.8,
+                        "components": {},
+                        "reason": "selected",
+                    }
+                ],
+                retrieval_context=retrieval_context,
+            )
+            self.store.resolve_usage(task_id, {memory_id: 1.0} if used else {})
+            if outcome:
+                self.store.apply_task_outcome(task_id, outcome)
+            return task_id
+
+        for _ in range(4):
+            observe(useful, used=True, outcome="helpful")
+            observe(irrelevant, used=False)
+
+        context = RetrievalContext(
+            active_project="Cortex",
+            scope={"task_type": "deployment", "conversation": "another-session"},
+        )
+        results = MemoryRetriever(self.store, threshold=0.0).search(
+            "Cortex deployment gateway procedure note",
+            limit=8,
+            context=context,
+        )
+        by_id = {str(result.memory["id"]): result for result in results}
+        self.assertGreater(
+            by_id[useful].components["context_adaptation"],
+            by_id[irrelevant].components["context_adaptation"],
+        )
+        self.assertGreater(by_id[useful].score, by_id[irrelevant].score)
+        self.assertGreater(self.store.context_feedback(useful, retrieval_context)["usefulness"], 0.6)
+        self.assertLess(self.store.context_feedback(irrelevant, retrieval_context)["usefulness"], 0.4)
+
+        reversible_task = observe(useful, used=True)
+        before = self.store.context_feedback(useful, retrieval_context)["positive_count"]
+        self.store.label_task_outcome(reversible_task, "validated", actor="test-operator")
+        self.assertEqual(
+            self.store.context_feedback(useful, retrieval_context)["positive_count"], before + 1
+        )
+        self.assertTrue(self.store.undo_task_outcome_label(reversible_task, actor="test-operator"))
+        self.assertEqual(self.store.context_feedback(useful, retrieval_context)["positive_count"], before)
+        report = self.store.memory_quality_report()
+        self.assertGreaterEqual(report["context_adaptation"]["positive_buckets"], 1)
+        self.assertGreaterEqual(report["context_adaptation"]["downweighted_buckets"], 1)
+        self.assertIn("observed_selection_precision", report["retrieval"])
+        self.assertIn("false_positive_memories", report["retrieval"])
+        self.assertIsNotNone(report["retrieval"]["false_positive_rate"])
+        self.assertIsNotNone(report["retrieval"]["context_failure_rate"])
 
     def test_correction_preserves_version_history(self) -> None:
         memory_id, _ = self.store.add_memory("The service runs on port 3000.")
@@ -73,6 +475,74 @@ class CortexStoreTests(unittest.TestCase):
         ids = {r.memory["id"] for r in results}
         self.assertIn(first, ids)
         self.assertIn(second, ids)
+
+    def test_link_evidence_is_deduplicated_and_explained(self) -> None:
+        first, _ = self.store.add_memory("The dashboard reads the Cortex snapshot.")
+        second, _ = self.store.add_memory("The Cortex snapshot exposes aggregate memory health.")
+        self.assertTrue(
+            self.store.add_edge(
+                first,
+                second,
+                "related",
+                weight=0.4,
+                evidence_type="operator_review",
+                explanation="The operator confirmed that these describe the same dashboard data flow.",
+                evidence_key="review:dashboard-snapshot",
+                task_id="review-task",
+            )
+        )
+        self.assertTrue(
+            self.store.add_edge(
+                first,
+                second,
+                "related",
+                weight=0.9,
+                evidence_type="operator_review",
+                explanation="The operator refined the reason: both memories describe the snapshot health flow.",
+                evidence_key="review:dashboard-snapshot",
+                task_id="review-task",
+            )
+        )
+        explanation = self.store.explain(first)
+        edge = explanation["edges"][0]
+        self.assertTrue(edge["explainable"])
+        self.assertEqual(edge["evidence_records"], 1)
+        self.assertEqual(edge["evidence_count"], 1)
+        self.assertEqual(edge["weight"], 0.4)
+        self.assertIn("snapshot health flow", edge["explanation"])
+        self.assertIn("Cortex snapshot exposes", edge["peer_content"])
+        self.assertEqual(len(edge["evidence"]), 1)
+
+        third, _ = self.store.add_memory("A legacy map node without preserved edge evidence.")
+        self.store.add_edge(first, third, "related", weight=0.2)
+        legacy = next(
+            item
+            for item in self.store.explain(first)["edges"]
+            if third in {item["src_id"], item["dst_id"]}
+        )
+        self.assertFalse(legacy["explainable"])
+        self.assertGreaterEqual(self.store.memory_hygiene_summary()["links"]["unexplained"], 1)
+
+    def test_migration_backfills_only_defensible_link_reasons(self) -> None:
+        first, _ = self.store.add_memory("The Home vault note links to Operations.")
+        second, _ = self.store.add_memory("The Operations vault note contains the runbook.")
+        third, _ = self.store.add_memory("A vaguely similar historical note.")
+        self.store.add_edge(first, second, "vault_link", weight=0.35)
+        self.store.add_edge(first, third, "related", weight=0.2)
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM edge_evidence")
+        db_path = self.store.path
+        self.store.close()
+        self.store = CortexStore(db_path)
+
+        edges = self.store.explain(first)["edges"]
+        vault_edge = next(item for item in edges if second in {item["src_id"], item["dst_id"]})
+        similarity_edge = next(item for item in edges if third in {item["src_id"], item["dst_id"]})
+        self.assertTrue(vault_edge["explainable"])
+        self.assertEqual(vault_edge["evidence_type"], "migrated_explicit_wikilink")
+        self.assertIn("explicit wikilink", vault_edge["explanation"])
+        self.assertFalse(similarity_edge["explainable"])
+        self.assertEqual(self.store.memory_hygiene_summary()["links"]["unexplained"], 1)
 
     def test_guided_conflict_review_archives_superseded_memory(self) -> None:
         first, _ = self.store.add_memory(
@@ -403,6 +873,13 @@ class CortexStoreTests(unittest.TestCase):
                 false_positive_count INTEGER NOT NULL, duplicate_count INTEGER NOT NULL,
                 last_retrieved_at TEXT, last_injected_at TEXT, last_used_at TEXT
             );
+            CREATE TABLE recall_runs (
+                recall_id TEXT PRIMARY KEY, session_id TEXT, query TEXT, mode TEXT NOT NULL,
+                reason TEXT, requested_limit INTEGER NOT NULL, token_budget INTEGER NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 0, selected_count INTEGER NOT NULL DEFAULT 0,
+                estimated_tokens INTEGER NOT NULL DEFAULT 0, prepare_ms REAL NOT NULL DEFAULT 0,
+                abstained INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
+            );
             """
         )
         now = datetime.now(timezone.utc).isoformat()
@@ -449,6 +926,44 @@ class CortexStoreTests(unittest.TestCase):
             self.assertEqual(memory["source_category"], "AGENT_INFERENCE")
             self.assertIsNotNone(memory["observed_at"])
             self.assertEqual(migrated.stats()["schema_version"], SCHEMA_VERSION)
+            tables = {
+                row["name"]
+                for row in migrated._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            self.assertIn("memory_traces", tables)
+            self.assertIn("memory_trace_events", tables)
+            self.assertIn("memory_write_decisions", tables)
+            self.assertIn("memory_context_outcomes", tables)
+            self.assertIn("memory_context_terms", tables)
+            context_terms = migrated._conn.execute(
+                "SELECT term_type,term_value FROM memory_context_terms WHERE memory_id='legacy-id'"
+            ).fetchall()
+            self.assertIn(("mode", "standalone"), {(row["term_type"], row["term_value"]) for row in context_terms})
+            recall_columns = {
+                row["name"] for row in migrated._conn.execute("PRAGMA table_info(recall_runs)").fetchall()
+            }
+            self.assertIn("task_id", recall_columns)
+            trace_columns = {
+                row["name"] for row in migrated._conn.execute("PRAGMA table_info(memory_traces)").fetchall()
+            }
+            self.assertIn("retrieval_context_json", trace_columns)
+            memory_columns = {
+                row["name"] for row in migrated._conn.execute("PRAGMA table_info(memories)").fetchall()
+            }
+            self.assertTrue(
+                {
+                    "context_mode",
+                    "scope_json",
+                    "entities_json",
+                    "preconditions_json",
+                    "source_context",
+                    "applicable_systems_json",
+                    "applicable_versions_json",
+                }
+                <= memory_columns
+            )
         finally:
             migrated.close()
         # Recreate the fixture store so tearDown remains idempotent.

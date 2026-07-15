@@ -47,6 +47,27 @@ class CortexProviderTests(unittest.TestCase):
         explained = self.call(action="explain", memory_id=saved["memory_id"][:8])
         self.assertEqual(explained["explanation"]["memory"]["id"], saved["memory_id"])
 
+    def test_explicit_search_accepts_project_and_precondition_context(self) -> None:
+        saved = self.call(
+            action="remember",
+            content="Use the opaque blue release route.",
+            kind="operational",
+            context_mode="context_dependent",
+            scope={"project": "Cortex"},
+            preconditions={"environment": "production"},
+            applicable_systems=["deployctl"],
+        )
+        missing = self.call(action="search", query="What should I do next?")
+        self.assertNotIn(saved["memory_id"], {row["id"] for row in missing["results"]})
+        matched = self.call(
+            action="search",
+            query="What should I do next?",
+            active_project="Cortex",
+            system_state={"environment": "production"},
+            applicable_systems=["deployctl"],
+        )
+        self.assertIn(saved["memory_id"], {row["id"] for row in matched["results"]})
+
     def test_turn_capture_and_success_feedback(self) -> None:
         self.provider.sync_turn(
             "I prefer that Hermes gives me short summaries before technical detail.",
@@ -63,6 +84,45 @@ class CortexProviderTests(unittest.TestCase):
         stats = self.call(action="stats")["stats"]
         self.assertGreaterEqual(stats["memories"], 1)
         self.assertGreaterEqual(stats["episodes"], 2)
+
+    def test_task_trace_records_explicit_create_and_duplicate_merge_actions(self) -> None:
+        self.provider.prefetch(
+            "Please remember my launch checklist uses a verified backup.",
+            session_id="session-1",
+        )
+        saved = self.call(
+            action="remember",
+            content="My launch checklist uses a verified backup.",
+            kind="procedure",
+        )
+        self.provider.sync_turn(
+            "Please remember my launch checklist uses a verified backup.",
+            "Stored the verified-backup launch checklist.",
+            session_id="session-1",
+        )
+        trace = self.provider._store.memory_traces(limit=1)[0]
+        actions = trace["memory_actions"]
+        self.assertTrue(
+            any(item["action"] == "created" and item["memory_id"] == saved["memory_id"] for item in actions)
+        )
+        self.assertTrue(
+            any(item["action"] == "updated" and item["memory_id"] == saved["memory_id"] for item in actions)
+        )
+
+    def test_automatic_capture_ignores_unresolved_reference_and_traces_reason(self) -> None:
+        self.provider.prefetch("Please remember this one for later.", session_id="session-1")
+        self.provider.sync_turn(
+            "Please remember this one for later.",
+            "I cannot store an unresolved reference as durable context.",
+            session_id="session-1",
+        )
+        trace = self.provider._store.memory_traces(limit=1)[0]
+        ignored = [item for item in trace["memory_actions"] if item["action"] == "ignored"]
+        self.assertTrue(ignored)
+        self.assertIn("unresolved reference", ignored[0]["reason"])
+        decision = self.provider._store.memory_write_decisions(limit=1)[0]
+        self.assertEqual(decision["decision"], "ignored")
+        self.assertFalse(decision["independently_understandable"])
 
     def test_pruning_cannot_apply_in_shadow_mode(self) -> None:
         result = self.call(action="maintenance", apply=True)

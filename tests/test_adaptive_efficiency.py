@@ -138,6 +138,23 @@ class SafeRetrievalCacheTests(unittest.TestCase):
         self.assertEqual(memory["retrieved_count"], 2)
         self.assertEqual(memory["selected_count"], 2)
         self.assertEqual(memory["injected_count"], 2)
+
+    def test_context_feedback_invalidates_cached_ranking(self) -> None:
+        query = "What did I decide for the launch color?"
+        with patch.object(
+            self.provider._retriever,
+            "search_detailed",
+            wraps=self.provider._retriever.search_detailed,
+        ) as search:
+            self.provider.prefetch(query, session_id="cache-session")
+            self.provider.sync_turn(
+                query,
+                "The launch color decision is amber.",
+                session_id="cache-session",
+            )
+            self.provider.prefetch(query, session_id="cache-session")
+
+        self.assertEqual(search.call_count, 2)
         usage_count = self.provider._store._conn.execute(
             "SELECT COUNT(*) count FROM usage_records WHERE memory_id=?", (self.memory_id,)
         ).fetchone()["count"]

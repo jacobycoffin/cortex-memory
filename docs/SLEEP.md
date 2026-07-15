@@ -31,6 +31,8 @@ A Sleep run should have explicit ceilings rather than “thinking until finished
 4. **Deterministic analysis.** Compute replay, co-use, interference, retention, dependency, and pruning-regret signals using local metadata and retrieval behavior.
 5. **Optional reflection.** If separately enabled, spend no more than the configured per-run token budget to draft evidence-backed proposals.
 6. **Validation.** Reject proposals without active source IDs, proposals that cross protection rules, and proposals that exceed per-run change limits.
+
+The deterministic pass also flags context-dependent memories with incomplete applicability and standalone fragments that contain unresolved references without entities or source context. These `context_review` proposals never rewrite a memory automatically. Sleep also runs the extractive summary-candidate generator: every claim cites an active source memory, contradiction/supersession/consolidation edges are ineligible, the candidate remains outside recall, and only authenticated operator approval can create a protected derived memory with those source dependencies.
 7. **Report.** Record inputs by ID, reason codes, proposed changes, rejected changes, runtime, and resource use so the operator can inspect the result.
 
 Wall-clock time, candidate count, graph depth, proposed transitions, and optional reflection tokens should all be capped independently. A deadline ends the run cleanly; it does not justify skipping validation.
@@ -79,7 +81,7 @@ Two 2017 mouse studies reported sleep-associated evidence relevant to synaptic d
 
 Li and colleagues reported that REM sleep selectively pruned and maintained newly formed dendritic spines during development and motor learning in mice ([2017, Nature Neuroscience](https://doi.org/10.1038/nn.4479)). Yang and colleagues found branch-specific formation of dendritic spines after motor learning and sleep in mice ([2014, Science](https://doi.org/10.1126/science.1249098)). Together, these studies are a reminder that offline maintenance is not simply “delete the weak”; weakening, preservation, and formation can be selective and concurrent.
 
-**Cortex translation:** produce separate proposals to preserve useful evidence, cool low-utility records, archive reversible candidates, consolidate near-duplicates, or create a sourced relationship. A candidate should be judged using age, confidence, currentness, importance, spaced helpful use, harmful outcomes, correction history, dependencies, and prior pruning regret—not age or call count alone.
+**Cortex translation:** produce separate proposals to preserve useful evidence, cool low-utility records, archive reversible candidates, consolidate near-duplicates, or create a sourced relationship. A candidate should be judged using age, confidence, currentness, importance, spaced helpful use, harmful outcomes, correction history, dependencies, and prior pruning regret—not age, call count, or lack of retrieval alone. Deterministic hygiene may immediately propose archiving a legacy tool-memory duplicate only because the same raw event remains in the dedicated tool ledger; sparse unused placeholders and transient success-status episodes are limited to a reversible cold proposal.
 
 **Boundary:** Cortex states and graph edges are not dendritic spines. Shadow mode only proposes lifecycle changes. Explicit apply mode can commit a bounded reversible transition, protected records cannot be pruned, and hard deletion is outside the cycle.
 
@@ -119,6 +121,7 @@ A useful report explains rather than anthropomorphizes:
 - which deterministic signals were considered;
 - which proposals came from deterministic rules and which came from optional model reflection;
 - the evidence IDs and dependencies for every proposed summary or relation;
+- which context fields appear missing and that no automatic context rewrite occurred;
 - why a proposal was rejected or protected;
 - estimated context, provider tokens, local runtime, and provider cost when applicable;
 - the exact operator action required to review, apply, or discard proposals;

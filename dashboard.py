@@ -367,6 +367,8 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/auth/logout",
                 "/api/review/conflict",
                 "/api/review/inference",
+                "/api/review/proposal",
+                "/api/review/undo",
                 "/api/sleep/start",
                 "/api/benchmark/start",
                 "/api/evaluation/start",
@@ -428,16 +430,41 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if payload is None:
                 return
             try:
+                actor = auth.username() if auth_enabled else "local-operator"
+                if parsed.path == "/api/review/proposal":
+                    result = store.decide_review_proposal(
+                        str(payload.get("proposal_id") or ""),
+                        str(payload.get("action") or ""),
+                        reason_code=str(payload.get("reason_code") or "unspecified"),
+                        reason_text=str(payload.get("reason_text") or ""),
+                        actor=actor,
+                    )
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
+                    return
+                if parsed.path == "/api/review/undo":
+                    changed = store.undo_review_decision(
+                        str(payload.get("review_id") or ""), actor=actor
+                    )
+                    if not changed:
+                        self._json(HTTPStatus.CONFLICT, {"error": "This review decision cannot be reversed."})
+                        return
+                    self._json(HTTPStatus.OK, {"success": True})
+                    return
                 if parsed.path == "/api/review/conflict":
+                    first_id = str(payload.get("first_id") or "")
+                    second_id = str(payload.get("second_id") or "")
+                    resolution = str(payload.get("resolution") or "")
                     changed = store.resolve_contradiction(
-                        str(payload.get("first_id") or ""),
-                        str(payload.get("second_id") or ""),
-                        str(payload.get("resolution") or ""),
+                        first_id,
+                        second_id,
+                        resolution,
                     )
                 else:
+                    memory_id = str(payload.get("memory_id") or "")
+                    resolution = str(payload.get("resolution") or "")
                     changed = store.review_inference(
-                        str(payload.get("memory_id") or ""),
-                        str(payload.get("resolution") or ""),
+                        memory_id,
+                        resolution,
                     )
             except ValueError as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
@@ -445,6 +472,29 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not changed:
                 self._json(HTTPStatus.CONFLICT, {"error": "This review item is no longer active. Refresh and try again."})
                 return
+            reason_code = str(payload.get("reason_code") or "unspecified")
+            reason_text = str(payload.get("reason_text") or "")
+            if parsed.path == "/api/review/conflict":
+                store.record_operator_review(
+                    item_type="conflict",
+                    item_key=f"conflict:{':'.join(sorted((first_id, second_id)))}",
+                    action=resolution,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    actor=actor,
+                    src_id=first_id,
+                    dst_id=second_id,
+                )
+            else:
+                store.record_operator_review(
+                    item_type="inference",
+                    item_key=f"inference:{memory_id}",
+                    action=resolution,
+                    reason_code=reason_code,
+                    reason_text=reason_text,
+                    actor=actor,
+                    src_id=memory_id,
+                )
             self._json(HTTPStatus.OK, {"success": True})
 
         def _start_sleep(self) -> None:
@@ -573,6 +623,15 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         task_id,
                         str(payload.get("outcome") or "").casefold(),
                         actor=actor,
+                    )
+                    store.record_operator_review(
+                        item_type="outcome",
+                        item_key=f"outcome:{task_id}",
+                        action=str(payload.get("outcome") or "").casefold(),
+                        reason_code=str(payload.get("reason_code") or "direct_assessment"),
+                        reason_text=str(payload.get("reason_text") or ""),
+                        actor=actor,
+                        effect={"memory_ids": result.get("memory_ids", [])},
                     )
             except ValueError as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})

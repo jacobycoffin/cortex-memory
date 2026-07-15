@@ -15,7 +15,7 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - vault notes are read but never modified;
 - tool guidance keeps argument keys, not values;
 - no hard-delete API exists.
-- opt-in guided review can only resolve one conflict or unsupported inference per confirmed request, and preserves lifecycle/version history plus an audit record;
+- opt-in guided review changes only one inbox item per confirmed request; pruning, trash, connection, conflict, claim, and outcome decisions preserve lifecycle/version history plus an operator audit record;
 - scheduled Cortex Sleep uses deterministic local analysis and zero provider tokens by default;
 - optional remote Sleep reflection sends a bounded selection of sanitized memory text to the configured provider and is therefore an explicit privacy boundary.
 
@@ -31,11 +31,18 @@ Outcome Lab labels store a task ID, outcome, dashboard actor, timestamps, and re
 
 Tool-guidance exposure rows store task/session identifiers, broad task type, the recommended tool name or workflow key, predicted reliability, whether later execution matched it, and any explicit task outcome. Argument values, tool results, and memory text are not duplicated. These rows are behavioral metadata and follow the Cortex database's backup and retention policy.
 
+Memory decision traces are intentionally more sensitive. They keep the task goal, concise context metadata, retrieval query, candidate memory IDs and short content previews, component scores, selection reasons, answer-use attribution, outcome ratings, and storage actions. They remain in the local database and authenticated dashboard snapshot. `cortex-memory traces --jsonl` is a raw private export, not a sanitized benchmark report; review and protect it like the database itself.
+
+Operator review decisions may contain an optional free-text explanation in addition to the typed reason, affected memory IDs, before-state, and applied effect. They remain in the local database and authenticated dashboard. Connection approval stores the operator decision as link evidence. Trash is a reversible tombstone, not content erasure; use a separately reviewed database-retention process if permanent deletion is legally or operationally required.
+
+Applicability metadata can reveal project names, entities, operating state, and versions even when the memory text is not shown. `memory_write_decisions` stores candidate hashes and decision reasons; `memory_context_outcomes` stores task/memory IDs, normalized stable context, attributed use, and outcome. The quality and context-feedback reports are local operational reports, not privacy-sanitized publication artifacts.
+
 ## Operator responsibilities
 
 - protect the Hermes home directory with host-level permissions and backups;
 - use TLS plus strong authentication before routing a dashboard through a hostname;
 - never commit `cortex.db`, dashboard credentials, vault content, or raw private benchmark traces;
+- never commit task-level memory-trace JSONL without a separate redaction review;
 - review quarantine and unsupported-inference counts;
 - rotate credentials if they are displayed or copied into a public place;
 - keep `dashboard-auth.json` private and mode `0600`;

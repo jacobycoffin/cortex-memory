@@ -156,7 +156,7 @@ class ToolLearningTests(unittest.TestCase):
         ]
         self.provider.sync_turn(query, "The tool attempt completed.", session_id="tools-session", messages=messages)
 
-    def test_repeated_tool_success_becomes_procedural_guidance(self) -> None:
+    def test_repeated_tool_success_stays_in_the_tool_ledger(self) -> None:
         self._tool_turn(
             "call-1", "Research current Hermes memory systems online.", '{"success":true,"results":["source-a"]}'
         )
@@ -174,7 +174,17 @@ class ToolLearningTests(unittest.TestCase):
         search = json.loads(
             self.provider.handle_tool_call("cortex_memory", {"action": "search", "query": "web search successful tool"})
         )
-        self.assertTrue(any(row["kind"] == "procedure" for row in search["results"]))
+        self.assertFalse(
+            any(
+                row["source_type"] in {"tool_execution", "tool_outcome_aggregation", "tool_workflow_aggregation"}
+                for row in search["results"]
+            )
+        )
+        recallable_tool_rows = self.provider._store._conn.execute(
+            """SELECT COUNT(*) count FROM memories
+               WHERE source_type IN ('tool_execution','tool_outcome_aggregation','tool_workflow_aggregation')"""
+        ).fetchone()["count"]
+        self.assertEqual(recallable_tool_rows, 0)
 
     def test_retrieved_but_unused_memory_gets_no_positive_reinforcement(self) -> None:
         saved = json.loads(
@@ -214,14 +224,14 @@ class ToolLearningTests(unittest.TestCase):
         self._named_tool_turn("fail-1", "Run the project build command.", "shell_exec", failure)
         self._named_tool_turn("fail-2", "Run the project test command.", "shell_exec", failure)
         context = self.provider.prefetch("Run the project build command", session_id="tools-session")
-        self.assertIn("tool=shell_exec", context)
+        self.assertIn("shell_exec", context)
         self.assertIn("failures=2", context)
         search = json.loads(
             self.provider.handle_tool_call(
                 "cortex_memory", {"action": "search", "query": "shell tool repeatedly failed permission"}
             )
         )
-        self.assertTrue(any("repeatedly failed" in row["content"] for row in search["results"]))
+        self.assertFalse(any(row["source_type"] == "tool_outcome_aggregation" for row in search["results"]))
 
 
 if __name__ == "__main__":

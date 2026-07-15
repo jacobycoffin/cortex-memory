@@ -71,6 +71,22 @@ def main() -> int:
     sleep_undo = sub.add_parser("sleep-undo", help="Undo reversible changes from an applied sleep run")
     sleep_undo.add_argument("run_id")
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
+    traces = sub.add_parser("traces", help="Inspect task-level memory decisions or export append-only JSONL")
+    traces.add_argument("--limit", type=int, default=100)
+    traces.add_argument("--task-id")
+    traces.add_argument("--jsonl", action="store_true")
+    traces.add_argument("--summary", action="store_true")
+    writes = sub.add_parser("write-decisions", help="Inspect durable create, update, and ignore decisions")
+    writes.add_argument("--limit", type=int, default=100)
+    writes.add_argument("--summary", action="store_true")
+    context_feedback = sub.add_parser(
+        "context-feedback", help="Inspect project/task-specific memory usefulness evidence"
+    )
+    context_feedback.add_argument("--limit", type=int, default=100)
+    sub.add_parser(
+        "quality-report",
+        help="Show retrieval precision, false positives, context failures, health, and Sleep evidence",
+    )
     dashboard = sub.add_parser("dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true")
@@ -205,6 +221,24 @@ def main() -> int:
                 "modes": snapshot["recall_modes"],
                 "by_day": snapshot["recall_by_day"],
             }
+        elif args.command == "traces":
+            if args.jsonl:
+                print(store.memory_trace_jsonl(limit=args.limit, task_id=args.task_id))
+                return 0
+            if args.summary:
+                result = store.memory_trace_summary(limit=args.limit)
+            else:
+                result = store.memory_traces(limit=args.limit, task_id=args.task_id)
+        elif args.command == "write-decisions":
+            result = (
+                store.memory_write_summary(limit=args.limit)
+                if args.summary
+                else store.memory_write_decisions(limit=args.limit)
+            )
+        elif args.command == "context-feedback":
+            result = store.context_feedback_summary(limit=args.limit)
+        elif args.command == "quality-report":
+            result = store.memory_quality_report()
         else:
             result = store.maintenance(dry_run=not args.apply)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))

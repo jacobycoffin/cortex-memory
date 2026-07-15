@@ -12,6 +12,7 @@ import itertools
 import json
 import math
 import os
+import re
 import urllib.error
 import urllib.request
 import uuid
@@ -24,6 +25,12 @@ from .retrieval import MemoryRetriever
 from .security import normalize_text
 from .semantics import feature_similarity
 from .store import CortexStore, utc_now
+
+
+_CONTEXTLESS_REFERENCE = re.compile(
+    r"\b(?:this|that|it|these|those|the same|this one|that one)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -138,6 +145,8 @@ def run_sleep(
         "lifecycle_candidates": 0,
         "consolidation_candidates": 0,
         "dependency_candidates": 0,
+        "context_review_candidates": 0,
+        "summary_candidates": 0,
         "applied_changes": 0,
         "reflection_token_budget": config.reflection_token_budget,
         "reflection_estimated_tokens": 0,
@@ -228,6 +237,16 @@ def run_sleep(
         dependencies = store.repair_dependencies(dry_run=True)
         report["dependency_candidates"] = int(dependencies["count"])
         _record_dependency_proposals(store, run_id, dependencies)
+
+        report["context_review_candidates"] = _propose_context_repairs(store, run_id)
+
+        # These are extractive, source-cited review candidates, not recallable
+        # memories. An authenticated operator must approve one before it can
+        # enter retrieval, and the original source IDs remain dependencies.
+        from .research import generate_summary_candidates
+
+        summaries = generate_summary_candidates(store, limit=6)
+        report["summary_candidates"] = int(summaries["created"])
 
         _notify_progress(
             progress_callback,
@@ -631,6 +650,25 @@ def _apply_association(
                  last_reinforced_at=excluded.last_reinforced_at""",
             (src_id, dst_id, increment, now, now),
         )
+        store._record_edge_evidence_tx(
+            conn,
+            src_id,
+            dst_id,
+            "sleep_replay",
+            evidence_type="independent_replay",
+            evidence_key=proposal_id,
+            summary=(
+                f"Offline replay observed this pair across {evidence_count} evidence records and "
+                "the association passed the independent-witness threshold."
+            ),
+            source_ref=f"sleep:{run_id}",
+            metadata={
+                "run_id": run_id,
+                "proposal_id": proposal_id,
+                "evidence_count": evidence_count,
+            },
+            created_at=now,
+        )
         conn.execute("UPDATE sleep_proposals SET status='applied' WHERE proposal_id=?", (proposal_id,))
 
 
@@ -779,8 +817,12 @@ def _record_lifecycle_proposals(
                 "lifecycle",
                 src_id=str(memory_id),
                 score=1.0 - float(preview["retention_scores"].get(memory_id, 0.5)),
-                rationale=f"Age and bounded utility evidence make this memory eligible to move to {next_state}; no hard deletion is proposed.",
-                details={"next_state": next_state},
+                rationale=str(preview.get("reasons", {}).get(memory_id))
+                or f"Bounded quality evidence makes this memory eligible to move to {next_state}; no hard deletion is proposed.",
+                details={
+                    "next_state": next_state,
+                    "reason": preview.get("reasons", {}).get(memory_id),
+                },
             )
 
 
@@ -808,7 +850,8 @@ def _apply_lifecycle(store: CortexStore, run_id: str, preview: dict[str, Any]) -
                         memory_id,
                         memory["state"],
                         next_state,
-                        f"applied sleep {run_id[:8]} lifecycle preview",
+                        str(preview.get("reasons", {}).get(memory_id))
+                        or f"applied sleep {run_id[:8]} lifecycle preview",
                         preview["retention_scores"].get(memory_id),
                         now,
                     ),
@@ -860,6 +903,60 @@ def _record_dependency_proposals(store: CortexStore, run_id: str, preview: dict[
             rationale=f"Derived-memory evidence changed; proposed action is {item['action']} and requires the normal repair path.",
             details={"action": item["action"], "confidence": item["confidence"]},
         )
+
+
+def _propose_context_repairs(store: CortexStore, run_id: str) -> int:
+    """Flag ambiguous or under-scoped memories for review without rewriting them."""
+
+    with store._lock:
+        rows = store._conn.execute(
+            """SELECT id,content,context_mode,scope_json,entities_json,preconditions_json,
+                      source_context,applicable_systems_json,applicable_versions_json,
+                      metadata_completeness
+               FROM memories WHERE state IN ('active','cold')
+               ORDER BY metadata_completeness ASC,updated_at ASC LIMIT 1000"""
+        ).fetchall()
+    proposed = 0
+    for row in rows:
+        incomplete_dependent = (
+            str(row["context_mode"]) == "context_dependent"
+            and float(row["metadata_completeness"] or 0.0) < 0.75
+        )
+        unresolved_standalone = (
+            str(row["context_mode"]) == "standalone"
+            and not str(row["source_context"] or "").strip()
+            and str(row["entities_json"] or "[]") == "[]"
+            and bool(_CONTEXTLESS_REFERENCE.search(str(row["content"] or "")))
+        )
+        if not incomplete_dependent and not unresolved_standalone:
+            continue
+        memory_id = str(row["id"])
+        if _has_open_proposal(store, "context_review", memory_id, None):
+            continue
+        missing: list[str] = []
+        if str(row["scope_json"] or "{}") == "{}":
+            missing.append("scope")
+        if str(row["entities_json"] or "[]") == "[]":
+            missing.append("entities")
+        if not str(row["source_context"] or "").strip():
+            missing.append("source context")
+        if str(row["preconditions_json"] or "{}") == "{}":
+            missing.append("preconditions")
+        _insert_proposal(
+            store,
+            run_id,
+            "context_review",
+            src_id=memory_id,
+            score=max(0.25, 1.0 - float(row["metadata_completeness"] or 0.0)),
+            evidence_count=1,
+            rationale=(
+                "This memory may be ambiguous outside its original task; review its project, entities, "
+                "preconditions, and source context before broad retrieval."
+            ),
+            details={"missing": missing, "automatic_rewrite": False},
+        )
+        proposed += 1
+    return proposed
 
 
 def _insert_proposal(

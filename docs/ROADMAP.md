@@ -23,6 +23,9 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 | Workstream | Status | Acceptance evidence |
 | --- | --- | --- |
 | Outcome & Causality Lab | Implemented; operator labeling active | Used recall tasks accept one audited, reversible outcome; label coverage and observed helpfulness stay separate from causal claims. |
+| Structured memory tracing | Initial task ledger implemented; longitudinal review active | Every adapter recall or abstention records candidate components, reasons, influence, rating, storage action, and append-only JSONL events without hidden reasoning. |
+| Explicit applicability and storage preflight | Implemented; longitudinal false-positive review active | Project/scope/precondition/system mismatches hard-gate dependent memories; automatic writes record reuse, durability, duplicate, contradiction, and comprehensibility decisions. |
+| Context-specific usefulness | Implemented; observational evidence accumulating | Helpful/validated and selected-but-unused outcomes move an inspectable score only in a stable matching context, and dashboard undo restores prior evidence. |
 | Real-history evaluation runner | Implemented in CLI and dashboard; needs eight positive operator labels | Private task queries and IDs remain local; persisted reports contain aggregate paired metrics rather than memory text or IDs. |
 | Paired tool-calling benchmark | Implemented; needs representative cases | First-tool accuracy, argument validity, completion, latency, and token use are reported per condition. |
 | Learned recall budgets | Implemented; longitudinal validation active | Budget changes require sufficient resolved outcomes and remain inside configured ceilings. |
@@ -33,7 +36,7 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 | Replacement-mode experiment | Planned | Requires an explicit Hermes integration hook; no duplicate built-in context and no migrated fact loss. |
 | Query and result cache benchmark | Initial exact-query benchmark implemented | Warm exact-query latency and context stability are reported; representative hit-rate measurement remains active. |
 | Dashboard benchmark wizard | Implemented for synthetic and private-history suites | Synthetic runs measure host retrieval; private runs compare paired policies. Neither is presented as whole-agent accuracy or inference speed. |
-| Offline Sleep cycle | Implemented; shadow trial and hypothesis follow-through active | Nightly bounded replay reports evidence-backed associations, interference, maintenance previews, and proposal-level future observations without affecting turn latency. |
+| Offline Sleep cycle | Implemented; shadow trial and hypothesis follow-through active | Nightly bounded replay reports evidence-backed associations, interference, lifecycle, context repair, cited summary candidates, and proposal-level future observations without affecting turn latency. |
 
 ## 0.4 — Memory structure and calibration
 

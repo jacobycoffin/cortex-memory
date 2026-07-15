@@ -26,6 +26,9 @@ def before_model(session_id: str, task_type: str, user_text: str):
         user_text,
         session_id=session_id,
         task_type=task_type,
+        active_project="Cortex",
+        scope={"project": "Cortex"},
+        system_state={"environment": "production"},
         limit=6,
         token_budget=700,
     )
@@ -41,6 +44,12 @@ def after_turn(session_id: str, user_text: str, assistant_text: str):
 ```
 
 The harness decides how it detects durable facts, which evidence the answer used, and when an outcome is known. Cortex deliberately does not infer success merely because a memory was retrieved.
+
+Each `recall` opens a task trace automatically. `RecallBatch.finish` closes its usage phase and assigns `Neutral` to attributed evidence or `Irrelevant` to selected-but-unused evidence until a stronger outcome is supplied. Later explicit outcomes update the same trace while preserving the append-only decision and evaluation events. Inspect snapshots with `cortex-memory traces`; use `--jsonl` only for private debugging because it includes task text and candidate previews.
+
+Pass explicit context whenever the harness knows it: `active_project`, durable `scope`, named `entities`, current `system_state`, and applicable system/version identifiers. A context-dependent memory is ineligible when its required scope or preconditions are missing. Conversation and session IDs remain in the audit trace but are excluded from the stable feedback bucket, so reuse learning can accumulate across sessions.
+
+For durable writes, use `context_mode="standalone"` only when the text makes sense by itself. Otherwise pass `context_mode="context_dependent"` plus its project/scope/entities/preconditions/source context. The store records durability, duplicate, contradiction, and comprehensibility checks in `memory_write_decisions`; automatic capture may ignore an unresolved or under-scoped candidate instead of creating a low-quality memory.
 
 ## Source and trust labels
 
@@ -87,6 +96,8 @@ Start with deterministic shadow mode. It records replay evidence and maintenance
 - A paraphrased question retrieves a durable fact from another session.
 - Selected-but-unused evidence receives no positive credit.
 - Helpful and harmful outcomes move utility in opposite directions.
+- Repeated selected-but-unused evidence is downweighted only in the matching stable context.
+- Required project, precondition, system, and version mismatches hard-gate a context-dependent memory.
 - Corrections preserve the prior version.
 - Prompt-like stored text remains quarantined from recall.
 - The adapter never places memory above system policy or treats it as instructions.

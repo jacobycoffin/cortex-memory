@@ -20,6 +20,16 @@
 - added an Outcome & Causality Lab that turns reversible positive task labels into a private fixed-versus-adaptive retrieval evaluation after eight cases;
 - added a read-only evidence hierarchy, proposal-level Sleep hypotheses, observational tool/workflow evaluation, and a metacognition enforcement gate that keeps configured enforcement in shadow until calibration and selective-risk thresholds pass;
 - added schema 10 controlled recall assignments, agent-task evaluation, randomized matched Sleep apply trials, a failure explorer, approval-gated cited summaries, prospective-memory state, and reconsolidation follow-through;
+- added schema 11 task-level memory traces with candidate score components, explicit selection/rejection reasons, answer-use attribution, six-band outcome ratings, storage actions, and append-only JSONL export;
+- added schema 12 standalone/context-dependent memory metadata, project/entity/scope/precondition/system/version applicability gates, and an independently maintained context-term candidate index;
+- added schema 13 pre-storage durability/duplicate/contradiction/comprehensibility decisions plus reversible project/task-specific usefulness adaptation;
+- added schema 14 evidence-bearing graph links, explainable-link migration, source-aware storage quality flags, and a dashboard hygiene queue;
+- added schema 15 typed operator-review decisions and a unified, reversible Review Inbox for cleanup, connection, conflict, claim, and real-answer training;
+- stopped promoting raw tool executions and aggregate telemetry into recallable memory while preserving the dedicated tool execution, statistics, and workflow ledgers;
+- made vault section revisions and file restoration reuse stable memory IDs with version history instead of producing repeated archived clones;
+- tightened reversible hygiene rules so lack of retrieval never prunes a memory, substantive TODO/TBD notes are preserved, and only deterministic telemetry/placeholder/status noise is staged;
+- expanded shadow Sleep with context-repair proposals and automatic source-cited summary candidates that remain outside recall until operator approval;
+- added compact write-decision, context-feedback, and memory-quality CLI reports with explicit non-causal claim boundaries;
 - added a Learning Lab with explicit daily accuracy, sparse-chart safeguards, condition confidence intervals, reversible treatment links, task-level labeling for no-memory controls, and evidence-first causal gates;
 - added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
 - added Sleep safety, idempotency, budget, outage, and reversibility tests.

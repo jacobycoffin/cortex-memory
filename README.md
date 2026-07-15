@@ -59,6 +59,12 @@ Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing buil
 - **Controlled learning lab:** randomized adaptive/fixed/no-memory tasks, matched reversible Sleep trials, explicit agent-level outcomes, a failure explorer, cited summary approval, prospective-memory states, and reconsolidation follow-through share one local task/evidence ledger.
 - **Budgeted idle reflection:** optional model review can spend a separate per-run token ceiling on evidence-linked proposals. It is off by default, normally billed, privacy-sensitive, and never applies its own conclusions.
 - **Harness-neutral API:** `CortexMemory` and `RecallBatch` expose storage, bounded recall, outcome feedback, episodes, audit, and Sleep without depending on a particular agent framework.
+- **Inspectable memory traces:** every adapter task records why recall ran or abstained, candidate component scores, selection and rejection reasons, later answer influence, outcome ratings, and create/update/ignore storage decisions in a local JSONL-style event ledger.
+- **Explicit applicability:** memories can be standalone or context-dependent, with project, entity, scope, precondition, source-context, system, and version metadata. Missing required context hard-gates retrieval instead of relying on semantic similarity.
+- **Context-specific adaptation:** repeated helpful use raises a memory only inside the matching stable project/task context; repeated selection without answer use downweights it there. Outcome-label undo restores the prior evidence state.
+- **Storage preflight and maintenance:** automatic capture checks durability, reuse value, exact duplicates, structured contradictions, and independent comprehensibility before writing. Shadow Sleep also flags ambiguous context and drafts source-cited summaries for approval.
+- **Memory hygiene and stable document identity:** raw tool executions remain in the dedicated tool ledger instead of becoming recallable memories; sparse placeholders and transient automation statuses are rejected or staged for reversible lifecycle review. Vault section edits update one versioned memory ID rather than creating an archived clone.
+- **Explainable memory links:** persistent links carry a typed evidence record and a plain-language reason. Similar wording alone does not create a link, and the default map hides legacy relations whose original evidence cannot be recovered.
 
 This is development evidence, not a new public performance claim. Stable installs should continue to use `main`; the [roadmap](docs/ROADMAP.md) states what is implemented, still being measured, and intentionally deferred.
 
@@ -83,12 +89,22 @@ with CortexMemory("./cortex.db") as memory:
         kind="procedure",
         source_category="USER_EXPLICIT",
         session_id="session-a",
+        context_mode="context_dependent",
+        scope={"project": "Cortex", "task_type": "deployment"},
+        entities=["production deployment"],
+        preconditions={"environment": "production"},
+        source_context="Cortex production release procedure",
+        applicable_systems=["cortex"],
     )
 
     recall = memory.recall(
         "What checks are required before deployment?",
         session_id="session-b",
         task_type="deployment",
+        active_project="Cortex",
+        scope={"project": "Cortex"},
+        system_state={"environment": "production"},
+        applicable_systems=["cortex"],
     )
     agent_context = recall.context()
 
@@ -98,6 +114,8 @@ with CortexMemory("./cortex.db") as memory:
 ```
 
 An adapter maps its own session/turn lifecycle into `remember`, `recall`, `RecallBatch.finish`, `record_episode`, and optional offline `sleep`. See the [harness integration guide](docs/INTEGRATION.md).
+
+Inspect recent task traces locally with `cortex-memory traces --limit 20`, summarize observed selection precision with `cortex-memory traces --summary`, or export the append-only ledger with `cortex-memory traces --jsonl`. Use `cortex-memory write-decisions --summary` for storage preflight, `cortex-memory context-feedback` for context-specific adaptation, and `cortex-memory quality-report` for the combined retrieval/health/Sleep view. Raw traces can contain private task text and memory previews; do not commit them.
 
 ## Hermes adapter
 
@@ -149,6 +167,7 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 
 - a draggable 2D physics map and orbitable 3D constellation;
 - timeline, source, use-through, tool-learning insights, and daily trends for memories, connections, lifecycle pruning, and tool calls;
+- a unified Review Inbox for pruning, duplicate, connection, conflict, unsupported-claim, and answer-outcome decisions, with full memory text, provenance, scope, activity, proposal evidence, and action consequences shown before the choice;
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
 - a Cortex Sleep control room with the live timer window, selectable run history, exact proposal evidence, applied/reversed edge and lifecycle journals, and explicitly non-causal post-run observations;
 - an Accuracy × capacity view that plots daily outcome-backed memory helpfulness against stored memory count and reports average recall context alongside it; it is a memory-quality proxy, not a claim of general answer accuracy;
@@ -159,13 +178,13 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 - an evidence hierarchy that keeps raw memories addressable, shows source links for supported claims, and treats higher-level bundles as read-only candidates rather than automatic truths;
 - a Trust monitor that logs a pre-outcome reliability estimate for every recalled memory, explains the proposed use/verify/abstain decision, plots calibration only after enough explicit outcomes exist, and holds enforcement in shadow until a hard evidence gate passes;
 - Sleep hypotheses and tool-guidance follow-through that state what future evidence would count, while keeping after-event comparisons explicitly observational;
-- plain-language health guidance split into recall integrity, memory quality, learning-loop, and Sleep-maintenance layers, plus an inspectable memory index and one-decision-at-a-time reviewer;
+- plain-language health guidance split into recall integrity, memory quality, learning-loop, and Sleep-maintenance layers, plus an inspectable memory index that routes operator work into the Review Inbox;
 - a tablet/PWA navigation layout with visible tab names and a readable card-style memory index;
 - a clickable memory-type guide plus a dedicated Settings view for themes and account controls.
 
 For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to localhost. The included systemd installer prints a temporary password once; the dashboard requires you to replace it at first sign-in. Cortex stores a PBKDF2 password hash rather than the readable password, uses signed 12-hour browser sessions, rate-limits failed logins, and revokes existing sessions after a password change. The [self-hosting guide](docs/DASHBOARD_HOSTING.md) shows generic Caddy, Nginx, Cloudflare Tunnel, DNS, reset, and verification examples for a hostname you control.
 
-Guided review and Learning Lab changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable confirmed choices. Conflict review can archive one superseded memory or keep both as contextual; inference review can explicitly confirm or archive one unsupported claim. Summary approval and prospective commitments are explicit source-backed writes. Controlled Sleep trials apply only randomized treatment links and expose a one-click reversal. Every action preserves history and writes an audit record. There is no hard-delete action.
+Guided review and Learning Lab changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable confirmed choices. The Review Inbox can approve or deny proposed links, keep/archive/trash pruning candidates, resolve conflicts, confirm unsupported claims, and label real answer outcomes. Trash means a reversible `tombstoned` lifecycle state: the memory is excluded from recall, but its text, provenance, versions, decision reason, and restore path remain. Each choice writes typed operator evidence to `operator_review_decisions`; repeated reasons are visible as policy signals, but one click never rewrites a global rule. Summary approval and prospective commitments remain explicit source-backed writes. Controlled Sleep trials apply only randomized treatment links and expose a one-click reversal. There is no hard-delete action.
 
 The Insights benchmark button is independent of guided review. It is authenticated, allows only one bounded run at a time, uses a temporary synthetic database, and makes no model or provider calls. Its overall score is a versioned operating index: 85% retrieval quality and 15% local p95 retrieval speed. Compare only runs from the same suite version under similar host load; use the paired live-model benchmark for whole-agent latency claims.
 

@@ -27,6 +27,12 @@ _WIKILINK = re.compile(r"!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _MARKDOWN_DECORATION = re.compile(r"[`*_~]+")
 _RELATED_HEADING = re.compile(r"^(?:related|links?|backlinks?)$", re.I)
+_NAVIGATION_HEADING = re.compile(r"^(?:quick links?|index|navigation|table of contents)$", re.I)
+_PLACEHOLDER_BODY = re.compile(
+    r"\b(?:add detail here|tbd|todo|placeholder|fill this in|not yet documented)\b",
+    re.I,
+)
+_IMPORTER_ARCHIVE_REASONS = {"vault chunk superseded", "vault source removed"}
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,7 @@ class VaultNote:
     size_bytes: int
     chunks: tuple[VaultChunk, ...]
     links: tuple[str, ...]
+    link_reasons: tuple[tuple[str, str], ...]
 
 
 @dataclass(frozen=True)
@@ -121,6 +128,7 @@ class VaultIndexer:
             "chunks_total": sum(len(note.chunks) for note in scan.notes),
             "chunks_add": 0,
             "chunks_update": 0,
+            "chunks_reactivate": 0,
             "chunks_archive": 0,
             "wikilinks": sum(len(note.links) for note in scan.notes),
             "redacted_chunks": sum(chunk.redacted for note in scan.notes for chunk in note.chunks),
@@ -128,21 +136,34 @@ class VaultIndexer:
         }
         for note in scan.notes:
             previous = manifest.get(note.relative_path)
-            existing = {row["chunk_key"]: row for row in self.store.document_chunks(note.relative_path, active_only=True)}
+            existing = {
+                row["chunk_key"]: row
+                for row in self.store.document_chunks(note.relative_path, active_only=False)
+            }
             incoming = {chunk.key: chunk for chunk in note.chunks}
             if not previous:
                 report["new_files"] += 1
                 report["chunks_add"] += len(incoming)
             elif previous["content_hash"] == note.digest and previous["status"] == "active":
                 report["unchanged_files"] += 1
+                report["chunks_reactivate"] += sum(
+                    self._should_reactivate_importer_archive(existing[key])
+                    for key in incoming
+                    if key in existing
+                )
             else:
                 report["changed_files"] += 1
                 report["chunks_add"] += sum(key not in existing for key in incoming)
+                report["chunks_reactivate"] += sum(
+                    key in existing and not bool(existing[key]["active"]) for key in incoming
+                )
                 report["chunks_update"] += sum(
                     key in existing and existing[key]["chunk_hash"] != chunk.digest
                     for key, chunk in incoming.items()
                 )
-                report["chunks_archive"] += sum(key not in incoming for key in existing)
+                report["chunks_archive"] += sum(
+                    key not in incoming and bool(row["active"]) for key, row in existing.items()
+                )
         removed = [path for path, source in manifest.items() if source["status"] == "active" and path not in scanned_paths]
         report["removed_files"] = len(removed)
         report["chunks_archive"] += sum(len(self.store.document_chunks(path, active_only=True)) for path in removed)
@@ -154,6 +175,8 @@ class VaultIndexer:
         scanned_paths = {note.relative_path for note in scan.notes}
         counters = {
             "memories_created": 0,
+            "memories_updated": 0,
+            "memories_reactivated": 0,
             "memories_superseded": 0,
             "memories_archived": 0,
             "vault_links_created": 0,
@@ -167,39 +190,92 @@ class VaultIndexer:
                 modified_at=note.modified_at,
                 size_bytes=note.size_bytes,
             )
-            existing = {row["chunk_key"]: row for row in self.store.document_chunks(note.relative_path, active_only=True)}
+            existing = {
+                row["chunk_key"]: row
+                for row in self.store.document_chunks(note.relative_path, active_only=False)
+            }
             incoming_keys: set[str] = set()
             for chunk in note.chunks:
                 incoming_keys.add(chunk.key)
                 previous = existing.get(chunk.key)
-                if previous and previous["chunk_hash"] == chunk.digest:
-                    continue
-                memory_id, created = self.store.add_memory(
-                    chunk.content,
-                    kind=chunk.kind,
-                    source_type="vault_markdown",
-                    source_category="DOCUMENT_EXTRACTED",
-                    source_ref=f"vault:{note.relative_path}#{chunk.heading}",
-                    observed_at=note.modified_at,
-                    confidence=chunk.confidence,
-                    currentness_confidence=chunk.currentness,
-                    importance=chunk.importance,
-                    uniqueness=0.9,
-                    volatility=chunk.volatility,
-                    trust=0.78,
-                    state="quarantine" if chunk.quarantine_reason else "active",
-                    quarantine_reason=chunk.quarantine_reason,
-                    valid_from=chunk.valid_from,
-                    subject=f"vault:{note.relative_path}#{chunk.key}",
-                    predicate="documents",
-                    object_value=chunk.heading,
-                    extraction_method=IMPORTER_VERSION,
-                    supersedes_id=previous["memory_id"] if previous else None,
-                )
-                counters["memories_created"] += int(created)
-                if previous and previous["memory_id"] != memory_id:
-                    if self.store.set_state(previous["memory_id"], "archived", reason="vault chunk superseded"):
-                        counters["memories_superseded"] += 1
+                memory_id: str
+                if previous and bool(previous["active"]) and previous["chunk_hash"] == chunk.digest:
+                    if not self._should_reactivate_importer_archive(previous):
+                        continue
+                if previous:
+                    memory_id = str(previous["memory_id"])
+                    current = self.store.get_memory(memory_id)
+                    if current:
+                        preserve_manual_archive = (
+                            bool(previous["active"])
+                            and str(current["state"]) == "archived"
+                            and not self._should_reactivate_importer_archive(previous)
+                        )
+                        next_state = (
+                            "quarantine"
+                            if chunk.quarantine_reason
+                            else "archived"
+                            if preserve_manual_archive
+                            else "active"
+                        )
+                        changed = self.store.update_document_memory(
+                            memory_id,
+                            chunk.content,
+                            kind=chunk.kind,
+                            source_ref=f"vault:{note.relative_path}#{chunk.heading}",
+                            entities=[note.title, chunk.heading],
+                            source_context=(
+                                f"Vault document {note.relative_path} under heading {chunk.heading}."
+                            ),
+                            observed_at=note.modified_at,
+                            confidence=chunk.confidence,
+                            currentness_confidence=chunk.currentness,
+                            importance=chunk.importance,
+                            uniqueness=0.9,
+                            volatility=chunk.volatility,
+                            trust=0.78,
+                            state=next_state,
+                            quarantine_reason=chunk.quarantine_reason,
+                            valid_from=chunk.valid_from,
+                            subject=f"vault:{note.relative_path}#{chunk.key}",
+                            predicate="documents",
+                            object_value=chunk.heading,
+                            extraction_method=IMPORTER_VERSION,
+                            reason=(
+                                "vault section restored"
+                                if not bool(previous["active"])
+                                else "vault chunk revised in place"
+                            ),
+                        )
+                        counters["memories_updated"] += int(changed["updated"])
+                        counters["memories_reactivated"] += int(changed["reactivated"])
+                    else:
+                        previous = None
+                if not previous:
+                    memory_id, created = self.store.add_memory(
+                        chunk.content,
+                        kind=chunk.kind,
+                        source_type="vault_markdown",
+                        source_category="DOCUMENT_EXTRACTED",
+                        source_ref=f"vault:{note.relative_path}#{chunk.heading}",
+                        entities=[note.title, chunk.heading],
+                        source_context=f"Vault document {note.relative_path} under heading {chunk.heading}.",
+                        observed_at=note.modified_at,
+                        confidence=chunk.confidence,
+                        currentness_confidence=chunk.currentness,
+                        importance=chunk.importance,
+                        uniqueness=0.9,
+                        volatility=chunk.volatility,
+                        trust=0.78,
+                        state="quarantine" if chunk.quarantine_reason else "active",
+                        quarantine_reason=chunk.quarantine_reason,
+                        valid_from=chunk.valid_from,
+                        subject=f"vault:{note.relative_path}#{chunk.key}",
+                        predicate="documents",
+                        object_value=chunk.heading,
+                        extraction_method=IMPORTER_VERSION,
+                    )
+                    counters["memories_created"] += int(created)
                 self.store.upsert_document_chunk(
                     source_path=note.relative_path,
                     chunk_key=chunk.key,
@@ -209,7 +285,7 @@ class VaultIndexer:
                     ordinal=chunk.ordinal,
                 )
             for key, previous in existing.items():
-                if key in incoming_keys:
+                if key in incoming_keys or not bool(previous["active"]):
                     continue
                 if self.store.set_state(previous["memory_id"], "archived", reason="vault section removed"):
                     counters["memories_archived"] += 1
@@ -235,10 +311,43 @@ class VaultIndexer:
                 if pair in linked_pairs:
                     continue
                 linked_pairs.add(pair)
-                if self.store.add_edge(source_memory, target_memory, "vault_link", weight=0.35):
+                link_reason = dict(note.link_reasons).get(link, "")
+                if self.store.add_edge(
+                    source_memory,
+                    target_memory,
+                    "vault_link",
+                    weight=0.35,
+                    evidence_type="explicit_wikilink",
+                    evidence_key=f"{note.relative_path}:{link}:{target_path}",
+                    explanation=(
+                        f"The vault note {note.title} explicitly links to {link}. "
+                        + (
+                            f"Source context: {link_reason}"
+                            if link_reason
+                            else "This is a documented relationship, not a similarity guess."
+                        )
+                    ),
+                    source_ref=f"vault:{note.relative_path}",
+                    metadata={
+                        "source_path": note.relative_path,
+                        "target_path": target_path,
+                        "wikilink": link,
+                        "link_context": link_reason,
+                    },
+                ):
                     counters["vault_links_created"] += 1
 
         return {**report, **counters, "applied": True, "audit": self.store.audit(), "stats": self.store.stats()}
+
+    def _should_reactivate_importer_archive(self, chunk: dict[str, Any]) -> bool:
+        if not bool(chunk.get("active")):
+            return False
+        memory = self.store.get_memory(str(chunk.get("memory_id") or ""))
+        if not memory or str(memory.get("state") or "") != "archived":
+            return False
+        event = self.store.latest_lifecycle_event(str(memory["id"]))
+        reason = str(event.get("reason") if event else "").strip().casefold()
+        return reason in _IMPORTER_ARCHIVE_REASONS
 
     def _note_aliases(self, scan: VaultScan) -> tuple[dict[str, str], dict[str, str]]:
         aliases: dict[str, str] = {}
@@ -266,19 +375,20 @@ def _parse_note(
     text = _HTML_COMMENT.sub("", _strip_frontmatter(text)).replace("\x00", "")
     title = _note_title(relative, text)
     links = tuple(dict.fromkeys(match.strip() for match in _WIKILINK.findall(text) if match.strip()))
+    link_contexts = _wikilink_contexts(text)
     sections = _sections(text, title)
     chunks: list[VaultChunk] = []
     heading_occurrences: dict[str, int] = {}
     ordinal = 0
     for heading, body in sections:
-        if _skip_link_only_section(heading, body) and len(sections) > 1:
+        if _skip_low_value_section(heading, body) and len(sections) > 1:
             continue
         base = _slug(heading) or "note"
         heading_occurrences[base] = heading_occurrences.get(base, 0) + 1
         occurrence = heading_occurrences[base]
         for part_index, part in enumerate(_split_text(body, max_chars=max_chars), start=1):
             cleaned = part.strip()
-            if not cleaned:
+            if not cleaned or _skip_low_value_fragment(cleaned, heading=heading):
                 continue
             prefix = f"Vault note: {title}\nPath: {relative.as_posix()}\nSection: {heading}\n"
             sanitized = sanitize_memory(prefix + cleaned)
@@ -304,7 +414,7 @@ def _parse_note(
                 )
             )
             ordinal += 1
-    if not chunks:
+    if not chunks and not _skip_low_value_fragment(text):
         fallback = sanitize_memory(f"Vault note: {title}\nPath: {relative.as_posix()}\n{text.strip()}")
         if fallback.text:
             kind, confidence, currentness, importance, volatility, valid_from = _memory_profile(relative, title)
@@ -325,7 +435,16 @@ def _parse_note(
                     quarantine_reason=fallback.quarantine_reason,
                 )
             )
-    return VaultNote(relative.as_posix(), title, digest, modified_at, size_bytes, tuple(chunks), links)
+    return VaultNote(
+        relative.as_posix(),
+        title,
+        digest,
+        modified_at,
+        size_bytes,
+        tuple(chunks),
+        links,
+        tuple((link, link_contexts.get(link, "")) for link in links),
+    )
 
 
 def _strip_frontmatter(text: str) -> str:
@@ -396,12 +515,54 @@ def _split_text(text: str, *, max_chars: int) -> Iterable[str]:
         yield buffer
 
 
-def _skip_link_only_section(heading: str, body: str) -> bool:
-    if not _RELATED_HEADING.search(heading.split(" › ")[-1]):
-        return False
+def _skip_low_value_section(heading: str, body: str) -> bool:
+    leaf = heading.split(" › ")[-1].strip()
     without_links = _WIKILINK.sub("", body)
     without_markup = _MARKDOWN_DECORATION.sub("", without_links)
-    return len(re.sub(r"\W+", "", without_markup)) < 20
+    remaining_tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+", without_markup)
+    if _RELATED_HEADING.search(leaf) and len(remaining_tokens) < 8:
+        # Explicit wikilinks already become evidence-backed vault edges.  A
+        # second memory containing only the link list adds noise, not knowledge.
+        return True
+    if _NAVIGATION_HEADING.search(leaf) and len(remaining_tokens) < 20:
+        return True
+    return _skip_low_value_fragment(body, heading=heading)
+
+
+def _skip_low_value_fragment(body: str, *, heading: str = "") -> bool:
+    undecorated = _WIKILINK.sub(lambda match: match.group(1), body)
+    raw_tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.:/-]+", undecorated)
+    plain = _MARKDOWN_DECORATION.sub("", undecorated)
+    tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_.:/-]+", plain)
+    if _PLACEHOLDER_BODY.search(plain) and len(tokens) < 24:
+        return True
+    meaningful = [
+        token
+        for token in tokens
+        if token.casefold()
+        not in {"the", "a", "an", "and", "or", "to", "of", "in", "for", "with", "here", "notes"}
+    ]
+    leaf = heading.split(" › ")[-1].strip().casefold()
+    if re.search(r"https?://\S+", plain, re.I) and any(label in leaf for label in ("url", "endpoint", "address")):
+        return False
+    technical_identifiers = [token for token in raw_tokens if "_" in token]
+    if len(technical_identifiers) >= 2:
+        return False
+    return len(meaningful) < 3
+
+
+def _wikilink_contexts(text: str) -> dict[str, str]:
+    contexts: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        links = [match.strip() for match in _WIKILINK.findall(raw_line) if match.strip()]
+        if not links:
+            continue
+        rendered = _WIKILINK.sub(lambda match: match.group(1).strip(), raw_line)
+        rendered = " ".join(_MARKDOWN_DECORATION.sub("", rendered).strip(" -–—\t").split())[:300]
+        for link in links:
+            if rendered and rendered.casefold() != link.casefold():
+                contexts.setdefault(link, rendered)
+    return contexts
 
 
 def _memory_profile(relative: Path, heading: str) -> tuple[str, float, float, float, float, str | None]:

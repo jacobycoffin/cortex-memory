@@ -67,9 +67,17 @@ class DashboardInterfaceTests(unittest.TestCase):
             "graph-mode-2d",
             "graph-mode-3d",
             "graph-cluster",
+            "graph-selection-links",
             "timeline-svg",
             "timeline-trail",
             "view-insights",
+            "view-review",
+            "review-inbox-total",
+            "review-filters",
+            "review-queue-list",
+            "review-focus",
+            "review-learning-signals",
+            "review-history-list",
             "recall-funnel",
             "view-cognition",
             "cognition-metrics",
@@ -154,6 +162,9 @@ class DashboardInterfaceTests(unittest.TestCase):
             "health-review-close",
             "health-areas",
             "health-maintenance",
+            "memory-feedback-metrics",
+            "memory-feedback-storage",
+            "memory-feedback-boundary",
             "auth-gate",
             "auth-login-form",
             "auth-forced-change-form",
@@ -195,10 +206,14 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("outcome-backed memory accuracy proxy", html)
         self.assertIn("function renderMetacognition", html)
         self.assertIn("function renderCalibrationChart", html)
-        self.assertIn("Does Cortex know when to doubt itself?", html)
-        self.assertIn("Observe the judgments before enforcing them.", html)
-        self.assertIn("used, verified, or withheld", html)
+        self.assertIn("One clear decision at a time.", html)
+        self.assertIn("Label real answers; Cortex handles the calibration.", html)
+        self.assertIn("Use, verify, or abstain", html)
         self.assertIn("function renderKindGuide", html)
+        self.assertIn("Connections and why they exist", html)
+        self.assertIn("edge.explanation", html)
+        self.assertIn("filter(edge=>edge.explainable!==false)", html)
+        self.assertIn("Hygiene queue", html)
         self.assertIn("app.data?.stats?.kinds", html)
         self.assertIn("d.stats?.states?.active", html)
         self.assertIn("d.stats?.states?.quarantine", html)
@@ -219,6 +234,11 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Both are valid in different situations", html)
         self.assertIn("/api/review/conflict", html)
         self.assertIn("/api/review/inference", html)
+        self.assertIn("/api/review/proposal", html)
+        self.assertIn("/api/review/undo", html)
+        self.assertIn("function renderReviewInbox", html)
+        self.assertIn("What each decision will do", html)
+        self.assertIn("What Cortex is learning from you", html)
         self.assertIn("function renderLearning", html)
         self.assertIn("function renderExperimentCenter", html)
         self.assertIn("function renderAgentAccuracyChart", html)

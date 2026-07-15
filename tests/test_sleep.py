@@ -114,6 +114,59 @@ class CortexSleepTests(unittest.TestCase):
         self.assertEqual(effects["live_edge_changes"], 1)
         self.assertEqual(snapshot["sleep_state_changes"], [])
 
+    def test_sleep_flags_contextless_memory_and_creates_only_source_cited_summary_candidates(self) -> None:
+        ambiguous, _ = self.store.add_memory(
+            "Use it after the service restart.",
+            context_mode="context_dependent",
+            entities=["service"],
+        )
+        first, _ = self.store.add_memory("Deployments require a live health check.")
+        second, _ = self.store.add_memory(
+            "A release is complete only after the live health endpoint passes."
+        )
+        self.store.add_edge(first, second, "supports", weight=0.7)
+        self.store.add_memory(
+            "The service listens on port 3000.",
+            subject="service",
+            predicate="port",
+            object_value="3000",
+        )
+        self.store.add_memory(
+            "The service listens on port 3001.",
+            subject="service",
+            predicate="port",
+            object_value="3001",
+        )
+
+        report = run_sleep(self.store, SleepConfig(mode="shadow"))
+
+        self.assertEqual(report["context_review_candidates"], 1)
+        self.assertEqual(report["summary_candidates"], 1)
+        proposal = self.store._conn.execute(
+            "SELECT * FROM sleep_proposals WHERE run_id=? AND kind='context_review'",
+            (report["run_id"],),
+        ).fetchone()
+        self.assertEqual(proposal["src_id"], ambiguous)
+        self.assertEqual(proposal["status"], "proposed")
+        candidate = self.store._conn.execute(
+            "SELECT candidate_id,approved_memory_id,status FROM summary_candidates"
+        ).fetchone()
+        source_count = self.store._conn.execute(
+            "SELECT COUNT(DISTINCT memory_id) n FROM summary_candidate_sources WHERE candidate_id=?",
+            (candidate["candidate_id"],),
+        ).fetchone()["n"]
+        self.assertEqual(candidate["status"], "proposed")
+        self.assertIsNone(candidate["approved_memory_id"])
+        self.assertEqual(source_count, 2)
+        summary_sources = {
+            str(row["memory_id"])
+            for row in self.store._conn.execute(
+                "SELECT memory_id FROM summary_candidate_sources WHERE candidate_id=?",
+                (candidate["candidate_id"],),
+            ).fetchall()
+        }
+        self.assertEqual(summary_sources, {first, second})
+
     def test_undo_refuses_to_overwrite_a_later_edge_change(self) -> None:
         first, second = self._memory_pair()
         self._two_helpful_witnesses((first, second))

@@ -52,6 +52,9 @@ The suite currently covers:
 - paired tool-call aggregation and fixture-only live-provider behavior;
 - isolated clean installation, upgrade backup, database persistence, and installed-provider import.
 - schema 6 Sleep migration, independent-witness replay, shadow idempotency, reversible apply/undo, bounded reflection, and provider-outage isolation.
+- schema 11 migration, candidate-level score/rejection diagnostics, task influence ratings, create/update/ignore storage decisions, and valid append-only JSONL export.
+- schema 12/13 migration, cross-project isolation, required-context gates, context-independent candidate recall, storage preflight, context-specific usefulness and reversal, context-repair Sleep proposals, source-cited summary candidates, and combined quality reporting.
+- schema 15 Review Inbox coverage: decision-ready proposal snapshots, explained connection approval, typed operator-learning signals, reversible denial, and tombstone/restore version history.
 
 ## Current compatibility check
 

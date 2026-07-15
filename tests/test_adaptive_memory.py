@@ -49,6 +49,14 @@ class HybridMemoryTests(unittest.TestCase):
         results = MemoryRetriever(self.store, threshold=0.05).search("Which computer contains it?", limit=3)
         self.assertIn(memory_id, {result.memory["id"] for result in results})
 
+        database_id, _ = self.store.add_memory(
+            "Project Amber's verified database backend is SQLite.", kind="decision"
+        )
+        database_results = MemoryRetriever(self.store, threshold=0.05).search(
+            "Which data store was approved for Project Amber?", limit=3
+        )
+        self.assertIn(database_id, {result.memory["id"] for result in database_results})
+
     def test_one_rare_token_cannot_outrank_direct_multiword_match(self) -> None:
         incidental_id, _ = self.store.add_memory(
             "Infra changes need approval before applying; recall the unrelated backup checklist first.",
@@ -165,6 +173,12 @@ class ProviderEfficiencyTests(unittest.TestCase):
         self.assertEqual(row["mode"], "none")
         self.assertEqual(row["estimated_tokens"], 0)
         self.assertEqual(row["abstained"], 1)
+        trace = self.provider._store.memory_traces(task_id=row["task_id"])[0]
+        self.assertFalse(trace["retrieval_used"])
+        self.assertEqual(trace["recall_mode"], "none")
+        self.assertEqual(trace["candidate_memories"], [])
+        self.assertEqual(trace["queries"], [])
+        self.assertIn("social turn", trace["retrieval_reason"])
 
     def test_repeated_workflow_is_learned_only_after_distinct_tasks(self) -> None:
         for index, query in enumerate(

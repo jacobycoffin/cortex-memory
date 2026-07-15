@@ -27,7 +27,7 @@ from .client import CortexMemory, RecallBatch
 from .cognition import plan_recall
 from .extraction import extract_candidates
 from .metacognition import MetacognitiveAssessment, assess_retrieval
-from .retrieval import MemoryRetriever, RetrievalDiagnostics, RetrievalResult, token_overlap
+from .retrieval import MemoryRetriever, RetrievalContext, RetrievalDiagnostics, RetrievalResult
 from .research import (
     assign_recall_condition,
     complete_agent_tasks,
@@ -140,6 +140,31 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
             "object_value": {"type": "string", "description": "Optional structured claim value."},
             "valid_from": {"type": "string", "description": "Optional ISO validity start."},
             "valid_to": {"type": "string", "description": "Optional ISO validity end."},
+            "context_mode": {
+                "type": "string",
+                "enum": ["standalone", "context_dependent"],
+                "description": "Whether the memory is reusable generally or requires explicit task context.",
+            },
+            "scope": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Required scope such as project, person, goal, conversation, or task_type.",
+            },
+            "entities": {"type": "array", "items": {"type": "string"}},
+            "preconditions": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Required system-state values for safe reuse.",
+            },
+            "source_context": {"type": "string"},
+            "active_project": {"type": "string"},
+            "system_state": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+                "description": "Current precondition values used to gate context-dependent search results.",
+            },
+            "applicable_systems": {"type": "array", "items": {"type": "string"}},
+            "applicable_versions": {"type": "array", "items": {"type": "string"}},
             "evidence_ids": {"type": "array", "items": {"type": "string"}},
             "supersedes_id": {"type": "string"},
             "run_id": {"type": "string", "description": "Consolidation run ID for undo."},
@@ -160,12 +185,17 @@ class CortexMemoryProvider(MemoryProvider):
         self._retriever: MemoryRetriever | None = None
         self._session_id = ""
         self._agent_context = "primary"
+        self._active_project: str | None = None
+        self._system_state: dict[str, str] = {}
+        self._applicable_systems: tuple[str, ...] = ()
+        self._applicable_versions: tuple[str, ...] = ()
         self._cache_lock = threading.RLock()
         self._retrieval_cache: dict[tuple[Any, ...], _RecallCacheEntry] = {}
         self._pending_prefetches: dict[str, list[tuple[list[str], str | None]]] = {}
         self._used_by_session: dict[str, list[str]] = {}
         self._completed_task_by_session: dict[str, list[str]] = {}
         self._task_started_monotonic: dict[str, float] = {}
+        self._memory_actions_by_session: dict[str, list[dict[str, Any]]] = {}
 
     @property
     def name(self) -> str:
@@ -187,6 +217,21 @@ class CortexMemoryProvider(MemoryProvider):
         self._retriever = MemoryRetriever(self._store, threshold=float(self._config["retrieval_threshold"]))
         self._session_id = session_id
         self._agent_context = str(kwargs.get("agent_context") or "primary")
+        self._active_project = str(
+            kwargs.get("active_project") or self._config.get("active_project") or ""
+        ).strip() or None
+        raw_system_state = kwargs.get("system_state") or self._config.get("system_state") or {}
+        self._system_state = (
+            {str(key): str(value) for key, value in raw_system_state.items()}
+            if isinstance(raw_system_state, dict)
+            else {}
+        )
+        self._applicable_systems = _string_tuple(
+            kwargs.get("applicable_systems") or self._config.get("applicable_systems") or ()
+        )
+        self._applicable_versions = _string_tuple(
+            kwargs.get("applicable_versions") or self._config.get("applicable_versions") or ()
+        )
 
     def system_prompt_block(self) -> str:
         if not self._store:
@@ -208,6 +253,14 @@ class CortexMemoryProvider(MemoryProvider):
         task_started = time.monotonic()
         task_id = str(uuid.uuid4())
         task_type = classify_task(query)
+        retrieval_context = RetrievalContext(
+            active_project=self._active_project,
+            goal=query,
+            scope={"conversation": sid, "task_type": task_type},
+            system_state=dict(self._system_state),
+            applicable_systems=self._applicable_systems,
+            applicable_versions=self._applicable_versions,
+        )
         assignment = assign_recall_condition(
             self._store,
             session_id=sid,
@@ -275,6 +328,17 @@ class CortexMemoryProvider(MemoryProvider):
                 estimated_tokens=0,
                 prepare_ms=prepare_ms,
                 abstained=True,
+                task_id=task_id,
+            )
+            self._record_memory_trace(
+                task_id=task_id,
+                sid=sid,
+                query=query,
+                task_type=task_type,
+                plan=plan,
+                results=[],
+                diagnostics=RetrievalDiagnostics(0, 0, 0, True),
+                retrieval_reason="randomized no-memory control; Cortex evidence withheld",
             )
             return ""
         if not plan.needs_memory:
@@ -304,6 +368,17 @@ class CortexMemoryProvider(MemoryProvider):
                 estimated_tokens=0,
                 prepare_ms=prepare_ms,
                 abstained=True,
+                task_id=task_id,
+            )
+            self._record_memory_trace(
+                task_id=task_id,
+                sid=sid,
+                query=query,
+                task_type=task_type,
+                plan=plan,
+                results=[],
+                diagnostics=RetrievalDiagnostics(0, 0, 0, True),
+                retrieval_reason=plan.reason,
             )
             return ""
         if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
@@ -335,6 +410,11 @@ class CortexMemoryProvider(MemoryProvider):
             plan.tool_limit,
             task_type,
             fingerprint,
+            retrieval_context.active_project,
+            tuple(sorted(retrieval_context.scope.items())),
+            tuple(sorted(retrieval_context.system_state.items())),
+            retrieval_context.applicable_systems,
+            retrieval_context.applicable_versions,
         )
         now = time.monotonic()
         revision = self._store.retrieval_revision()
@@ -366,6 +446,7 @@ class CortexMemoryProvider(MemoryProvider):
                 as_of=plan.as_of,
                 graph_depth=plan.graph_depth,
                 threshold=plan.threshold,
+                context=retrieval_context,
             )
             tool_guidance = (
                 self._store.tool_guidance(task_type, limit=max(1, plan.tool_limit))
@@ -394,6 +475,7 @@ class CortexMemoryProvider(MemoryProvider):
                     as_of=plan.as_of,
                     graph_depth=1,
                     threshold=plan.threshold,
+                    context=retrieval_context,
                 )
                 archived = next(
                     (result for result in archived_results if result.memory["state"] == "archived"),
@@ -493,6 +575,19 @@ class CortexMemoryProvider(MemoryProvider):
                 estimated_tokens=0,
                 prepare_ms=prepare_ms,
                 abstained=True,
+                task_id=task_id,
+            )
+            self._record_memory_trace(
+                task_id=task_id,
+                sid=sid,
+                query=query,
+                task_type=task_type,
+                plan=plan,
+                results=[],
+                diagnostics=diagnostics,
+                retrieval_reason=plan.reason,
+                assessments=assessments,
+                monitor_mode=monitor_mode,
             )
             return ""
         ids: list[str] = []
@@ -594,6 +689,21 @@ class CortexMemoryProvider(MemoryProvider):
             estimated_tokens=(len(context) + 3) // 4,
             prepare_ms=prepare_ms,
             abstained=False,
+            task_id=task_id,
+        )
+        self._record_memory_trace(
+            task_id=task_id,
+            sid=sid,
+            query=query,
+            task_type=task_type,
+            plan=plan,
+            results=results,
+            diagnostics=diagnostics,
+            retrieval_reason=(
+                f"{plan.reason}; {'retrieval cache hit' if cache_hit else 'retrieval cache miss'}"
+            ),
+            assessments=assessments,
+            monitor_mode=monitor_mode,
         )
         return context
 
@@ -620,10 +730,20 @@ class CortexMemoryProvider(MemoryProvider):
             for previous_task in previous_tasks:
                 self._store.apply_task_outcome(previous_task, "harmful")
         elif previous_tasks and _POSITIVE_FEEDBACK.search(user_content or ""):
-            helped: list[str] = []
             for previous_task in previous_tasks:
-                helped.extend(self._store.apply_task_outcome(previous_task, "helpful"))
-            self._reinforce_group(helped, "co_used", weight=0.08)
+                helped = self._store.apply_task_outcome(previous_task, "helpful")
+                self._reinforce_group(
+                    helped,
+                    "co_used",
+                    weight=0.08,
+                    evidence_type="shared_helpful_task",
+                    explanation=(
+                        "Both memories were attributed to the same answer and the user later marked "
+                        "that task helpful."
+                    ),
+                    evidence_key=previous_task,
+                    task_id=previous_task,
+                )
 
         safe_user = sanitize_memory(user_content)
         safe_assistant = sanitize_memory(assistant_content)
@@ -636,11 +756,25 @@ class CortexMemoryProvider(MemoryProvider):
         ]
 
         created_ids: list[str] = []
+        with self._cache_lock:
+            memory_actions = self._memory_actions_by_session.pop(sid, [])
         if _as_bool(self._config.get("auto_capture", True)):
-            created_ids.extend(self._capture(safe_user.text, role="user", session_id=sid))
-            created_ids.extend(self._capture(safe_assistant.text, role="assistant", session_id=sid))
-        self._reinforce_group(created_ids, "co_observed", weight=0.04)
-
+            created_ids.extend(
+                self._capture(
+                    safe_user.text,
+                    role="user",
+                    session_id=sid,
+                    action_sink=memory_actions,
+                )
+            )
+            created_ids.extend(
+                self._capture(
+                    safe_assistant.text,
+                    role="assistant",
+                    session_id=sid,
+                    action_sink=memory_actions,
+                )
+            )
         # Credit only memories with evidence of answer use. Structured values and
         # distinctive anchors dominate; conceptual similarity cannot win alone.
         current_ids, current_tasks = self._current_prefetches(sid)
@@ -653,7 +787,11 @@ class CortexMemoryProvider(MemoryProvider):
                 used.append(memory["id"])
                 attributions[memory["id"]] = attribution
         for current_task in current_tasks:
-            self._store.resolve_usage(current_task, attributions)
+            self._store.resolve_usage(
+                current_task,
+                attributions,
+                memory_actions=memory_actions,
+            )
             started = self._task_started_monotonic.pop(current_task, None)
             complete_agent_tasks(
                 self._store,
@@ -665,7 +803,16 @@ class CortexMemoryProvider(MemoryProvider):
         if current_tasks:
             self._completed_task_by_session[sid] = current_tasks
         self._used_by_session[sid] = used
-        self._reinforce_group(used, "co_used", weight=0.05)
+        for current_task in current_tasks:
+            self._reinforce_group(
+                used,
+                "co_used",
+                weight=0.05,
+                evidence_type="shared_answer_attribution",
+                explanation="Both memories were independently attributed to the same completed answer.",
+                evidence_key=current_task,
+                task_id=current_task,
+            )
 
     def on_memory_write(
         self,
@@ -739,6 +886,7 @@ class CortexMemoryProvider(MemoryProvider):
             self._used_by_session.pop(new_session_id, None)
             self._completed_task_by_session.pop(new_session_id, None)
             with self._cache_lock:
+                self._memory_actions_by_session.pop(new_session_id, None)
                 dropped = self._pending_prefetches.pop(new_session_id, None) or []
                 for _memory_ids, task_id in dropped:
                     if task_id:
@@ -765,6 +913,13 @@ class CortexMemoryProvider(MemoryProvider):
                     source_type="explicit_tool",
                     source_category="USER_EXPLICIT",
                     session_id=self._session_id,
+                    context_mode=str(args.get("context_mode") or "standalone"),
+                    scope=dict(args.get("scope") or {}),
+                    entities=[str(item) for item in args.get("entities") or []],
+                    preconditions=dict(args.get("preconditions") or {}),
+                    source_context=str(args.get("source_context") or "explicit cortex tool write")[:1000],
+                    applicable_systems=[str(item) for item in args.get("applicable_systems") or []],
+                    applicable_versions=[str(item) for item in args.get("applicable_versions") or []],
                     confidence=float(args.get("confidence", 0.88)),
                     importance=float(args.get("importance", 0.78)),
                     trust=0.90,
@@ -781,9 +936,20 @@ class CortexMemoryProvider(MemoryProvider):
                     evidence_ids=[
                         resolved for raw in args.get("evidence_ids") or [] if (resolved := self._resolve(raw))
                     ],
+                    storage_policy="explicit",
                 )
-                if created and not sanitized.quarantine_reason:
-                    self._link_memory(memory_id, sanitized.text)
+                self._queue_memory_action(
+                    session_id=str(kwargs.get("session_id") or self._session_id or "default"),
+                    action="created" if created else "updated",
+                    memory_id=memory_id,
+                    kind=str(args.get("kind") or "semantic"),
+                    state="quarantine" if sanitized.quarantine_reason else "active",
+                    reason=(
+                        "explicit durable-memory write"
+                        if created
+                        else "explicit write merged into an existing duplicate"
+                    ),
+                )
                 return _json_ok(
                     memory_id=memory_id,
                     created=created,
@@ -792,11 +958,24 @@ class CortexMemoryProvider(MemoryProvider):
                 )
 
             if action == "search":
+                search_scope = dict(args.get("scope") or {})
                 results = self._retriever.search(
                     str(args.get("query") or ""),
                     limit=int(self._config["top_k"]),
                     token_budget=int(self._config["token_budget"]),
                     include_archived=bool(args.get("include_archived", False)),
+                    context=RetrievalContext(
+                        active_project=str(args.get("active_project") or "").strip() or None,
+                        goal=str(args.get("query") or ""),
+                        entities=_string_tuple(args.get("entities") or ()),
+                        scope={str(key): str(value) for key, value in search_scope.items()},
+                        system_state={
+                            str(key): str(value)
+                            for key, value in dict(args.get("system_state") or {}).items()
+                        },
+                        applicable_systems=_string_tuple(args.get("applicable_systems") or ()),
+                        applicable_versions=_string_tuple(args.get("applicable_versions") or ()),
+                    ),
                 )
                 return _json_ok(results=[r.as_dict() for r in results])
 
@@ -814,19 +993,36 @@ class CortexMemoryProvider(MemoryProvider):
                     reason=str(args.get("reason") or "explicit correction"),
                     confidence=float(args["confidence"]) if "confidence" in args else None,
                 )
+                self._queue_memory_action(
+                    session_id=str(kwargs.get("session_id") or self._session_id or "default"),
+                    action="updated" if changed else "ignored",
+                    memory_id=memory_id,
+                    reason="explicit correction preserved prior version" if changed else "correction target was unchanged",
+                )
                 return _json_ok(memory_id=memory_id, corrected=changed)
 
             if action == "pin":
                 memory_id = self._resolve(args.get("memory_id"))
-                return _json_ok(
+                changed = bool(memory_id and self._store.set_pinned(memory_id, bool(args.get("pinned", True))))
+                self._queue_memory_action(
+                    session_id=str(kwargs.get("session_id") or self._session_id or "default"),
+                    action="updated" if changed else "ignored",
                     memory_id=memory_id,
-                    pinned=bool(memory_id and self._store.set_pinned(memory_id, bool(args.get("pinned", True)))),
+                    reason="memory protection flag updated" if changed else "pin target was unavailable",
                 )
+                return _json_ok(memory_id=memory_id, pinned=changed)
 
             if action in {"archive", "forget"}:
                 memory_id = self._resolve(args.get("memory_id"))
                 changed = bool(
                     memory_id and self._store.set_state(memory_id, "archived", reason=str(args.get("reason") or action))
+                )
+                self._queue_memory_action(
+                    session_id=str(kwargs.get("session_id") or self._session_id or "default"),
+                    action="updated" if changed else "ignored",
+                    memory_id=memory_id,
+                    state="archived" if changed else None,
+                    reason="memory archived reversibly" if changed else "archive target was unavailable",
                 )
                 return _json_ok(memory_id=memory_id, archived=changed, hard_deleted=False)
 
@@ -835,6 +1031,13 @@ class CortexMemoryProvider(MemoryProvider):
                 changed = bool(
                     memory_id
                     and self._store.set_state(memory_id, "active", reason=str(args.get("reason") or "restored"))
+                )
+                self._queue_memory_action(
+                    session_id=str(kwargs.get("session_id") or self._session_id or "default"),
+                    action="updated" if changed else "ignored",
+                    memory_id=memory_id,
+                    state="active" if changed else None,
+                    reason="memory restored to active recall" if changed else "restore target was unavailable",
                 )
                 return _json_ok(memory_id=memory_id, restored=changed)
 
@@ -995,49 +1198,124 @@ class CortexMemoryProvider(MemoryProvider):
             self._retrieval_cache.clear()
             self._pending_prefetches.clear()
             self._task_started_monotonic.clear()
+            self._memory_actions_by_session.clear()
 
-    def _capture(self, text: str, *, role: str, session_id: str) -> list[str]:
+    def _capture(
+        self,
+        text: str,
+        *,
+        role: str,
+        session_id: str,
+        action_sink: list[dict[str, Any]] | None = None,
+    ) -> list[str]:
         if not self._store:
             return []
         ids: list[str] = []
         for candidate in extract_candidates(text, role=role):
             sanitized = sanitize_memory(candidate.content)
+            scoped_to_project = bool(
+                self._active_project
+                and candidate.kind not in {"identity", "preference", "procedure"}
+            )
+            context_mode = "context_dependent" if scoped_to_project else "standalone"
+            scope = {"project": self._active_project} if scoped_to_project else None
+            entities = [self._active_project] if self._active_project else None
+            source_context = f"{role} turn in session {session_id}"
+            applicable_systems = self._applicable_systems if candidate.kind == "procedure" else ()
+            applicable_versions = self._applicable_versions if candidate.kind == "procedure" else ()
+            assessment = self._store.assess_storage_candidate(
+                sanitized.text,
+                kind=candidate.kind,
+                context_mode=context_mode,
+                scope=scope,
+                entities=entities,
+                source_context=source_context,
+                applicable_systems=applicable_systems,
+                applicable_versions=applicable_versions,
+                confidence=candidate.confidence,
+                importance=candidate.importance,
+                volatility=candidate.volatility,
+                automatic=True,
+            )
+            if assessment["decision"] == "ignored":
+                self._store.record_ignored_memory_candidate(assessment, session_id=session_id)
+                if action_sink is not None:
+                    action_sink.append(
+                        {
+                            "action": "ignored",
+                            "memory_id": None,
+                            "kind": candidate.kind,
+                            "reason": str(assessment["reason"]),
+                        }
+                    )
+                continue
             memory_id, created = self._store.add_memory(
                 sanitized.text,
                 kind=candidate.kind,
                 source_type=f"{role}_turn",
                 source_category="USER_EXPLICIT" if role == "user" else "AGENT_INFERENCE",
                 session_id=session_id,
+                context_mode=context_mode,
+                scope=scope,
+                entities=entities,
+                source_context=source_context,
+                applicable_systems=applicable_systems,
+                applicable_versions=applicable_versions,
                 confidence=candidate.confidence,
                 importance=candidate.importance,
                 volatility=candidate.volatility,
                 trust=0.90 if role == "user" else 0.55,
                 extraction_method="deterministic_candidate_extractor_v1",
                 quarantine_reason=sanitized.quarantine_reason,
+                storage_policy="automatic",
             )
             if created and not sanitized.quarantine_reason:
-                self._link_memory(memory_id, sanitized.text)
                 ids.append(memory_id)
+            if action_sink is not None:
+                action_sink.append(
+                    {
+                        "action": "created" if created else "updated",
+                        "memory_id": memory_id,
+                        "kind": candidate.kind,
+                        "state": "quarantine" if sanitized.quarantine_reason else "active",
+                        "reason": (
+                            "durable candidate stored with explicit provenance"
+                            if created and not sanitized.quarantine_reason
+                            else "instruction-like candidate stored outside active recall"
+                            if created
+                            else "duplicate candidate merged into the existing memory"
+                        ),
+                    }
+                )
         return ids
 
-    def _link_memory(self, memory_id: str, content: str) -> None:
-        if not self._store:
-            return
-        for candidate in self._store.fts_search(content, limit=8):
-            other_id = candidate["id"]
-            if other_id == memory_id:
-                continue
-            overlap = token_overlap(content, candidate["content"])
-            if overlap >= 0.28:
-                self._store.add_edge(memory_id, other_id, "related", weight=min(0.18, overlap * 0.18))
-
-    def _reinforce_group(self, memory_ids: list[str], relation: str, *, weight: float) -> None:
+    def _reinforce_group(
+        self,
+        memory_ids: list[str],
+        relation: str,
+        *,
+        weight: float,
+        evidence_type: str,
+        explanation: str,
+        evidence_key: str,
+        task_id: str | None = None,
+    ) -> None:
         if not self._store:
             return
         unique = list(dict.fromkeys(memory_ids))[:10]
         for index, src in enumerate(unique):
             for dst in unique[index + 1 :]:
-                self._store.add_edge(src, dst, relation, weight=weight)
+                self._store.add_edge(
+                    src,
+                    dst,
+                    relation,
+                    weight=weight,
+                    evidence_type=evidence_type,
+                    explanation=explanation,
+                    evidence_key=evidence_key,
+                    task_id=task_id,
+                    metadata={"memory_count": len(unique)},
+                )
 
     def _current_prefetches(self, session_id: str) -> tuple[list[str], list[str]]:
         with self._cache_lock:
@@ -1091,7 +1369,141 @@ class CortexMemoryProvider(MemoryProvider):
                 self._store.resolve_usage(dropped_task_id, {})
                 self._task_started_monotonic.pop(dropped_task_id, None)
 
+    def _record_memory_trace(
+        self,
+        *,
+        task_id: str,
+        sid: str,
+        query: str,
+        task_type: str,
+        plan: Any,
+        results: List[RetrievalResult],
+        diagnostics: RetrievalDiagnostics,
+        retrieval_reason: str,
+        assessments: List[MetacognitiveAssessment] | None = None,
+        monitor_mode: str = "off",
+    ) -> None:
+        if not self._store:
+            return
+        assessment_by_id = {
+            assessment.memory_id: assessment for assessment in (assessments or [])
+        }
+        final_ids = {str(result.memory["id"]) for result in results}
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in diagnostics.candidate_decisions:
+            candidate = dict(raw)
+            memory_id = str(candidate.get("memory_id") or "")
+            if not memory_id:
+                continue
+            seen.add(memory_id)
+            assessment = assessment_by_id.get(memory_id)
+            originally_selected = bool(candidate.get("selected"))
+            candidate["selected"] = memory_id in final_ids
+            if originally_selected and memory_id not in final_ids:
+                candidate["reason"] = (
+                    "withheld by enforced metacognitive abstention"
+                    if monitor_mode == "enforce" and assessment and assessment.decision == "abstain"
+                    else "removed after reliability review"
+                )
+            if assessment:
+                candidate["metacognition"] = {
+                    "decision": assessment.decision,
+                    "calibrated_probability": assessment.calibrated_probability,
+                    "reason": assessment.reason,
+                    "applied": monitor_mode == "enforce",
+                }
+            candidates.append(candidate)
+        for result in results:
+            memory_id = str(result.memory["id"])
+            if memory_id in seen:
+                continue
+            assessment = assessment_by_id.get(memory_id)
+            candidate = {
+                "memory_id": memory_id,
+                "kind": str(result.memory.get("kind") or "semantic"),
+                "context_mode": str(result.memory.get("context_mode") or "standalone"),
+                "scope": dict(result.memory.get("scope") or {}),
+                "entities": list(result.memory.get("entities") or []),
+                "preconditions": dict(result.memory.get("preconditions") or {}),
+                "applicable_systems": list(result.memory.get("applicable_systems") or []),
+                "applicable_versions": list(result.memory.get("applicable_versions") or []),
+                "content_preview": " ".join(str(result.memory.get("content") or "").split())[:180],
+                "rank": len(candidates) + 1,
+                "selected": True,
+                "score": round(float(result.score), 6),
+                "estimated_tokens": int(result.estimated_tokens),
+                "components": dict(result.components),
+                "reason": "selected through pruning-regret recovery",
+            }
+            if assessment:
+                candidate["metacognition"] = {
+                    "decision": assessment.decision,
+                    "calibrated_probability": assessment.calibrated_probability,
+                    "reason": assessment.reason,
+                    "applied": monitor_mode == "enforce",
+                }
+            candidates.append(candidate)
+        context_summary = (
+            f"task_type={task_type}; session_scope={sid}; active_project={self._active_project or 'unavailable'}; "
+            f"temporal_mode={plan.temporal_mode}; "
+            f"as_of={plan.as_of or 'current'}; graph_depth={plan.graph_depth}; "
+            f"requested_limit={plan.limit}; token_budget={plan.token_budget}"
+        )
+        self._store.record_memory_trace_decision(
+            task_id=task_id,
+            session_id=sid,
+            goal=query,
+            context_summary=context_summary,
+            task_type=task_type,
+            recall_mode=str(plan.mode),
+            retrieval_used=bool(results),
+            retrieval_reason=retrieval_reason,
+            queries=[query] if results or plan.needs_memory else [],
+            candidate_memories=candidates,
+            retrieval_context=RetrievalContext(
+                active_project=self._active_project,
+                goal=query,
+                scope={"conversation": sid, "task_type": task_type},
+                system_state=dict(self._system_state),
+                applicable_systems=self._applicable_systems,
+                applicable_versions=self._applicable_versions,
+            ).as_record(),
+        )
+
+    def _queue_memory_action(
+        self,
+        *,
+        session_id: str,
+        action: str,
+        memory_id: str | None,
+        reason: str,
+        kind: str | None = None,
+        state: str | None = None,
+    ) -> None:
+        item: dict[str, Any] = {
+            "action": action,
+            "memory_id": memory_id,
+            "reason": reason,
+        }
+        if kind:
+            item["kind"] = kind
+        if state:
+            item["state"] = state
+        with self._cache_lock:
+            actions = self._memory_actions_by_session.setdefault(session_id, [])
+            actions.append(item)
+            if len(actions) > 100:
+                del actions[:-100]
+
     def _capture_tool_outcomes(self, messages: List[Dict[str, Any]], session_id: str) -> list[Any]:
+        """Keep tool telemetry in its dedicated ledger, never in long-term memory.
+
+        Tool executions and repeated workflows remain available to the bounded
+        guidance channel through ``tool_stats`` and ``tool_workflow_stats``.
+        Creating a recallable memory for every command or argument-key variant
+        polluted the Index and map without adding durable knowledge.
+        """
         if not self._store:
             return []
         executions = extract_tool_executions(messages, session_id=session_id)
@@ -1101,107 +1513,10 @@ class CortexMemoryProvider(MemoryProvider):
             executions=executions,
             workflow=observed_workflow,
         )
-        workflow_evidence_ids: list[str] = []
         for execution in executions:
-            created, stats = self._store.record_tool_execution(execution)
-            if not created:
-                continue
-            outcome = "success" if execution.success else f"failure:{execution.error_type or 'tool_error'}"
-            tool_subject = f"tool:{execution.tool_name}:{execution.task_type}"
-            event_text = (
-                f"Tool execution observation: tool={execution.tool_name}; task_type={execution.task_type}; "
-                f"outcome={outcome}; argument_keys={','.join(execution.argument_keys) or 'none'}."
-            )
-            evidence_id, _ = self._store.add_memory(
-                event_text,
-                kind="episode",
-                source_type="tool_execution",
-                source_category="TOOL_VERIFIED",
-                source_ref=execution.execution_id,
-                session_id=session_id,
-                confidence=0.96,
-                currentness_confidence=0.9,
-                importance=0.42,
-                volatility=0.35,
-                trust=0.96,
-                subject=tool_subject,
-                predicate="execution_outcome",
-                object_value=outcome,
-                extraction_method="tool_outcome_observer_v1",
-            )
-            workflow_evidence_ids.append(evidence_id)
-            successes = int(stats.get("success_count", 0))
-            failures = int(stats.get("failure_count", 0))
-            distinct_tasks = int(stats.get("distinct_tasks", 0))
-            if successes >= 2 and distinct_tasks >= 2:
-                evidence = self._store.claim_memories(tool_subject, "execution_outcome", object_value="success")
-                keys = ", ".join(execution.argument_keys) or "no arguments"
-                confidence = min(0.95, (successes + 1.5) / (successes + failures + 3.0))
-                self._store.add_memory(
-                    f"Tool {execution.tool_name} is a repeatedly successful option for {execution.task_type} tasks; expected argument keys: {keys}.",
-                    kind="procedure",
-                    source_type="tool_outcome_aggregation",
-                    source_category="REFLECTION",
-                    session_id=session_id,
-                    confidence=confidence,
-                    currentness_confidence=0.85,
-                    importance=0.68,
-                    volatility=0.35,
-                    trust=0.9,
-                    subject=tool_subject,
-                    predicate="works_for",
-                    object_value=execution.task_type,
-                    extraction_method="tool_outcome_aggregator_v1",
-                    evidence_ids=[row["id"] for row in evidence],
-                )
-            if failures >= 2 and distinct_tasks >= 2 and stats.get("last_error_type"):
-                evidence = self._store.claim_memories(tool_subject, "execution_outcome")
-                self._store.add_memory(
-                    f"Tool {execution.tool_name} has repeatedly failed for {execution.task_type} tasks with {stats['last_error_type']} errors; verify conditions before retrying.",
-                    kind="procedure",
-                    source_type="tool_outcome_aggregation",
-                    source_category="REFLECTION",
-                    session_id=session_id,
-                    confidence=min(0.9, failures / max(2, successes + failures)),
-                    currentness_confidence=0.8,
-                    importance=0.7,
-                    volatility=0.5,
-                    trust=0.9,
-                    subject=tool_subject,
-                    predicate="fails_for",
-                    object_value=execution.task_type,
-                    extraction_method="tool_outcome_aggregator_v1",
-                    evidence_ids=[row["id"] for row in evidence if str(row["object_value"]).startswith("failure:")],
-                )
-
-        workflow = observed_workflow
-        if workflow:
-            created, stats = self._store.record_tool_workflow(workflow)
-            if created and int(stats.get("success_count", 0)) >= 2 and int(stats.get("distinct_tasks", 0)) >= 2:
-                steps = " -> ".join(
-                    f"{step['tool']}({','.join(step.get('argument_keys') or [])})" for step in workflow.steps
-                )
-                self._store.add_memory(
-                    f"Reinforced {workflow.task_type} workflow: {steps}.",
-                    kind="procedure",
-                    source_type="tool_workflow_aggregation",
-                    source_category="REFLECTION",
-                    session_id=session_id,
-                    confidence=min(
-                        0.95,
-                        (int(stats.get("success_count", 0)) + 1.5)
-                        / (int(stats.get("success_count", 0)) + int(stats.get("failure_count", 0)) + 3.0),
-                    ),
-                    currentness_confidence=0.86,
-                    importance=0.72,
-                    volatility=0.38,
-                    trust=0.91,
-                    subject=f"workflow:{workflow.task_type}:{workflow.task_fingerprint}",
-                    predicate="works_for",
-                    object_value=workflow.task_type,
-                    extraction_method="tool_workflow_aggregator_v1",
-                    evidence_ids=workflow_evidence_ids,
-                )
+            self._store.record_tool_execution(execution)
+        if observed_workflow:
+            self._store.record_tool_workflow(observed_workflow)
         return executions
 
     def _resolve(self, value: Any) -> str | None:
@@ -1227,6 +1542,19 @@ def _as_bool(value: Any) -> bool:
     return str(value).strip().casefold() in {"1", "true", "yes", "on"}
 
 
+def _string_tuple(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        value = [value]
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in value or ():
+        cleaned = " ".join(str(item).split())[:200]
+        if cleaned and cleaned.casefold() not in seen:
+            seen.add(cleaned.casefold())
+            result.append(cleaned)
+    return tuple(result)
+
+
 def _json_ok(**payload: Any) -> str:
     return json.dumps({"success": True, **payload}, ensure_ascii=False, default=str)
 
@@ -1239,4 +1567,4 @@ def register(ctx) -> None:
     ctx.register_memory_provider(CortexMemoryProvider())
 
 
-__all__ = ["CortexMemoryProvider", "register"]
+__all__ = ["CortexMemoryProvider", "CortexMemory", "RecallBatch", "RetrievalContext", "register"]
