@@ -97,11 +97,15 @@ Retrieval relevance and memory reliability are separate judgments. After ranking
 
 Every judgment is stored in `metacognitive_predictions` before its outcome. Explicit helpful/validated outcomes are positive calibration labels; harmful/corrected outcomes are negative labels. Used, ignored, pending, and withheld records remain visible but do not pretend to be correctness labels.
 
-The default `metacognition_mode=shadow` records what the policy would do without changing the evidence block. `enforce` is experimental: it can withhold `abstain` candidates and labels `verify` candidates inside the model-facing evidence block. Calibration learns conservatively within probability bands, preferring task-and-source evidence and requiring progressively larger samples before task-wide or global fallback. Retrieval frequency alone never changes the probability.
+The default `metacognition_mode=shadow` records what the policy would do without changing the evidence block. A requested `enforce` mode remains effectively shadow until the database has at least 50 explicit labels, acceptable Brier and expected-calibration error, and enough low-risk `use` decisions. Passing the gate permits a controlled enforcement trial; it does not prove introspection. Calibration learns conservatively within probability bands, preferring task-and-source evidence and requiring progressively larger samples before task-wide or global fallback. Retrieval frequency alone never changes the probability.
 
 ## Local benchmark ledger
 
 The dashboard's fixed synthetic benchmark runs outside the production retrieval database, one background job at a time. `benchmark_runs` persists progress, suite version, host-level aggregate metrics, the transparent score components, and the raw synthetic report. The dashboard compares only compatible completed versions and keeps local retrieval overhead separate from model or provider latency.
+
+The private real-history path begins with one auditable `task_outcome_labels` decision over memories actually attributed to a task. Positive labels maintain a local `evaluation_cases` row containing the private query and relevant IDs. The dashboard evaluates fixed and adaptive retrieval over the same cases in a disposable consistent snapshot, then persists only a sanitized `evaluation_runs` report. The Outcome Lab exposes label coverage as a driver, observed helpfulness as the primary descriptive KPI, and calibration, selective risk, context size, latency, and pruning regret as guardrails.
+
+The evidence hierarchy is read-only: level one is raw active/cold evidence, level two contains memories with explicit `memory_dependencies`, and level three groups repeated structure into navigation candidates. It does not create summary memories. Sleep proposals are rendered as hypotheses with an exposure flag and later task outcomes; tool and workflow suggestions create `tool_guidance_exposures` rows so follow-through can be compared without calling it causal.
 
 ## Feedback and attribution
 
@@ -154,4 +158,4 @@ Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_re
 
 Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.
 
-Schema 6 adds auditable Sleep runs, replay/usage processing state, independent association evidence, proposals, and reversible edge/state change journals. Migration creates the new tables without rewriting existing memories or edges.
+Schema 9 adds auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.

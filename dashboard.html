@@ -1243,6 +1243,77 @@
     .decision-chip.pending, .decision-chip.used, .decision-chip.ignored, .decision-chip.withheld { color: var(--muted); }
     .decision-chip.helpful, .decision-chip.validated { color: var(--green); }
     .decision-chip.harmful, .decision-chip.corrected { color: var(--red); }
+    .outcome-lab { margin-bottom: 18px; overflow: hidden; }
+    .outcome-head { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; padding: 20px; border-bottom: 1px solid var(--border); background: color-mix(in srgb,var(--blue) 5%,var(--surface)); }
+    .outcome-head h2 { margin: 5px 0 6px; font: 540 1.35rem/1.1 var(--display); }
+    .outcome-head p { max-width: 790px; margin: 0; color: var(--muted); font-size: .68rem; line-height: 1.5; }
+    .outcome-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-bottom: 1px solid var(--border); }
+    .outcome-stat { min-width: 0; padding: 15px 20px; background: var(--surface-2); }
+    .outcome-stat + .outcome-stat { border-left: 1px solid var(--border); }
+    .outcome-stat span { color: var(--muted); font: 550 .52rem/1.2 ui-monospace,monospace; letter-spacing: .07em; text-transform: uppercase; }
+    .outcome-stat strong { display: block; margin-top: 7px; font: 540 1.35rem/1 var(--display); }
+    .outcome-stat small { display: block; margin-top: 7px; color: var(--muted); font-size: .57rem; line-height: 1.4; }
+    .outcome-layout { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(320px,.75fr); gap: 14px; padding: 16px 20px 20px; }
+    .outcome-task-list, .private-evaluation-runs { display: grid; gap: 8px; }
+    .outcome-task { padding: 13px; border: 1px solid var(--border); background: var(--surface-2); }
+    .outcome-task-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .outcome-task-head strong { min-width: 0; overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
+    .outcome-task-head span { flex: 0 0 auto; color: var(--muted); font: 500 .52rem/1.2 ui-monospace,monospace; }
+    .outcome-task p { margin: 7px 0 0; color: var(--text-soft); font-size: .62rem; line-height: 1.45; }
+    .outcome-memory-strip { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .outcome-memory-strip button { max-width: 240px; overflow: hidden; padding: 4px 6px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: .53rem; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .outcome-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .outcome-choice { padding: 6px 8px; border: 1px solid var(--border); background: var(--surface); color: var(--text-soft); font: 650 .53rem/1 ui-monospace,monospace; cursor: pointer; }
+    .outcome-choice:hover, .outcome-choice.active { border-color: var(--blue); color: var(--text); }
+    .outcome-choice.negative.active { border-color: var(--red); color: var(--red); }
+    .outcome-choice:disabled { opacity: .45; cursor: not-allowed; }
+    .measurement-boundary { margin: 10px 0 0; padding: 10px 11px; border-left: 3px solid var(--amber); background: color-mix(in srgb,var(--amber) 6%,var(--surface-2)); color: var(--muted); font-size: .59rem; line-height: 1.48; }
+    .private-evaluation-summary { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); border: 1px solid var(--border); }
+    .private-evaluation-stat { padding: 11px; }
+    .private-evaluation-stat:nth-child(even) { border-left: 1px solid var(--border); }
+    .private-evaluation-stat:nth-child(n+3) { border-top: 1px solid var(--border); }
+    .private-evaluation-stat span { display: block; color: var(--muted); font-size: .54rem; text-transform: uppercase; }
+    .private-evaluation-stat strong { display: block; margin-top: 5px; font: 540 1rem/1 var(--display); }
+    .private-run { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); font-size: .58rem; }
+    .private-run:first-child { border-top: 0; }
+    .private-run span { color: var(--muted); }
+    .evidence-hierarchy { margin-bottom: 14px; }
+    .hierarchy-flow { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 12px 0; border: 1px solid var(--border); }
+    .hierarchy-level { position: relative; padding: 14px; background: var(--surface-2); }
+    .hierarchy-level + .hierarchy-level { border-left: 1px solid var(--border); }
+    .hierarchy-level:not(:last-child)::after { content: "→"; position: absolute; z-index: 1; right: -9px; top: 16px; width: 18px; height: 18px; display: grid; place-items: center; background: var(--surface); color: var(--blue); }
+    .hierarchy-level span { color: var(--blue); font: 550 .52rem/1.2 ui-monospace,monospace; text-transform: uppercase; }
+    .hierarchy-level strong { display: block; margin-top: 7px; font-size: .7rem; }
+    .hierarchy-level p { margin: 5px 0 0; color: var(--muted); font-size: .58rem; line-height: 1.4; }
+    .supported-claim-list { display: grid; gap: 8px; }
+    .supported-claim { padding: 11px 12px; border: 1px solid var(--border); background: var(--surface-2); }
+    .supported-claim > button { width: 100%; overflow: hidden; border: 0; padding: 0; background: none; color: var(--text); font-size: .65rem; font-weight: 700; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .supported-claim-evidence { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+    .supported-claim-evidence button { max-width: 260px; overflow: hidden; padding: 3px 5px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: .52rem; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+    .sleep-hypothesis-panel { margin: 12px 0 14px; padding: 13px; border: 1px solid var(--border); background: var(--surface-2); }
+    .sleep-hypothesis-list { display: grid; gap: 7px; margin-top: 10px; }
+    .sleep-hypothesis { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 10px; border: 1px solid var(--border); background: var(--surface); }
+    .sleep-hypothesis strong { display: block; font-size: .63rem; }
+    .sleep-hypothesis p { margin: 5px 0 0; color: var(--muted); font-size: .57rem; line-height: 1.42; }
+    .sleep-hypothesis-meta { display: grid; gap: 4px; justify-items: end; color: var(--muted); font: 500 .52rem/1.25 ui-monospace,monospace; }
+    .promotion-gate { margin-bottom: 14px; border-left: 3px solid var(--amber); }
+    .promotion-gate.ready { border-left-color: var(--green); }
+    .gate-checks { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 0; margin-top: 12px; border: 1px solid var(--border); }
+    .gate-check { padding: 10px; background: var(--surface-2); }
+    .gate-check + .gate-check { border-left: 1px solid var(--border); }
+    .gate-check span { display: block; color: var(--muted); font-size: .52rem; text-transform: uppercase; }
+    .gate-check strong { display: block; margin-top: 5px; font: 650 .62rem/1.25 ui-monospace,monospace; }
+    .gate-check.pass strong { color: var(--green); }
+    .gate-check.fail strong { color: var(--amber); }
+    .tool-evaluation { margin-bottom: 14px; }
+    .tool-evaluation-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border: 1px solid var(--border); }
+    .tool-evaluation-stat { padding: 12px; background: var(--surface-2); }
+    .tool-evaluation-stat + .tool-evaluation-stat { border-left: 1px solid var(--border); }
+    .tool-evaluation-stat strong { display: block; font: 540 1.1rem/1 var(--display); }
+    .tool-evaluation-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: .57rem; line-height: 1.38; }
+    .guidance-ledger { display: grid; gap: 0; margin-top: 10px; }
+    .guidance-row { display: grid; grid-template-columns: minmax(0,1fr) repeat(3,minmax(75px,.35fr)); gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); font-size: .58rem; }
+    .guidance-row span { color: var(--muted); }
     .settings-shortcut { width: auto; padding: 0 11px; }
     .settings-shortcut .settings-label { font-size: .69rem; }
     .settings-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); gap: 14px; }
@@ -1263,9 +1334,9 @@
     .settings-security-card strong { display: block; font-size: .75rem; }
     .settings-security-card p { margin: 6px 0 13px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
     @media (max-width: 1100px) { .sleep-process { grid-template-columns: repeat(3,minmax(0,1fr)); } .sleep-process article:nth-child(4) { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:nth-child(5), .sleep-process article:nth-child(6) { border-top: 1px solid var(--border); } .health-domain-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .health-domain-grid .health-area:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(4) { border-top: 1px solid var(--border); } }
-    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid, .sleep-command-grid, .sleep-audit-layout, .benchmark-body, .benchmark-footer { grid-template-columns: 1fr; } .sleep-run-browser { position: static; } #sleep-run-history { max-height: 290px; } }
+    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid, .sleep-command-grid, .sleep-audit-layout, .benchmark-body, .benchmark-footer, .outcome-layout { grid-template-columns: 1fr; } .sleep-run-browser { position: static; } #sleep-run-history { max-height: 290px; } .gate-checks { grid-template-columns: repeat(2,minmax(0,1fr)); } .gate-check:nth-child(odd) { border-left: 0; } .gate-check:nth-child(n+3) { border-top: 1px solid var(--border); } }
     @media (max-width: 920px) { .settings-grid { grid-template-columns: 1fr; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-observatory-head { align-items: stretch; flex-direction: column; } .sleep-controls { justify-content: flex-start; margin-bottom: 12px; } .sleep-process { grid-template-columns: 1fr; } .sleep-process article + article { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-run-stats, .health-domain-grid, .capacity-impact-summary, .benchmark-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-run-stat:nth-child(3), .capacity-impact-stat:nth-child(3), .benchmark-stat:nth-child(3) { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } .sleep-run-stat:nth-child(4), .capacity-impact-stat:nth-child(4), .benchmark-stat:nth-child(4) { border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(even) { border-left: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(odd) { border-left: 0; } .health-domain-grid .health-area:nth-child(n+3) { border-top: 1px solid var(--border); } .sleep-effect-board { grid-template-columns: 1fr; } .sleep-ledger-head { align-items: flex-start; flex-direction: column; } .sleep-ledger-filters { justify-content: flex-start; } .sleep-cycle-head, .benchmark-lab-head { align-items: stretch; grid-template-columns: 1fr; } .benchmark-controls { justify-content: flex-start; } .benchmark-boundary { grid-template-columns: 1fr; } .benchmark-boundary div + div { border-left: 0; border-top: 1px solid var(--border); } .benchmark-body, .benchmark-footer { padding-inline: 12px; } .benchmark-summary { margin-inline: 12px; } .benchmark-progress { margin-inline: 12px; } .benchmark-run-row { grid-template-columns: minmax(0,1fr) repeat(2,minmax(60px,.45fr)); } .benchmark-run-row > :last-child { display: none; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
+    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-observatory-head { align-items: stretch; flex-direction: column; } .sleep-controls { justify-content: flex-start; margin-bottom: 12px; } .sleep-process { grid-template-columns: 1fr; } .sleep-process article + article { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-run-stats, .health-domain-grid, .capacity-impact-summary, .benchmark-summary, .outcome-summary, .tool-evaluation-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-run-stat:nth-child(3), .capacity-impact-stat:nth-child(3), .benchmark-stat:nth-child(3), .outcome-stat:nth-child(3), .tool-evaluation-stat:nth-child(3) { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } .sleep-run-stat:nth-child(4), .capacity-impact-stat:nth-child(4), .benchmark-stat:nth-child(4), .outcome-stat:nth-child(4), .tool-evaluation-stat:nth-child(4) { border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(even) { border-left: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(odd) { border-left: 0; } .health-domain-grid .health-area:nth-child(n+3) { border-top: 1px solid var(--border); } .sleep-effect-board { grid-template-columns: 1fr; } .sleep-ledger-head { align-items: flex-start; flex-direction: column; } .sleep-ledger-filters { justify-content: flex-start; } .sleep-cycle-head, .benchmark-lab-head, .outcome-head { align-items: stretch; grid-template-columns: 1fr; } .benchmark-controls { justify-content: flex-start; } .benchmark-boundary { grid-template-columns: 1fr; } .benchmark-boundary div + div { border-left: 0; border-top: 1px solid var(--border); } .benchmark-body, .benchmark-footer, .outcome-layout { padding-inline: 12px; } .benchmark-summary { margin-inline: 12px; } .benchmark-progress { margin-inline: 12px; } .benchmark-run-row, .guidance-row { grid-template-columns: minmax(0,1fr) repeat(2,minmax(60px,.45fr)); } .benchmark-run-row > :last-child, .guidance-row > :last-child { display: none; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .hierarchy-flow { grid-template-columns: 1fr; } .hierarchy-level + .hierarchy-level { border-left: 0; border-top: 1px solid var(--border); } .hierarchy-level:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-hypothesis { grid-template-columns: 1fr; } .sleep-hypothesis-meta { justify-items: start; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
     @media (max-width: 430px) { .sleep-metric-grid { grid-template-columns: 1fr; } .sleep-proposal-row { grid-template-columns: 1fr; gap: 6px; } .sleep-proposal-meta { grid-column: 1; } }
     @media (max-width: 1100px) { .metacognition-flow { grid-template-columns: repeat(2,minmax(0,1fr)); } .metacognition-step:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:nth-child(4) { border-top: 1px solid var(--border); } }
     @media (max-width: 620px) { .metacognition-banner { grid-template-columns: 1fr; } .monitor-mode { text-align: left; } .metacognition-flow { grid-template-columns: 1fr; } .metacognition-step + .metacognition-step { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .source-monitor-row { grid-template-columns: minmax(0,1fr) 80px; } .source-monitor-row > :nth-child(3), .source-monitor-row > :nth-child(4) { display: none; } .prediction-row { grid-template-columns: minmax(0,1fr) 72px; } .prediction-row > .decision-chip:last-child { grid-column: 2; } }
@@ -1499,6 +1570,29 @@
               </div>
             </div>
           </section>
+          <section class="panel outcome-lab" id="outcome-lab" aria-labelledby="outcome-heading">
+            <div class="outcome-head">
+              <div><div class="eyebrow">Outcome &amp; causality lab · private evidence</div><h2 id="outcome-heading">Teach Cortex what actually helped</h2><p>Label a real recall task once, preserve who made the judgment, and build a private evaluation set from positive outcomes. Queries and memory IDs stay on this Cortex host.</p></div>
+              <span class="chip" id="outcome-write-status">Checking review access</span>
+            </div>
+            <div class="outcome-summary" id="outcome-summary"></div>
+            <div class="outcome-layout">
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>Recent memory-bearing tasks</h2><p>One task label updates every memory actually attributed to that response.</p></div><span class="chip" id="outcome-task-total">0 eligible</span></div>
+                <div class="outcome-task-list" id="outcome-task-list"></div>
+              </div>
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>Private real-history evaluation</h2><p>Paired fixed and adaptive retrieval over the same labeled Kaya tasks.</p></div><button class="primary-btn" id="evaluation-start" type="button">Run private evaluation</button></div>
+                <div class="benchmark-progress" id="evaluation-progress" hidden>
+                  <div class="benchmark-progress-head"><div><strong id="evaluation-progress-title">Preparing evaluation</strong><p id="evaluation-progress-message">Opening a disposable snapshot.</p></div><span class="benchmark-progress-value" id="evaluation-progress-value">0%</span></div>
+                  <div class="benchmark-progress-track"><div class="benchmark-progress-fill" id="evaluation-progress-fill"></div></div>
+                </div>
+                <div class="private-evaluation-summary" id="evaluation-summary"></div>
+                <div class="measurement-boundary" id="evaluation-boundary">This tests Cortex retrieval mechanics on private real history. It does not measure Kaya’s complete answer quality, model inference speed, or causality.</div>
+                <div class="private-evaluation-runs" id="evaluation-runs"></div>
+              </div>
+            </div>
+          </section>
           <div class="panel panel-pad capacity-impact-panel">
             <div class="panel-heading"><div><h2>Accuracy × capacity</h2><p>Does observed memory usefulness hold up as the brain stores more? Daily outcomes are plotted against total stored memories.</p></div><select class="control" id="capacity-impact-range" aria-label="Accuracy and capacity date range"><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="365">Last year</option></select></div>
             <div class="capacity-impact-summary" id="capacity-impact-summary"></div>
@@ -1533,6 +1627,12 @@
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context over time</h2><p>Daily estimated memory tokens injected into prompts</p></div><span class="chip" id="recall-window">No samples</span></div><div class="recall-strip" id="recall-strip"></div></div>
           </div>
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">0 outcomes</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
+          <section class="panel panel-pad evidence-hierarchy" aria-labelledby="evidence-hierarchy-heading">
+            <div class="panel-heading"><div><h2 id="evidence-hierarchy-heading">Evidence-backed hierarchy</h2><p>Raw experience stays addressable; claims show their sources; higher-level bundles remain read-only candidates.</p></div><span class="chip" id="hierarchy-summary-count">0 supported claims</span></div>
+            <div class="hierarchy-flow" id="hierarchy-flow"></div>
+            <div class="supported-claim-list" id="supported-claim-list"></div>
+            <div class="measurement-boundary" id="hierarchy-boundary">No summary memory is written automatically.</div>
+          </section>
           <section class="sleep-observatory" id="cortex-sleep" aria-labelledby="sleep-heading">
             <div class="sleep-observatory-head">
               <div><div class="eyebrow">Offline maintenance log</div><h2 id="sleep-heading">Cortex Sleep</h2><p>See when maintenance runs, every rule it checks, what it proposed, what actually changed, and what happened afterward.</p></div>
@@ -1572,6 +1672,7 @@
                 <div id="sleep-cycle-summary" aria-live="polite"></div>
                 <div class="sleep-metric-grid" id="sleep-metrics"></div>
                 <div class="sleep-effect-board" id="sleep-effects"></div>
+                <div class="sleep-hypothesis-panel"><div class="panel-heading"><div><h2>Testable hypotheses</h2><p>Each proposal names a future observation that could support or contradict it.</p></div><span class="chip" id="sleep-hypothesis-count">0 hypotheses</span></div><div class="sleep-hypothesis-list" id="sleep-hypotheses"></div></div>
                 <div class="sleep-ledger-head"><div><h3>What it touched</h3><p>Open a memory to inspect its provenance, scores, and other links.</p></div><div class="sleep-ledger-filters" id="sleep-ledger-filters"><button class="ghost-btn active" type="button" data-sleep-filter="all">All</button><button class="ghost-btn" type="button" data-sleep-filter="connections">Connections</button><button class="ghost-btn" type="button" data-sleep-filter="pruning">Cooling / archive</button><button class="ghost-btn" type="button" data-sleep-filter="review">Review</button></div></div>
                 <div class="sleep-proposal-list" id="sleep-proposal-list"></div>
                 <div class="sleep-safety" id="sleep-safety"><span class="sleep-safety-mark">S</span><div><strong>Proposed is not applied.</strong><p>Shadow mode writes an audit report only. Apply mode is operator-only, never hard-deletes a memory, and records reversible before-and-after state for every committed change.</p></div></div>
@@ -1608,6 +1709,11 @@
             <article class="metacognition-step"><span>04 · Learn</span><strong>Compare with outcomes</strong><p>Helpful and harmful labels reveal whether confidence was calibrated or overconfident.</p></article>
           </div>
           <div class="metric-grid" id="metacognition-metrics"></div>
+          <div class="panel panel-pad promotion-gate" id="metacognition-gate">
+            <div class="panel-heading"><div><h2>Enforcement promotion gate</h2><p>Shadow decisions cannot affect Kaya’s context until every evidence and risk check passes.</p></div><span class="chip" id="metacognition-gate-status">Shadow locked</span></div>
+            <div class="gate-checks" id="metacognition-gate-checks"></div>
+            <div class="measurement-boundary" id="metacognition-gate-boundary">This gate prevents a configuration switch from outrunning observed calibration.</div>
+          </div>
           <div class="dashboard-grid equal">
             <div class="panel panel-pad">
               <div class="panel-heading"><div><h2>Calibration curve</h2><p>Predicted reliability versus observed helpfulness · five probability bands · explicit outcomes only</p></div><span class="chip" id="calibration-samples">0 labels</span></div>
@@ -1633,6 +1739,12 @@
         <section class="view" id="view-tools" aria-labelledby="tools-heading">
           <div class="page-heading"><div><div class="eyebrow">Procedural notes</div><h1 id="tools-heading">What works</h1><p>Which tools succeed, where they succeed, and what Cortex has learned from repetition.</p></div></div>
           <div class="metric-grid" id="tool-metrics"></div>
+          <div class="panel panel-pad tool-evaluation">
+            <div class="panel-heading"><div><h2>Did guidance help?</h2><p>Tracks whether reinforced tool or workflow guidance was shown, followed, and what happened next.</p></div><span class="chip" id="tool-evaluation-status">Observational</span></div>
+            <div class="tool-evaluation-summary" id="tool-evaluation-summary"></div>
+            <div class="guidance-ledger" id="guidance-ledger"></div>
+            <div class="measurement-boundary" id="tool-evaluation-boundary">Follow-through is observational and does not prove guidance caused the result.</div>
+          </div>
           <div class="tool-summary" id="tool-summary"></div>
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Learned strategies</h2><p>Reinforced tool outcomes grouped by task context</p></div></div><div class="table-wrap" id="tool-table"></div></div>
         </section>
@@ -1735,6 +1847,7 @@
     const authState = { enabled: true, username: "", currentPassword: "" };
     let sleepPollTimer = null;
     let benchmarkPollTimer = null;
+    let evaluationPollTimer = null;
 
     const settingsThemeSlot = document.getElementById("settings-theme-slot");
     const themePicker = document.querySelector(".topbar .theme-picker");
@@ -1894,6 +2007,7 @@
     document.getElementById("trends-range").addEventListener("change", renderTrendChart);
     document.getElementById("capacity-impact-range").addEventListener("change", renderCapacityImpactChart);
     document.getElementById("benchmark-start").addEventListener("click", startBenchmark);
+    document.getElementById("evaluation-start").addEventListener("click", startPrivateEvaluation);
     document.getElementById("metacognition-filter").addEventListener("change", event => { app.metacognitionFilter=event.target.value||"all"; renderMetacognitivePredictions(); });
     document.getElementById("sleep-start").addEventListener("click", startSleepSession);
     document.getElementById("sleep-ledger-filters").addEventListener("click", event => {
@@ -2631,6 +2745,7 @@
       renderInsightSources(sourceCounts,memories.length);
       renderInsightTools(tools);
       renderBenchmark(d.benchmarks||{});
+      renderOutcomeLab(d.outcome_lab||{},d.evaluations||{});
       renderCapacityImpactChart();
       renderTrendChart();
     }
@@ -2690,6 +2805,40 @@
 
     async function pollBenchmarkStatus(){try{const response=await fetch("/api/benchmark/status",{cache:"no-store",credentials:"same-origin"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const benchmark=await response.json();app.data.benchmarks=benchmark;renderBenchmark(benchmark);if(benchmark.active)scheduleBenchmarkPoll();else await load(true);}catch(error){showToast(`Benchmark status unavailable: ${error.message}`,true);}}
 
+    function renderOutcomeLab(lab,evaluation) {
+      const summary=document.getElementById("outcome-summary"),tasks=Array.isArray(lab.tasks)?lab.tasks:[],eligible=Number(lab.eligible_tasks||0),labeled=Number(lab.labeled_tasks||0),positive=Number(lab.positive_count||0),negative=Number(lab.negative_count||0),coverage=Number(lab.label_coverage||0),observed=lab.observed_helpfulness,writeEnabled=app.data?.review_writes_enabled===true;
+      summary.replaceChildren();[
+        ["Label coverage",eligible?`${(coverage*100).toFixed(1)}%`:"—",`${formatNum(labeled)} of ${formatNum(eligible)} used recall tasks`],
+        ["Observed helpfulness",observed===null||observed===undefined?"—":`${(Number(observed)*100).toFixed(1)}%`,`${formatNum(positive)} positive · ${formatNum(negative)} negative labels`],
+        ["Private cases",`${formatNum(evaluation.case_count||lab.evaluation_case_count||0)} / ${formatNum(evaluation.minimum_cases||lab.evaluation_min_cases||8)}`,evaluation.ready?"Ready for paired evaluation":"Helpful or validated tasks become cases"],
+        ["Causal status","Observational","Labels describe outcomes; they do not isolate the cause"]
+      ].forEach(([label,value,note])=>{const card=el("div","outcome-stat");card.append(el("span","",label),el("strong","",value),el("small","",note));summary.append(card);});
+      document.getElementById("outcome-task-total").textContent=`${formatNum(eligible)} eligible`;
+      document.getElementById("outcome-write-status").textContent=writeEnabled?"Audited labels enabled":"Read-only on this host";
+      const host=document.getElementById("outcome-task-list");host.replaceChildren();
+      if(!tasks.length){host.append(emptyState("No attributed tasks yet","Use Kaya on a memory-bearing task. Once the response uses recalled evidence, it becomes eligible for an outcome label."));}
+      tasks.slice(0,12).forEach(task=>{const card=el("article","outcome-task"),head=el("div","outcome-task-head"),query=String(task.query||"Private recall task"),current=String(task.label_outcome||"");head.append(el("strong","",truncate(query,150)),el("span","",`${humanize(task.task_type||"general")} · ${timeAgo(new Date(task.created_at))}`));card.append(head,el("p","",`${formatNum(task.used_count||0)} attributed of ${formatNum(task.selected_count||0)} selected · ${humanize(task.recall_mode||"unknown")} recall · ${formatNum(task.estimated_tokens||0)} estimated tokens`));const memories=el("div","outcome-memory-strip");(task.memories||[]).slice(0,5).forEach(memory=>{const button=el("button","",truncate(cleanMemory(memory.content),72));button.type="button";button.title=cleanMemory(memory.content);button.addEventListener("click",()=>selectMemory(memory.memory_id));memories.append(button);});card.append(memories);const actions=el("div","outcome-actions");[["helpful","Helpful"],["validated","Validated"],["harmful","Harmful"],["corrected","Corrected"]].forEach(([outcome,label])=>{const button=el("button",`outcome-choice ${["harmful","corrected"].includes(outcome)?"negative":""} ${current===outcome?"active":""}`,label);button.type="button";button.disabled=!writeEnabled;button.addEventListener("click",()=>labelOutcomeTask(task.task_id,outcome,button));actions.append(button);});if(current){const undo=el("button","outcome-choice","Undo label");undo.type="button";undo.disabled=!writeEnabled;undo.addEventListener("click",()=>undoOutcomeTask(task.task_id,undo));actions.append(undo);}card.append(actions);host.append(card);});
+      renderPrivateEvaluation(evaluation||{});
+    }
+
+    async function labelOutcomeTask(taskId,outcome,button){button.disabled=true;try{await authRequest("/api/outcome/label",{task_id:taskId,outcome});showToast(`${humanize(outcome)} outcome recorded with an audit trail.`);await load(true);}catch(error){button.disabled=false;showToast(`Could not record outcome: ${error.message}`,true);}}
+    async function undoOutcomeTask(taskId,button){button.disabled=true;try{await authRequest("/api/outcome/undo",{task_id:taskId});showToast("Outcome label reversed; the prior record remains in the audit trail.");await load(true);}catch(error){button.disabled=false;showToast(`Could not undo outcome: ${error.message}`,true);}}
+
+    function renderPrivateEvaluation(evaluation){
+      const runs=Array.isArray(evaluation.runs)?evaluation.runs:[],active=evaluation.active||null,latest=evaluation.latest||null,button=document.getElementById("evaluation-start"),progress=document.getElementById("evaluation-progress"),ready=Boolean(evaluation.ready);
+      button.disabled=Boolean(active)||!ready;button.textContent=active?"Evaluation running…":ready?"Run private evaluation":`Label ${Math.max(0,Number(evaluation.minimum_cases||8)-Number(evaluation.case_count||0))} more positive tasks`;
+      progress.hidden=!(active||runs[0]?.status==="failed");if(!progress.hidden){const current=active||runs[0],value=Math.max(0,Math.min(100,Number(current.progress||0)));document.getElementById("evaluation-progress-title").textContent=active?humanize(current.phase||"running"):"Evaluation stopped";document.getElementById("evaluation-progress-message").textContent=String(current.error||current.message||"Comparing the paired retrieval conditions.");document.getElementById("evaluation-progress-value").textContent=`${Math.round(value)}%`;document.getElementById("evaluation-progress-fill").style.width=`${value}%`;}
+      const summary=document.getElementById("evaluation-summary");summary.replaceChildren();const fields=latest?[
+        ["Adaptive hit@6",`${(Number(latest.adaptive_hit_at_k||0)*100).toFixed(1)}%`],["Fixed hit@6",`${(Number(latest.fixed_hit_at_k||0)*100).toFixed(1)}%`],["Context p50 Δ",`${signed(latest.context_delta_p50||0,0)} tok`],["Latency p95 Δ",`${signed(latest.latency_delta_p95||0,1)} ms`]
+      ]:[["Adaptive hit@6","—"],["Fixed hit@6","—"],["Context p50 Δ","—"],["Latency p95 Δ","—"]];fields.forEach(([label,value])=>{const card=el("div","private-evaluation-stat");card.append(el("span","",label),el("strong","",value));summary.append(card);});
+      document.getElementById("evaluation-boundary").textContent=String(evaluation.claim_boundary||"This tests Cortex retrieval mechanics on private real history. It does not measure complete-agent accuracy or inference speed.");
+      const runHost=document.getElementById("evaluation-runs");runHost.replaceChildren();if(!runs.length){runHost.append(emptyState("No private evaluation yet",ready?"The labeled set is ready for its first paired run.":"Positive task labels build the private case set without exposing their queries."));}runs.slice(0,6).forEach(run=>{const row=el("div","private-run"),copy=el("div","");copy.append(el("strong","",formatDate(run.started_at)),el("span","",`${humanize(run.status)} · ${formatNum(run.case_count)} private cases`));row.append(copy,el("span","",run.status==="completed"?`${(Number(run.adaptive_recall_at_k||0)*100).toFixed(1)}% adaptive recall`:humanize(run.phase||run.status)));runHost.append(row);});if(active)scheduleEvaluationPoll();
+    }
+
+    async function startPrivateEvaluation(){const button=document.getElementById("evaluation-start");button.disabled=true;try{const evaluation=await authRequest("/api/evaluation/start",{suite:"real_history"});app.data.evaluations=evaluation;renderOutcomeLab(app.data.outcome_lab||{},evaluation);showToast("Private paired evaluation started on this Cortex host.");scheduleEvaluationPoll();}catch(error){button.disabled=false;showToast(`Could not start evaluation: ${error.message}`,true);}}
+    function scheduleEvaluationPoll(){if(evaluationPollTimer)return;evaluationPollTimer=setTimeout(()=>{evaluationPollTimer=null;pollEvaluationStatus();},800);}
+    async function pollEvaluationStatus(){try{const response=await fetch("/api/evaluation/status",{cache:"no-store",credentials:"same-origin"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const evaluation=await response.json();app.data.evaluations=evaluation;renderOutcomeLab(app.data.outcome_lab||{},evaluation);if(evaluation.active)scheduleEvaluationPoll();else await load(true);}catch(error){showToast(`Private evaluation status unavailable: ${error.message}`,true);}}
+
     function signed(value,digits=1){const number=Number(value||0);return`${number>=0?"+":""}${number.toFixed(digits)}`;}
 
     function renderCapacityImpactChart() {
@@ -2733,6 +2882,15 @@
     function renderInsightSources(counts,total) {const host=document.getElementById("insight-source-list");host.replaceChildren();const entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]),max=Math.max(1,...entries.map(entry=>entry[1]));entries.forEach(([name,count])=>{const row=el("div","source-item"),track=el("div","bar-track"),fill=el("div","bar-fill");fill.style.width=`${count/max*100}%`;track.append(fill);row.append(el("div","",humanize(name)),track,el("div","source-count",`${percent(count,total)}%`));host.append(row);});}
     function renderInsightTools(tools) {const host=document.getElementById("insight-tool-list");host.replaceChildren();const rows=[...tools].sort((a,b)=>toolAttempts(b)-toolAttempts(a)).slice(0,8),max=Math.max(1,...rows.map(tool=>toolAttempts(tool)));if(!rows.length){host.append(emptyState("No tool observations yet","This view will fill as Hermes completes tool-assisted tasks."));return;}rows.forEach(tool=>{const attempts=toolAttempts(tool),rate=percent(tool.success_count,attempts),row=el("div","source-item"),track=el("div","bar-track"),fill=el("div","bar-fill");fill.style.width=`${attempts/max*100}%`;track.append(fill);row.append(el("div","",tool.tool_name),track,el("div","source-count",`${rate}%`));host.append(row);});}
 
+    function renderEvidenceHierarchy(hierarchy){
+      const claims=Array.isArray(hierarchy.supported_claims)?hierarchy.supported_claims:[],levels=Array.isArray(hierarchy.levels)?hierarchy.levels:[],flow=document.getElementById("hierarchy-flow"),host=document.getElementById("supported-claim-list");flow.replaceChildren();host.replaceChildren();document.getElementById("hierarchy-summary-count").textContent=`${formatNum(claims.length)} visible supported claims`;
+      const values=[formatNum(hierarchy.raw_evidence_count||0),formatNum(hierarchy.dependency_count||0),formatNum(hierarchy.summary_candidates||0)];levels.forEach((level,index)=>{const card=el("article","hierarchy-level");card.append(el("span","",`${String(index+1).padStart(2,"0")} · ${humanize(level.level||"level")}`),el("strong","",`${values[index]||"0"} · ${level.label||"Evidence level"}`),el("p","",index===0?"Original memories remain inspectable and are never replaced by a summary.":index===1?"A claim qualifies only when active dependency links point to its evidence.":"Repeated clean structure can become a navigation candidate; it is not treated as new truth."));flow.append(card);});
+      if(!levels.length){[["01 · raw",`${formatNum(hierarchy.raw_evidence_count||0)} original memories`],["02 · claims",`${formatNum(hierarchy.dependency_count||0)} active evidence links`],["03 · bundles",`${formatNum(hierarchy.summary_candidates||0)} read-only candidates`]].forEach(([label,value])=>{const card=el("article","hierarchy-level");card.append(el("span","",label),el("strong","",value));flow.append(card);});}
+      if(!claims.length){host.append(emptyState("No explicit supported claims yet","Cortex has raw evidence, but this view only promotes claims with recorded dependency links."));}
+      claims.slice(0,8).forEach(claim=>{const card=el("article","supported-claim"),button=el("button","",truncate(cleanMemory(claim.content),150));button.type="button";button.title=cleanMemory(claim.content);button.addEventListener("click",()=>selectMemory(claim.id));card.append(button,el("div","small-meta",`${formatNum(claim.evidence_count||0)} sources · ${claim.dirty?"support changed; review required":"support current"}`));const evidence=el("div","supported-claim-evidence");(claim.evidence||[]).slice(0,5).forEach(item=>{const source=el("button","",truncate(cleanMemory(item.content),76));source.type="button";source.title=cleanMemory(item.content);source.addEventListener("click",()=>selectMemory(item.id));evidence.append(source);});card.append(evidence);host.append(card);});
+      document.getElementById("hierarchy-boundary").textContent=String(hierarchy.claim_boundary||"Bundles are navigation candidates, not generated truths. No summary memory is written automatically.");
+    }
+
     function renderCognition() {
       if(!app.data)return;
       const d=app.data,summary=d.recall_summary||{},runs=d.recall_runs||[],modes=d.recall_modes||[],budgets=d.recall_budgets||[],days=[...(d.recall_by_day||[])].reverse(),abstained=Number(summary.abstained||0),runCount=Number(summary.count||0),abstention=percent(abstained,Math.max(1,runCount));
@@ -2747,6 +2905,7 @@
       if(!modes.length)modeHost.append(emptyState("No recall decisions yet","Use Hermes normally; attention-gate evidence will appear here."));
       modes.forEach(mode=>{const row=el("div","mode-row"),count=Number(mode.count||0),skipped=Number(mode.abstained||0);row.append(el("div","mode-name",humanize(mode.mode)),el("div","mode-copy",`${modeDescriptions[mode.mode]||"Adaptive recall plan"} · avg ${Math.round(Number(mode.avg_tokens||0))} tokens`),el("div","mode-stat",`${formatNum(count)} · ${percent(skipped,Math.max(1,count))}% empty`));modeHost.append(row);});
       renderBudgetLearning(budgets);
+      renderEvidenceHierarchy(d.evidence_hierarchy||{});
       renderSleep(d.sleep_runs||[],d.sleep_proposals||[],d.sleep_runtime||{});
       const strip=document.getElementById("recall-strip"),maxTokens=Math.max(1,...days.map(day=>Number(day.estimated_tokens||0)));strip.replaceChildren();
       if(!days.length)strip.append(emptyState("No token history yet","The chart begins after Cortex handles recall decisions."));
@@ -2783,6 +2942,7 @@
         summaryHost.append(emptyState("No Sleep cycles yet","Start a shadow run or wait for the scheduled window. The first report will appear here without changing live memory."));
         const waiting=el("div","sleep-metric sleep-metric-empty");waiting.append(el("span","","Offline evidence"),el("strong","","—"),el("small","","Replay, proposals, actual changes, and after-run observations will appear after the first cycle."));metricHost.append(waiting);
         document.getElementById("sleep-effects").replaceChildren();
+        renderSleepHypotheses(null);
         renderSleepLedger(proposals,app.data?.sleep_edge_changes||[],app.data?.sleep_state_changes||[]);
         return;
       }
@@ -2798,6 +2958,7 @@
       addSleepMetric(metricHost,"Runtime",duration,`${formatNum(selected.applied_changes||0)} reported applied changes`);
       addSleepMetric(metricHost,"Model reflection",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:"Off",tokenBudget?humanize(selected.reflection_status||"unknown"):"Deterministic local analysis only");
       renderSleepEffects(selected,proposals);
+      renderSleepHypotheses(selected);
       renderSleepLedger(proposals,app.data?.sleep_edge_changes||[],app.data?.sleep_state_changes||[]);
     }
 
@@ -2810,6 +2971,8 @@
     function renderSleepHistory(runs){const host=document.getElementById("sleep-run-history");host.replaceChildren();if(!runs.length){host.append(emptyState("No run history","Scheduled and manual cycles will appear here."));return;}runs.forEach(run=>{const button=el("button",`sleep-run-button ${run.run_id===app.sleepRunId?"active":""}`),top=el("div","sleep-run-button-top"),status=String(run.status||"unknown").toLowerCase();button.type="button";top.append(el("strong","",formatDate(run.started_at)),el("span",`sleep-run-button-status ${status==="failed"?"failed":""}`,`${humanize(run.mode)} · ${humanize(status)}`));button.append(top,el("small","",`${sleepDuration(run)} · ${formatNum(sleepProposalCount(run))} proposals · ${formatNum(run.applied_changes||0)} changed`));button.addEventListener("click",()=>{app.sleepRunId=run.run_id;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],app.data.sleep_runtime||{});});host.append(button);});}
     function renderSleepEffects(run,proposals){const host=document.getElementById("sleep-effects"),runProposals=proposals.filter(item=>item.run_id===run.run_id),effects=app.data?.sleep_effects?.[run.run_id]||{},mode=String(run.mode||"shadow"),connectionIdeas=runProposals.filter(item=>["association","association_reinforcement"].includes(item.kind)).length,pruneIdeas=runProposals.filter(item=>["edge_downscale","lifecycle"].includes(item.kind)).length,reviewIdeas=runProposals.length-connectionIdeas-pruneIdeas,liveEdges=Number(effects.live_edge_changes||0),liveStates=Number(effects.live_state_changes||0),reversed=Number(effects.reversed_edge_changes||0)+Number(effects.reversed_state_changes||0),live=liveEdges+liveStates;host.replaceChildren();const direct=el("div",`sleep-effect-card ${mode==="shadow"?"proposed":"applied"}`),directCopy=mode==="shadow"?"This run observed and proposed. It did not change retrieval state, edge weights, or memory availability.":`${formatNum(liveEdges)} connection ${liveEdges===1?"change":"changes"} and ${formatNum(liveStates)} lifecycle ${liveStates===1?"change":"changes"} remain active; every one has stored before-and-after values.${reversed?` ${formatNum(reversed)} ${reversed===1?"change was":"changes were"} later reversed.`:""}`;direct.append(el("span","",mode==="shadow"?"Direct effect · proposal only":"Direct effect · committed"),el("strong","",mode==="shadow"?"0 live changes":`${formatNum(live)} live changes`),el("p","",directCopy));const signals=el("div","sleep-effect-signals"),signalRows=mode==="shadow"?[[connectionIdeas,"connect"],[pruneIdeas,"cool / archive"],[reviewIdeas,"review"]]:[[live,"still active"],[reversed,"reversed"],[run.applied_changes||0,"committed originally"]];signalRows.forEach(([count,label])=>signals.append(el("b","",`${formatNum(count)} ${label}`)));direct.append(signals);const observed=el("div","sleep-effect-card observed");observed.append(el("span","","Observed after this run"),el("strong","",`${formatNum(effects.recall_runs_after||0)} recalls`),el("p","","These are follow-up observations until the next Sleep cycle. They show what happened afterward, not proof that Sleep caused it."));const outcomes=el("div","sleep-effect-signals");[[effects.helpful_outcomes_after||0,"helpful"],[effects.harmful_outcomes_after||0,"harmful / corrected"],[effects.pruning_regrets_after||0,"pruning regret"]].forEach(([count,label])=>outcomes.append(el("b","",`${formatNum(count)} ${label}`)));observed.append(outcomes);host.append(direct,observed);}
     function sleepRecordCategory(kind){if(["association","association_reinforcement","edge_change","connection_added"].includes(kind))return"connections";if(["edge_downscale","lifecycle","state_change"].includes(kind))return"pruning";return"review";}
+    function renderSleepHypotheses(run){const host=document.getElementById("sleep-hypotheses"),rows=run?(app.data?.sleep_hypotheses?.[run.run_id]||[]):[];host.replaceChildren();document.getElementById("sleep-hypothesis-count").textContent=`${formatNum(rows.length)} hypotheses`;if(!run){host.append(emptyState("No run selected","Choose a Sleep cycle to see the measurable predictions created by its proposals."));return;}if(!rows.length){host.append(emptyState("No hypotheses in this run","This cycle produced no proposal that could be followed through future attributed use."));return;}rows.slice(0,10).forEach(item=>{const card=el("article","sleep-hypothesis"),copy=el("div",""),meta=el("div","sleep-hypothesis-meta"),observations=Number(item.post_use_tasks||0),positive=Number(item.positive_tasks||0),negative=Number(item.negative_tasks||0);copy.append(el("strong","",item.hypothesis||"Future outcomes should test this proposal."),el("p","",`${item.success_metric||"Future explicit outcomes are the success metric."} ${truncate(String(item.rationale||""),120)}`));meta.append(el("span","",item.applied?"exposed · applied":"proposal only"),el("span","",`${formatNum(observations)} later uses`),el("span","",`${formatNum(positive)} positive · ${formatNum(negative)} negative`),el("span","",item.evidence_ready?"observational evidence ready":"needs 8 exposed observations"));card.append(copy,meta);host.append(card);});}
+
     function renderSleepLedger(proposals,edgeChanges,stateChanges){const host=document.getElementById("sleep-proposal-list"),runId=app.sleepRunId;host.replaceChildren();if(!runId){document.getElementById("sleep-proposal-total").textContent="0 records";host.append(emptyState("No run selected","Choose a cycle to inspect exactly what it touched."));return;}const proposalRecords=proposals.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"proposal"})),edgeRecords=edgeChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"edge",kind:Number(item.prior_exists)?"edge_change":"connection_added",status:item.reversed_at?"reversed":"applied",rationale:Number(item.prior_exists)?`Changed ${humanize(item.relation)} weight from ${sleepWeight(item.prior_weight)} to ${sleepWeight(item.next_weight)}.`:`Created a ${humanize(item.relation)} connection at weight ${sleepWeight(item.next_weight)}.`,score:item.next_weight})),stateRecords=stateChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"state",kind:"state_change",status:item.reversed_at?"reversed":"applied",src_id:item.memory_id,src_kind:item.memory_kind,src_content:item.memory_content,rationale:`Changed memory availability from ${humanize(item.prior_state)} to ${humanize(item.next_state)}.`})),records=[...edgeRecords,...stateRecords,...proposalRecords].sort(sleepNewest).filter(item=>app.sleepFilter==="all"||sleepRecordCategory(item.kind)===app.sleepFilter);document.getElementById("sleep-proposal-total").textContent=`${formatNum(records.length)} records`;if(!records.length){host.append(emptyState("Nothing in this category","This run did not record a matching proposal or applied change."));return;}records.forEach(record=>renderSleepRecord(host,record));}
     function renderSleepRecord(host,record){const row=el("article","sleep-proposal-row"),kind=humanize(record.kind||"proposal"),copy=el("div","sleep-proposal-copy"),created=record.created_at&&Number.isFinite(Date.parse(record.created_at))?timeAgo(new Date(record.created_at)):"Time not recorded",status=String(record.status||"proposed").toLowerCase(),numericScore=Number(record.score),score=Number.isFinite(numericScore)?`${Math.round((numericScore<=1?numericScore*100:numericScore))}% signal`:"No score";copy.append(el("p","",String(record.rationale||"No rationale was recorded.")));const refs=el("div","sleep-memory-pair");if(record.src_id)refs.append(sleepMemoryRef(record.src_id,record.src_kind,record.src_content,"Memory A"));if(record.dst_id){refs.append(el("span","sleep-memory-arrow",sleepRecordCategory(record.kind)==="connections"?"↔":"→"),sleepMemoryRef(record.dst_id,record.dst_kind,record.dst_content,"Memory B"));}if(record.src_id)copy.append(refs);const details=record.record_type==="proposal"?sleepProposalDetails(record):record.record_type==="edge"?`${humanize(record.relation)} · evidence ${formatNum(record.prior_evidence_count||0)} → ${formatNum(record.next_evidence_count||0)}`:`${humanize(record.prior_state)} → ${humanize(record.next_state)}`;copy.append(el("div","sleep-change-detail",`${details} · ${created}`));const meta=el("div","sleep-proposal-meta");meta.append(el("span",`sleep-proposal-state ${status}`,humanize(status)),el("span","sleep-proposal-score",score));row.append(el("div","sleep-proposal-kind",kind),copy,meta);host.append(row);}
     function sleepMemoryRef(id,kind,content,label){const button=el("button","sleep-memory-ref");button.type="button";button.append(el("span","",`${label} · ${humanize(kind||"memory")} · ${shortId(id)}`),el("strong","",truncate(cleanMemory(content||"Memory text unavailable"),180)));button.addEventListener("click",()=>selectMemory(id));return button;}
@@ -2853,6 +3016,7 @@
       renderCalibrationChart(monitor.calibration_bins||[],labeled);
       renderMetacognitiveDecisionMix(summary);
       renderMetacognitiveSources(monitor.by_source||[]);
+      renderMetacognitionGate(monitor.enforcement_gate||{});
       renderMetacognitivePredictions();
     }
 
@@ -2880,6 +3044,8 @@
       rows.forEach(item=>{const labels=Number(item.labeled_count||0),positive=Number(item.positive_count||0),row=el("div","source-monitor-row"),copy=el("div","");copy.append(el("strong","",humanize(item.source_category)),el("span","",`${formatNum(item.prediction_count)} predictions`));row.append(copy,el("strong","",`${Math.round(Number(item.avg_probability||0)*100)}% predicted`),el("strong","",labels?`${percent(positive,labels)}% observed`:"Learning"),el("span","",`${formatNum(labels)} explicit labels`));host.append(row);});
     }
 
+    function renderMetacognitionGate(gate){const panel=document.getElementById("metacognition-gate"),status=document.getElementById("metacognition-gate-status"),host=document.getElementById("metacognition-gate-checks"),checks=Array.isArray(gate.checks)?gate.checks:[],ready=Boolean(gate.ready);panel.classList.toggle("ready",ready);status.textContent=ready?"Eligible for controlled trial":"Shadow locked";host.replaceChildren();if(!checks.length){host.append(emptyState("Gate evidence unavailable","Metacognition will stay in shadow mode until the dashboard can verify every promotion requirement."));return;}checks.forEach(check=>{const value=check.value===null||check.value===undefined?"Learning":check.key==="labels"?formatNum(check.value):`${(Number(check.value)*100).toFixed(1)}%`,target=check.key==="labels"?formatNum(check.target):`${(Number(check.target)*100).toFixed(0)}%`,card=el("div",`gate-check ${check.passed?"pass":"fail"}`);card.append(el("span","",check.label||humanize(check.key)),el("strong","",`${check.passed?"Pass":"Hold"} · ${value} ${check.direction==="at_most"?"≤":"/"} ${target}`));host.append(card);});document.getElementById("metacognition-gate-boundary").textContent=String(gate.claim_boundary||"Passing this evidence gate permits only a controlled enforcement trial.");}
+
     function renderMetacognitivePredictions() {
       if(!app.data)return;
       const monitor=app.data.metacognition||{},rows=(monitor.recent_predictions||[]).filter(item=>app.metacognitionFilter==="all"||item.decision===app.metacognitionFilter).slice(0,60),host=document.getElementById("metacognition-predictions");host.replaceChildren();
@@ -2892,6 +3058,7 @@
       const tools=app.data.tools||[], attempts=tools.reduce((n,t)=>n+Number(t.success_count||0)+Number(t.failure_count||0),0),success=tools.reduce((n,t)=>n+Number(t.success_count||0),0),failures=tools.reduce((n,t)=>n+Number(t.failure_count||0),0),rate=attempts?Math.round(success/attempts*100):0;
       metricCards("tool-metrics",[["Observed calls",app.data.stats.tool_executions,"Execution outcomes","◇"],["Learned strategies",tools.length,"Task and tool pairs","⌁"],["Success rate",`${rate}%`,`${formatNum(success)} successful`,"✓"],["Failures",failures,"Retained as warnings","!"]],true);
       const summary=document.getElementById("tool-summary");summary.replaceChildren();
+      renderToolEvaluation(app.data.tool_evaluation||{});
       [...tools].sort((a,b)=>toolAttempts(b)-toolAttempts(a)).slice(0,8).forEach(tool=>{const total=toolAttempts(tool),pct=total?Math.round(Number(tool.success_count||0)/total*100):0,card=el("div","panel tool-card");card.append(el("div","tool-task",humanize(tool.task_type)),el("div","tool-name",tool.tool_name));const rel=el("div","reliability"),track=el("div","bar-track"),fill=el("div","bar-fill");fill.style.width=`${pct}%`;track.append(fill);rel.append(el("strong","",`${pct}%`),track);card.append(rel,el("div","small-meta",`${total} observations · ${Number(tool.failure_count||0)} failures`));summary.append(card);});
       const host=document.getElementById("tool-table");host.replaceChildren();
       if(!tools.length){host.append(emptyState("No reinforced tool strategies yet","Cortex needs repeated tool outcomes across distinct tasks before it generalizes."));return;}
@@ -2899,6 +3066,13 @@
       const toolHeaders=["Task","Tool","Reliability","Success","Failure","Argument shape","Last signal"];
       tools.forEach(tool=>{const total=toolAttempts(tool),pct=total?Math.round(Number(tool.success_count||0)/total*100):0,row=document.createElement("tr"),keys=parseJson(tool.argument_keys,[]).join(", ")||"—";[humanize(tool.task_type),tool.tool_name,`${pct}%`,tool.success_count,tool.failure_count,keys,timeAgo(new Date(tool.updated_at))].forEach((value,index)=>{const cell=el("td","",value);cell.dataset.label=toolHeaders[index];row.append(cell);});tbody.append(row);});table.append(tbody);host.append(table);
     }
+
+    function renderToolEvaluation(evaluation){const host=document.getElementById("tool-evaluation-summary"),ledger=document.getElementById("guidance-ledger"),exposures=Number(evaluation.exposures||0),resolved=Number(evaluation.resolved||0),followed=Number(evaluation.followed||0);host.replaceChildren();[
+      [formatNum(exposures),`${formatNum(resolved)} guidance exposures have a recorded follow-through`],
+      [evaluation.follow_rate===null||evaluation.follow_rate===undefined?"—":`${(Number(evaluation.follow_rate)*100).toFixed(1)}%`,"Resolved exposures followed with a matching tool or workflow"],
+      [evaluation.followed_success_rate===null||evaluation.followed_success_rate===undefined?"—":`${(Number(evaluation.followed_success_rate)*100).toFixed(1)}%`,`${formatNum(evaluation.followed_success||0)} successes after ${formatNum(followed)} followed suggestions`],
+      [formatNum(Number(evaluation.positive_task_outcomes||0)+Number(evaluation.negative_task_outcomes||0)),`${formatNum(evaluation.positive_task_outcomes||0)} positive · ${formatNum(evaluation.negative_task_outcomes||0)} negative explicit task outcomes`]
+    ].forEach(([value,label])=>{const card=el("div","tool-evaluation-stat");card.append(el("strong","",value),el("span","",label));host.append(card);});ledger.replaceChildren();const rows=Array.isArray(evaluation.recent)?evaluation.recent:[];if(!rows.length){ledger.append(emptyState("Instrumentation starts with the next guided task","Historical tool calls remain visible above, but Cortex will not pretend old calls were exposed to guidance it did not log."));}rows.slice(0,10).forEach(item=>{const row=el("div","guidance-row"),identity=el("div","");identity.append(el("strong","",`${humanize(item.task_type)} · ${humanize(item.guidance_type)}`),el("span","",item.recommended_tool||item.guidance_key||"Recorded guidance"));row.append(identity,el("span","",item.resolved_at?(Number(item.followed)?"followed":"not followed"):"pending"),el("span","",item.success===null||item.success===undefined?"outcome pending":Number(item.success)?"execution succeeded":"execution failed"),el("span","",item.task_outcome?humanize(item.task_outcome):timeAgo(new Date(item.created_at))));ledger.append(row);});document.getElementById("tool-evaluation-boundary").textContent=String(evaluation.claim_boundary||"Follow-through is observational and does not prove guidance caused the result.");document.getElementById("tool-evaluation-status").textContent=evaluation.ready_for_comparison?"Comparison-ready · observational":"Observational · learning";}
 
     function renderHealth() {
       if(!app.data)return;

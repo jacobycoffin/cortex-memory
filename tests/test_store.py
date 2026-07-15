@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 
 from tests._bootstrap import ROOT
@@ -261,6 +262,127 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["benchmarks"]["latest"]["score"], 97.5)
         self.assertEqual(snapshot["benchmarks"]["latest_result"]["environment"]["python"], "test")
         self.assertEqual(snapshot["stats"]["benchmark_runs"], 1)
+
+    def test_outcome_labels_are_audited_reversible_and_build_private_cases(self) -> None:
+        memory_id, _ = self.store.add_memory("Kaya deploys the service through the private blue gateway.")
+        task_id = self.store.create_usage_batch(
+            [(memory_id, 0.9)],
+            query="Which private gateway deploys Kaya?",
+            session_id="session-1",
+            task_type="deployment",
+            recall_mode="focused",
+            requested_budget=700,
+            estimated_tokens=80,
+        )
+        self.store.resolve_usage(task_id, {memory_id: 1.0})
+
+        result = self.store.label_task_outcome(task_id, "helpful", actor="dashboard-user")
+        self.assertTrue(result["changed"])
+        lab = self.store.outcome_lab_snapshot()
+        self.assertEqual(lab["eligible_tasks"], 1)
+        self.assertEqual(lab["labeled_tasks"], 1)
+        self.assertEqual(lab["evaluation_case_count"], 1)
+        self.assertEqual(lab["tasks"][0]["label_outcome"], "helpful")
+        self.assertNotIn("query", self.store.evaluation_snapshot()["runs"])
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+
+        self.assertTrue(self.store.undo_task_outcome_label(task_id, actor="dashboard-user"))
+        reversed_lab = self.store.outcome_lab_snapshot()
+        self.assertEqual(reversed_lab["labeled_tasks"], 0)
+        self.assertEqual(reversed_lab["evaluation_case_count"], 0)
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 0)
+
+        self.store.apply_task_outcome(task_id, "helpful")
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+        self.store.label_task_outcome(task_id, "helpful", actor="dashboard-user")
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+        self.assertTrue(self.store.undo_task_outcome_label(task_id, actor="second-dashboard-user"))
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+        usage_outcome = self.store._conn.execute(
+            "SELECT outcome FROM usage_records WHERE task_id=?", (task_id,)
+        ).fetchone()["outcome"]
+        reversed_by = self.store._conn.execute(
+            "SELECT reversed_by FROM task_outcome_labels WHERE task_id=? ORDER BY created_at DESC LIMIT 1",
+            (task_id,),
+        ).fetchone()["reversed_by"]
+        self.assertEqual(usage_outcome, "helpful")
+        self.assertEqual(reversed_by, "second-dashboard-user")
+
+    def test_private_evaluation_lifecycle_is_sanitized_in_snapshot(self) -> None:
+        run_id = self.store.begin_evaluation_run(
+            suite="cortex-private-real-history",
+            suite_version="1",
+            case_count=8,
+        )
+        self.assertTrue(
+            self.store.update_evaluation_progress(
+                run_id,
+                phase="adaptive",
+                progress=60,
+                message="Evaluating the adaptive condition.",
+            )
+        )
+        report = {
+            "case_count": 8,
+            "conditions": {
+                "adaptive": {"summary": {"hit_at_k": 1.0, "mean_recall_at_k": 0.9, "mrr": 0.8}},
+                "fixed": {"summary": {"hit_at_k": 0.8, "mean_recall_at_k": 0.7, "mrr": 0.6}},
+            },
+            "adaptive_minus_fixed": {"context_tokens_p50": -20, "retrieval_p95_ms": 2.5},
+            "claim_boundary": "retrieval only",
+        }
+        self.assertTrue(self.store.complete_evaluation_run(run_id, report))
+        snapshot = self.store.evaluation_snapshot()
+        self.assertEqual(snapshot["latest"]["adaptive_hit_at_k"], 1.0)
+        self.assertEqual(snapshot["latest"]["context_delta_p50"], -20)
+        self.assertNotIn("query", snapshot["latest"])
+
+    def test_tool_guidance_follow_through_and_evidence_hierarchy_are_observational(self) -> None:
+        self.assertEqual(
+            self.store.record_tool_guidance_exposures(
+                session_id="tool-session",
+                task_id="task-1",
+                task_type="deployment",
+                tool_guidance=[{"tool_name": "deploy_service", "success_count": 4, "failure_count": 1}],
+            ),
+            1,
+        )
+        execution = SimpleNamespace(tool_name="deploy_service", success=True)
+        self.assertEqual(
+            self.store.resolve_tool_guidance_exposures(
+                session_id="tool-session",
+                executions=[execution],
+                workflow=None,
+            ),
+            1,
+        )
+        tool_evaluation = self.store.tool_evaluation_snapshot()
+        self.assertEqual(tool_evaluation["follow_rate"], 1.0)
+        self.assertEqual(tool_evaluation["followed_success_rate"], 1.0)
+        self.assertIn("does not prove", tool_evaluation["claim_boundary"])
+        self.store.record_tool_guidance_exposures(
+            session_id="no-tool-session",
+            task_id=None,
+            task_type="deployment",
+            tool_guidance=[{"tool_name": "deploy_service", "success_count": 4, "failure_count": 1}],
+        )
+        self.assertEqual(
+            self.store.resolve_tool_guidance_exposures(
+                session_id="no-tool-session",
+                executions=[],
+                workflow=None,
+            ),
+            1,
+        )
+        self.assertEqual(self.store.tool_evaluation_snapshot()["follow_rate"], 0.5)
+
+        evidence_id, _ = self.store.add_memory("The operator recorded blue as the active gateway.")
+        claim_id, _ = self.store.add_memory("Kaya uses the blue gateway.", kind="semantic")
+        self.assertTrue(self.store.add_dependency(claim_id, evidence_id))
+        hierarchy = self.store.evidence_hierarchy_snapshot()
+        self.assertEqual(hierarchy["dependency_count"], 1)
+        self.assertEqual(hierarchy["supported_claims"][0]["id"], claim_id)
+        self.assertIn("no summary memory", hierarchy["claim_boundary"])
 
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()

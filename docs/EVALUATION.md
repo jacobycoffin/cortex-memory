@@ -7,6 +7,18 @@ These checkout-local runners answer two different questions without adding priva
 
 They deliberately produce machine-readable JSON. They do not upload a Cortex database, publish memory content, or turn an offline measurement into a model-performance claim.
 
+## Dashboard workflow
+
+The authenticated Outcome & Causality Lab provides the operator path for ongoing measurement:
+
+1. Use Kaya normally on a task where Cortex memory was attributed to the response.
+2. Label the task helpful, validated, harmful, or corrected. The decision is audited and reversible.
+3. Helpful and validated labels become private real-history cases; negative labels deactivate the case.
+4. At eight active positive cases, run the private evaluation button. Cortex evaluates fixed and adaptive retrieval over the same cases in a disposable SQLite snapshot.
+5. Read hit@6, recall@6, MRR, context-token, and local retrieval-latency comparisons together. The report does not measure the model's complete answer, time to first token, or task causality.
+
+Raw queries and relevant memory IDs remain in the local `evaluation_cases` table so the test can be rerun. Persisted `evaluation_runs` reports omit those private fields. Label coverage is a measurement-quality driver: an attractive helpfulness rate over a small or selectively labeled subset should not be treated as representative.
+
 ## Claim boundaries
 
 | Evaluation | Measures | Does not establish |

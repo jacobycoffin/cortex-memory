@@ -16,6 +16,9 @@
 - fixed Timeline totals and memory-type charts to use complete daily aggregates instead of the 1,000-row interactive-detail cap;
 - added schema 7 metacognitive prediction records, conservative outcome-band calibration, shadow use/verify/abstain decisions, and a dedicated Trust monitor with Brier/ECE evidence;
 - added schema 8 dashboard benchmark runs with an authenticated fixed-suite runner, transparent quality/speed score, persisted history graph, host environment record, and measured improvement guidance;
+- added schema 9 audited task-outcome labels, private evaluation cases and aggregate paired-run ledgers, plus tool-guidance exposure follow-through;
+- added an Outcome & Causality Lab that turns reversible positive task labels into a private fixed-versus-adaptive retrieval evaluation after eight cases;
+- added a read-only evidence hierarchy, proposal-level Sleep hypotheses, observational tool/workflow evaluation, and a metacognition enforcement gate that keeps configured enforcement in shadow until calibration and selective-risk thresholds pass;
 - added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
 - added Sleep safety, idempotency, budget, outage, and reversibility tests.
 

@@ -27,6 +27,10 @@ These rows are sensitive behavioral metadata. They remain in the local Cortex da
 
 Dashboard benchmark runs use generated synthetic facts in an isolated temporary database. Cortex stores the run configuration, host Python/platform description, aggregate retrieval metrics, score, progress, and error state in `benchmark_runs`; it does not copy production memory content into a benchmark record and does not call a model provider. Benchmark history is authenticated dashboard data and follows the main database's backup and retention policy.
 
+Outcome Lab labels store a task ID, outcome, dashboard actor, timestamps, and reversal state. Positive labels maintain a private `evaluation_cases` row containing the original query and relevant memory IDs inside the same Cortex database. Those private case fields are exposed only through the authenticated Outcome Lab and are never included in a completed evaluation report. The paired evaluator uses a disposable SQLite snapshot and persists aggregate quality, context, and local latency metrics in `evaluation_runs`; it omits queries, memory IDs and text, source references, and database paths. Undoing or replacing a label deactivates its evaluation case without deleting the audit history.
+
+Tool-guidance exposure rows store task/session identifiers, broad task type, the recommended tool name or workflow key, predicted reliability, whether later execution matched it, and any explicit task outcome. Argument values, tool results, and memory text are not duplicated. These rows are behavioral metadata and follow the Cortex database's backup and retention policy.
+
 ## Operator responsibilities
 
 - protect the Hermes home directory with host-level permissions and backups;

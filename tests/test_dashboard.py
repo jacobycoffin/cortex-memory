@@ -106,6 +106,19 @@ class DashboardInterfaceTests(unittest.TestCase):
             "benchmark-recommendations",
             "benchmark-run-list",
             "benchmark-method",
+            "outcome-lab",
+            "outcome-summary",
+            "outcome-task-list",
+            "evaluation-start",
+            "evaluation-summary",
+            "evaluation-runs",
+            "hierarchy-flow",
+            "supported-claim-list",
+            "sleep-hypotheses",
+            "metacognition-gate",
+            "metacognition-gate-checks",
+            "tool-evaluation-summary",
+            "guidance-ledger",
             "view-trust",
             "metacognition-mode",
             "metacognition-metrics",
@@ -157,6 +170,14 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderBenchmarkHistory", html)
         self.assertIn("function startBenchmark", html)
         self.assertIn("/api/benchmark/start", html)
+        self.assertIn("function renderOutcomeLab", html)
+        self.assertIn("function startPrivateEvaluation", html)
+        self.assertIn("/api/evaluation/start", html)
+        self.assertIn("/api/outcome/label", html)
+        self.assertIn("function renderEvidenceHierarchy", html)
+        self.assertIn("function renderSleepHypotheses", html)
+        self.assertIn("function renderMetacognitionGate", html)
+        self.assertIn("function renderToolEvaluation", html)
         self.assertIn("Test Cortex on this system", html)
         self.assertIn("What it does not measure", html)
         self.assertIn("outcome-backed memory accuracy proxy", html)

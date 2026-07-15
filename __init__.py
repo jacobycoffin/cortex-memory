@@ -366,6 +366,8 @@ class CortexMemoryProvider(MemoryProvider):
         monitor_mode = str(self._config.get("metacognition_mode", "shadow")).casefold()
         if monitor_mode not in {"off", "shadow", "enforce"}:
             monitor_mode = "shadow"
+        if monitor_mode == "enforce" and not self._store.metacognition_enforcement_gate()["ready"]:
+            monitor_mode = "shadow"
         assessments: list[MetacognitiveAssessment] = []
         if monitor_mode != "off":
             for result in results:
@@ -479,9 +481,17 @@ class CortexMemoryProvider(MemoryProvider):
                 ],
                 metacognition_mode=monitor_mode,
             )
-            if results or assessments
+            if results or assessments or tool_guidance or workflow_guidance
             else None
         )
+        if tool_guidance or workflow_guidance:
+            self._store.record_tool_guidance_exposures(
+                session_id=sid,
+                task_id=task_id,
+                task_type=task_type,
+                tool_guidance=tool_guidance,
+                workflow_guidance=workflow_guidance,
+            )
         dropped_pending: list[tuple[list[str], str | None]] = []
         with self._cache_lock:
             pending = self._pending_prefetches.setdefault(sid, [])
@@ -949,6 +959,12 @@ class CortexMemoryProvider(MemoryProvider):
         if not self._store:
             return
         executions = extract_tool_executions(messages, session_id=session_id)
+        observed_workflow = build_tool_workflow(executions)
+        self._store.resolve_tool_guidance_exposures(
+            session_id=session_id,
+            executions=executions,
+            workflow=observed_workflow,
+        )
         workflow_evidence_ids: list[str] = []
         for execution in executions:
             created, stats = self._store.record_tool_execution(execution)
@@ -1022,7 +1038,7 @@ class CortexMemoryProvider(MemoryProvider):
                     evidence_ids=[row["id"] for row in evidence if str(row["object_value"]).startswith("failure:")],
                 )
 
-        workflow = build_tool_workflow(executions)
+        workflow = observed_workflow
         if workflow:
             created, stats = self._store.record_tool_workflow(workflow)
             if created and int(stats.get("success_count", 0)) >= 2 and int(stats.get("distinct_tasks", 0)) >= 2:

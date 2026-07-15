@@ -25,6 +25,13 @@ from .benchmarking import (
     run_dashboard_benchmark,
 )
 from .dashboard_auth import DashboardAuth, SESSION_COOKIE
+from .evaluation import (
+    REAL_HISTORY_MIN_CASES,
+    REAL_HISTORY_SUITE,
+    REAL_HISTORY_VERSION,
+    HistoryCase,
+    compare_real_history,
+)
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
 
@@ -122,6 +129,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     """
     store = CortexStore(db_path)
     store.abandon_active_benchmarks()
+    store.abandon_active_evaluations()
     html_path = Path(__file__).with_name("dashboard.html")
     html = html_path.read_bytes()
     public_assets = {
@@ -162,6 +170,8 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     sleep_job: dict[str, threading.Thread | None] = {"thread": None}
     benchmark_lock = threading.RLock()
     benchmark_job: dict[str, threading.Thread | None] = {"thread": None}
+    evaluation_lock = threading.RLock()
+    evaluation_job: dict[str, threading.Thread | None] = {"thread": None}
     schedule_cache: dict[str, object] = {"checked_at": 0.0, "value": None}
 
     def sleep_schedule() -> dict[str, object]:
@@ -251,6 +261,22 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         except Exception as error:
             store.fail_benchmark_run(run_id, str(error))
 
+    def run_private_evaluation_job(run_id: str, cases: list[HistoryCase]) -> None:
+        try:
+            report = compare_real_history(
+                store.path,
+                cases,
+                progress_callback=lambda update: store.update_evaluation_progress(
+                    run_id,
+                    phase=str(update.get("phase") or "running"),
+                    progress=int(update.get("progress") or 0),
+                    message=str(update.get("message") or "Private evaluation is running."),
+                ),
+            )
+            store.complete_evaluation_run(run_id, report)
+        except Exception as error:
+            store.fail_evaluation_run(run_id, str(error))
+
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
@@ -264,7 +290,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/auth/status":
                 self._headers_only(HTTPStatus.OK, "application/json; charset=utf-8", 0)
                 return
-            if parsed.path in {"/api/snapshot", "/api/memory", "/api/sleep/status", "/api/benchmark/status"}:
+            if parsed.path in {
+                "/api/snapshot", "/api/memory", "/api/sleep/status",
+                "/api/benchmark/status", "/api/evaluation/status",
+            }:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
                 else:
@@ -308,6 +337,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/benchmark/status":
                 self._json(HTTPStatus.OK, store.benchmark_snapshot())
                 return
+            if parsed.path == "/api/evaluation/status":
+                self._json(HTTPStatus.OK, store.evaluation_snapshot())
+                return
             if parsed.path == "/api/memory":
                 raw_id = parse_qs(parsed.query).get("id", [""])[0]
                 memory_id = store.resolve_id(raw_id)
@@ -328,6 +360,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/review/inference",
                 "/api/sleep/start",
                 "/api/benchmark/start",
+                "/api/evaluation/start",
+                "/api/outcome/label",
+                "/api/outcome/undo",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -340,7 +375,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             needs_complete_auth = (
                 parsed.path.startswith("/api/review/")
-                or parsed.path in {"/api/sleep/start", "/api/benchmark/start"}
+                or parsed.path in {
+                    "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
+                    "/api/outcome/label", "/api/outcome/undo",
+                }
             )
             if not self._require_auth(complete=needs_complete_auth):
                 return
@@ -355,6 +393,12 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             if parsed.path == "/api/benchmark/start":
                 self._start_benchmark()
+                return
+            if parsed.path == "/api/evaluation/start":
+                self._start_evaluation()
+                return
+            if parsed.path in {"/api/outcome/label", "/api/outcome/undo"}:
+                self._outcome_feedback(undo=parsed.path.endswith("/undo"))
                 return
             if not reviews_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
@@ -440,6 +484,79 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 benchmark_job["thread"] = worker
                 worker.start()
             self._json(HTTPStatus.ACCEPTED, store.benchmark_snapshot())
+
+        def _start_evaluation(self) -> None:
+            payload = self._read_json()
+            if payload is None:
+                return
+            if str(payload.get("suite") or "real_history").casefold() != "real_history":
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "only the private real-history suite is available"})
+                return
+            case_rows = store.active_evaluation_cases()
+            if len(case_rows) < REAL_HISTORY_MIN_CASES:
+                self._json(
+                    HTTPStatus.CONFLICT,
+                    {"error": f"label at least {REAL_HISTORY_MIN_CASES} helpful or validated tasks first"},
+                )
+                return
+            cases = [
+                HistoryCase(
+                    query=str(row["query"]),
+                    relevant_memory_ids=tuple(row["relevant_memory_ids"]),
+                    task_type=str(row.get("task_type") or "general"),
+                )
+                for row in case_rows
+            ]
+            with evaluation_lock:
+                worker = evaluation_job.get("thread")
+                active = store.evaluation_snapshot(limit=5).get("active")
+                if (worker and worker.is_alive()) or active:
+                    self._json(HTTPStatus.CONFLICT, {"error": "a private evaluation is already running"})
+                    return
+                run_id = store.begin_evaluation_run(
+                    suite=REAL_HISTORY_SUITE,
+                    suite_version=REAL_HISTORY_VERSION,
+                    case_count=len(cases),
+                )
+                worker = threading.Thread(
+                    target=run_private_evaluation_job,
+                    args=(run_id, cases),
+                    name="cortex-dashboard-private-evaluation",
+                    daemon=True,
+                )
+                evaluation_job["thread"] = worker
+                worker.start()
+            self._json(HTTPStatus.ACCEPTED, store.evaluation_snapshot())
+
+        def _outcome_feedback(self, *, undo: bool) -> None:
+            if not reviews_enabled:
+                self._json(HTTPStatus.FORBIDDEN, {"error": "outcome feedback is disabled on this dashboard"})
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            task_id = str(payload.get("task_id") or "")
+            if not task_id:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                return
+            try:
+                actor = auth.username() if auth_enabled else "local-operator"
+                if undo:
+                    changed = store.undo_task_outcome_label(task_id, actor=actor)
+                    if not changed:
+                        self._json(HTTPStatus.CONFLICT, {"error": "this task has no active dashboard label"})
+                        return
+                    result: object = {"changed": True, "task_id": task_id, "outcome": None}
+                else:
+                    result = store.label_task_outcome(
+                        task_id,
+                        str(payload.get("outcome") or "").casefold(),
+                        actor=actor,
+                    )
+            except ValueError as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                return
+            self._json(HTTPStatus.OK, {"result": result, "outcome_lab": store.outcome_lab_snapshot()})
 
         def _login(self) -> None:
             if not auth_enabled:
@@ -610,4 +727,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         benchmark_worker = benchmark_job.get("thread")
         if benchmark_worker and benchmark_worker.is_alive():
             benchmark_worker.join()
+        evaluation_worker = evaluation_job.get("thread")
+        if evaluation_worker and evaluation_worker.is_alive():
+            evaluation_worker.join()
         store.close()

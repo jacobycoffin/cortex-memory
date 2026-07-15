@@ -152,7 +152,10 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 - a Cortex Sleep control room with the live timer window, selectable run history, exact proposal evidence, applied/reversed edge and lifecycle journals, and explicitly non-causal post-run observations;
 - an Accuracy × capacity view that plots daily outcome-backed memory helpfulness against stored memory count and reports average recall context alongside it; it is a memory-quality proxy, not a claim of general answer accuracy;
 - an authenticated local benchmark lab that runs the versioned synthetic retrieval suite on the dashboard host, records a transparent quality/speed score, and graphs compatible runs without claiming model-inference speed;
-- a Trust monitor that logs a pre-outcome reliability estimate for every recalled memory, explains the proposed use/verify/abstain decision, and plots calibration only after enough explicit outcomes exist;
+- an Outcome & Causality Lab for reversible task-level labels and a paired private real-history evaluation that compares adaptive and fixed retrieval without persisting queries, memory text, or IDs in its report;
+- an evidence hierarchy that keeps raw memories addressable, shows source links for supported claims, and treats higher-level bundles as read-only candidates rather than automatic truths;
+- a Trust monitor that logs a pre-outcome reliability estimate for every recalled memory, explains the proposed use/verify/abstain decision, plots calibration only after enough explicit outcomes exist, and holds enforcement in shadow until a hard evidence gate passes;
+- Sleep hypotheses and tool-guidance follow-through that state what future evidence would count, while keeping after-event comparisons explicitly observational;
 - plain-language health guidance split into recall integrity, memory quality, learning-loop, and Sleep-maintenance layers, plus an inspectable memory index and one-decision-at-a-time reviewer;
 - a tablet/PWA navigation layout with visible tab names and a readable card-style memory index;
 - a clickable memory-type guide plus a dedicated Settings view for themes and account controls.
@@ -162,6 +165,8 @@ For a public hostname, terminate TLS at a reverse proxy and keep Cortex bound to
 Guided review changes are opt-in. After authentication and TLS are configured, set `CORTEX_DASHBOARD_REVIEWS=1` in the dashboard environment to enable the confirmed choices. Conflict review can archive one superseded memory or keep both as contextual; inference review can explicitly confirm or archive one unsupported claim. Every action preserves history and writes an audit record. There is no hard-delete action.
 
 The Insights benchmark button is independent of guided review. It is authenticated, allows only one bounded run at a time, uses a temporary synthetic database, and makes no model or provider calls. Its overall score is a versioned operating index: 85% retrieval quality and 15% local p95 retrieval speed. Compare only runs from the same suite version under similar host load; use the paired live-model benchmark for whole-agent latency claims.
+
+Outcome labels require the same opt-in review setting. A helpful or validated label creates one private real-history case; harmful or corrected labels remove that case. At eight positive cases the dashboard can run adaptive and fixed retrieval against the same disposable database snapshot. Only sanitized aggregate metrics are persisted. The result measures retrieval mechanics, not Kaya's complete answer accuracy or model inference speed.
 
 If the password is lost, generate a new one and restart the dashboard:
 

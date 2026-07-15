@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from tests._bootstrap import ROOT
 
+from cortex.evaluation import HistoryCase, compare_real_history
 from cortex.scripts.benchmark_tool_calling import (
     load_recorded_observations,
     run_live,
@@ -19,6 +20,39 @@ from cortex.store import CortexStore
 
 
 class RealHistoryEvaluationTests(unittest.TestCase):
+    def test_dashboard_private_comparison_is_paired_and_omits_private_fields(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="cortex-private-evaluation-") as tmp:
+            database_path = Path(tmp) / "private-kaya-history.db"
+            store = CortexStore(database_path)
+            cases = []
+            try:
+                for index in range(8):
+                    code = f"orchid-{index}-private"
+                    memory_id, _ = store.add_memory(
+                        f"Deployment lane {index} uses the private marker {code}.",
+                        kind="operational",
+                        source_ref=f"private-source-{index}",
+                    )
+                    cases.append(
+                        HistoryCase(
+                            query=f"Which marker does deployment lane {index} use?",
+                            relevant_memory_ids=(memory_id,),
+                            task_type="deployment",
+                        )
+                    )
+                report = compare_real_history(database_path, cases, top_k=6, token_budget=700)
+            finally:
+                store.close()
+
+            self.assertEqual(report["case_count"], 8)
+            self.assertEqual(set(report["conditions"]), {"fixed", "adaptive"})
+            self.assertIn("context_tokens_p50", report["adaptive_minus_fixed"])
+            self.assertTrue(report["privacy"]["raw_private_text_omitted"])
+            serialized = json.dumps(report)
+            self.assertNotIn("orchid-0-private", serialized)
+            self.assertNotIn("private-kaya-history.db", serialized)
+            self.assertNotIn(cases[0].relevant_memory_ids[0], serialized)
+
     def test_report_scores_private_labels_without_copying_private_fields(self) -> None:
         with tempfile.TemporaryDirectory(prefix="cortex-evaluation-") as tmp:
             private_db_path = Path(tmp) / "operator-private-name.db"

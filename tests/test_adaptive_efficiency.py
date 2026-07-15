@@ -193,8 +193,56 @@ class SafeRetrievalCacheTests(unittest.TestCase):
 
 
 class MetacognitionEnforcementTests(unittest.TestCase):
-    def test_enforcement_can_withhold_a_low_reliability_exact_match(self) -> None:
+    def test_enforcement_request_stays_shadow_until_promotion_gate_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
+            provider = CortexMemoryProvider(
+                {
+                    "db_path": "$HERMES_HOME/cortex/test.db",
+                    "auto_capture": False,
+                    "retrieval_threshold": 0.0,
+                    "metacognition_mode": "enforce",
+                }
+            )
+            provider.initialize("monitor-session", hermes_home=tmp, agent_context="primary")
+            try:
+                memory_id, _ = provider._store.add_memory(
+                    "The exact experimental service password is always orange.",
+                    source_category="AGENT_INFERENCE",
+                    confidence=0.25,
+                    currentness_confidence=0.2,
+                    trust=0.2,
+                    volatility=1.0,
+                )
+                with provider._store.transaction() as conn:
+                    conn.execute(
+                        """UPDATE memories SET dirty=1,dirty_reason='test',harmful_count=5,
+                                  false_positive_count=5,injected_count=5
+                           WHERE id=?""",
+                        (memory_id,),
+                    )
+
+                context = provider.prefetch(
+                    "What is the exact experimental service password?",
+                    session_id="monitor-session",
+                )
+
+                self.assertIn("experimental service password", context)
+                prediction = provider._store._conn.execute(
+                    """SELECT decision,applied,outcome FROM metacognitive_predictions
+                       WHERE memory_id=?""",
+                    (memory_id,),
+                ).fetchone()
+                self.assertEqual(dict(prediction), {"decision": "abstain", "applied": 0, "outcome": "pending"})
+                self.assertEqual(provider._store.get_memory(memory_id)["injected_count"], 6)
+            finally:
+                provider.shutdown()
+
+    def test_enforcement_can_withhold_after_promotion_gate_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.object(
+            CortexStore,
+            "metacognition_enforcement_gate",
+            return_value={"ready": True},
+        ):
             provider = CortexMemoryProvider(
                 {
                     "db_path": "$HERMES_HOME/cortex/test.db",
@@ -233,7 +281,6 @@ class MetacognitionEnforcementTests(unittest.TestCase):
                     (memory_id,),
                 ).fetchone()
                 self.assertEqual(dict(prediction), {"decision": "abstain", "applied": 1, "outcome": "withheld"})
-                self.assertEqual(provider._store.get_memory(memory_id)["injected_count"], 5)
             finally:
                 provider.shutdown()
 

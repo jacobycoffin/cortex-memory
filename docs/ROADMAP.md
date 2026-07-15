@@ -22,7 +22,8 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 
 | Workstream | Status | Acceptance evidence |
 | --- | --- | --- |
-| Real-history evaluation runner | Implemented; needs operator run | Operator-authored labels remain private; reports contain numbered cases/metrics rather than memory text or IDs. |
+| Outcome & Causality Lab | Implemented; operator labeling active | Used recall tasks accept one audited, reversible outcome; label coverage and observed helpfulness stay separate from causal claims. |
+| Real-history evaluation runner | Implemented in CLI and dashboard; needs eight positive operator labels | Private task queries and IDs remain local; persisted reports contain aggregate paired metrics rather than memory text or IDs. |
 | Paired tool-calling benchmark | Implemented; needs representative cases | First-tool accuracy, argument validity, completion, latency, and token use are reported per condition. |
 | Learned recall budgets | Implemented; longitudinal validation active | Budget changes require sufficient resolved outcomes and remain inside configured ceilings. |
 | Safe query-result cache | Implemented; synthetic microbenchmark added | Repeated retrieval reuses results without skipping access/usage evidence or serving post-mutation results. |
@@ -31,8 +32,8 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 | Clean install and upgrade smoke test | Implemented | An isolated Hermes home preserves its database across reinstall and imports the installed provider. |
 | Replacement-mode experiment | Planned | Requires an explicit Hermes integration hook; no duplicate built-in context and no migrated fact loss. |
 | Query and result cache benchmark | Initial exact-query benchmark implemented | Warm exact-query latency and context stability are reported; representative hit-rate measurement remains active. |
-| Dashboard benchmark wizard | Planned | Generates a sanitized local run plan and report without exposing memory contents or API keys. |
-| Offline Sleep cycle | Implemented; shadow trial active | Nightly bounded replay reports evidence-backed associations, interference, maintenance previews, and optional reflection-token use without affecting turn latency. |
+| Dashboard benchmark wizard | Implemented for synthetic and private-history suites | Synthetic runs measure host retrieval; private runs compare paired policies. Neither is presented as whole-agent accuracy or inference speed. |
+| Offline Sleep cycle | Implemented; shadow trial and hypothesis follow-through active | Nightly bounded replay reports evidence-backed associations, interference, maintenance previews, and proposal-level future observations without affecting turn latency. |
 
 ## 0.4 — Memory structure and calibration
 
@@ -40,10 +41,10 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 | Workstream | Safety rule | Acceptance evidence |
 | --- | --- | --- |
-| Multi-resolution memory | Raw evidence remains immutable and addressable. | Episodes, facts, procedures, and summaries are ablated separately. |
-| Evidence-backed summaries | Every statement names active source IDs. | Unsupported-claim rate and retrieval cost improve together. |
+| Multi-resolution memory | Read-only hierarchy preview implemented; raw evidence remains immutable and addressable. | Episodes, facts, procedures, and future summaries are ablated separately before summary writes are enabled. |
+| Evidence-backed summaries | Dependency-backed claim and bundle preview implemented; no automatic summary writes. | Every future summary statement names active source IDs and unsupported-claim rate plus retrieval cost improve together. |
 | Contradiction and supersession detection | Detection is reviewable before state changes. | Current and historical accuracy improve on a time-labeled set. |
-| Confidence calibration | Shadow instrumentation implemented; confidence cannot rise from retrieval count alone. | Reliability curves and expected calibration error improve before enforcement is considered. |
+| Confidence calibration | Shadow instrumentation and hard promotion gate implemented; confidence cannot rise from retrieval count alone. | At least 50 representative labels, Brier ≤ 0.20, ECE ≤ 0.15, and low selective risk pass before a controlled enforcement trial. |
 | Association reinforcement and decay | Co-use strengthens links; unused links decay without deleting evidence. | Graph-on beats graph-off without reducing precision. |
 | Spaced-use reinforcement | Repeated events in one burst have diminishing weight. | Distributed successful use predicts future utility better than raw count. |
 | Interference detection | Similarity creates a review signal, not an automatic merge. | Competing-fact error rate falls. |

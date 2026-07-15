@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -418,6 +418,82 @@ class CortexStore:
             CREATE INDEX IF NOT EXISTS idx_metacognitive_created
               ON metacognitive_predictions(created_at DESC);
 
+            CREATE TABLE IF NOT EXISTS task_outcome_labels (
+                label_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                outcome TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                source TEXT NOT NULL DEFAULT 'dashboard',
+                prior_outcome TEXT NOT NULL DEFAULT 'used',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                reversed_at TEXT,
+                reversed_by TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_task_outcome_active
+              ON task_outcome_labels(task_id) WHERE active=1;
+            CREATE INDEX IF NOT EXISTS idx_task_outcome_created
+              ON task_outcome_labels(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS evaluation_cases (
+                case_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE,
+                query TEXT NOT NULL,
+                relevant_memory_ids TEXT NOT NULL,
+                task_type TEXT NOT NULL DEFAULT 'general',
+                source_label_id TEXT NOT NULL REFERENCES task_outcome_labels(label_id),
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_evaluation_cases_active
+              ON evaluation_cases(active,updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS evaluation_runs (
+                run_id TEXT PRIMARY KEY,
+                suite TEXT NOT NULL,
+                suite_version TEXT NOT NULL,
+                status TEXT NOT NULL,
+                phase TEXT NOT NULL DEFAULT 'queued',
+                progress INTEGER NOT NULL DEFAULT 0,
+                message TEXT NOT NULL DEFAULT '',
+                case_count INTEGER NOT NULL DEFAULT 0,
+                adaptive_hit_at_k REAL,
+                adaptive_recall_at_k REAL,
+                adaptive_mrr REAL,
+                fixed_hit_at_k REAL,
+                fixed_recall_at_k REAL,
+                fixed_mrr REAL,
+                context_delta_p50 REAL,
+                latency_delta_p95 REAL,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_evaluation_runs_started
+              ON evaluation_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS tool_guidance_exposures (
+                exposure_id TEXT PRIMARY KEY,
+                session_id TEXT,
+                task_id TEXT,
+                task_type TEXT NOT NULL,
+                guidance_type TEXT NOT NULL,
+                guidance_key TEXT NOT NULL,
+                recommended_tool TEXT,
+                predicted_reliability REAL NOT NULL,
+                followed INTEGER,
+                success INTEGER,
+                task_outcome TEXT,
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_guidance_exposure_session
+              ON tool_guidance_exposures(session_id,resolved_at,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_guidance_exposure_type
+              ON tool_guidance_exposures(guidance_type,created_at DESC);
+
             CREATE TABLE IF NOT EXISTS benchmark_runs (
                 run_id TEXT PRIMARY KEY,
                 suite TEXT NOT NULL,
@@ -739,6 +815,13 @@ class CortexStore:
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE memories ADD COLUMN {name} {declaration}")
         self._conn.execute("UPDATE memories SET observed_at=COALESCE(observed_at, created_at)")
+        task_label_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(task_outcome_labels)")}
+        if "prior_outcome" not in task_label_columns:
+            self._conn.execute(
+                "ALTER TABLE task_outcome_labels ADD COLUMN prior_outcome TEXT NOT NULL DEFAULT 'used'"
+            )
+        if "reversed_by" not in task_label_columns:
+            self._conn.execute("ALTER TABLE task_outcome_labels ADD COLUMN reversed_by TEXT")
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -1218,6 +1301,94 @@ class CortexStore:
             "positive_count": 0,
             "observed_rate": None,
             "weight": 0.0,
+        }
+
+    def metacognition_enforcement_gate(self) -> dict[str, Any]:
+        """Return the evidence gate that must pass before abstentions can be enforced."""
+
+        with self._lock:
+            summary = self._conn.execute(
+                """SELECT
+                     SUM(CASE WHEN outcome IN ('helpful','validated','harmful','corrected') THEN 1 ELSE 0 END) labels,
+                     SUM(CASE WHEN decision='use' AND outcome IN ('helpful','validated','harmful','corrected') THEN 1 ELSE 0 END) use_labels,
+                     SUM(CASE WHEN decision='use' AND outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) harmful_use,
+                     AVG(CASE
+                       WHEN outcome IN ('helpful','validated')
+                         THEN (1.0-calibrated_probability)*(1.0-calibrated_probability)
+                       WHEN outcome IN ('harmful','corrected')
+                         THEN calibrated_probability*calibrated_probability
+                     END) brier_score
+                   FROM metacognitive_predictions"""
+            ).fetchone()
+            bins = self._conn.execute(
+                """SELECT CASE WHEN calibrated_probability>=1.0 THEN 4
+                                 ELSE CAST(calibrated_probability*5 AS INTEGER) END bucket,
+                          COUNT(*) sample_count,AVG(calibrated_probability) avg_probability,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count
+                   FROM metacognitive_predictions
+                   WHERE outcome IN ('helpful','validated','harmful','corrected')
+                   GROUP BY bucket"""
+            ).fetchall()
+        labels = int(summary["labels"] or 0)
+        use_labels = int(summary["use_labels"] or 0)
+        harmful_use = int(summary["harmful_use"] or 0)
+        brier = float(summary["brier_score"]) if summary["brier_score"] is not None else None
+        ece = None
+        if labels:
+            ece = sum(
+                int(row["sample_count"])
+                * abs(
+                    float(row["avg_probability"] or 0.0)
+                    - int(row["positive_count"] or 0) / max(1, int(row["sample_count"]))
+                )
+                for row in bins
+            ) / labels
+        harmful_use_rate = harmful_use / use_labels if use_labels else None
+        checks = [
+            {
+                "key": "labels",
+                "label": "Representative labeled outcomes",
+                "value": labels,
+                "target": 50,
+                "passed": labels >= 50,
+            },
+            {
+                "key": "brier",
+                "label": "Brier score",
+                "value": round(brier, 6) if brier is not None else None,
+                "target": 0.20,
+                "direction": "at_most",
+                "passed": brier is not None and brier <= 0.20,
+            },
+            {
+                "key": "ece",
+                "label": "Expected calibration error",
+                "value": round(ece, 6) if ece is not None else None,
+                "target": 0.15,
+                "direction": "at_most",
+                "passed": ece is not None and ece <= 0.15,
+            },
+            {
+                "key": "selective_risk",
+                "label": "Harmful rate among use decisions",
+                "value": round(harmful_use_rate, 6) if harmful_use_rate is not None else None,
+                "target": 0.10,
+                "direction": "at_most",
+                "passed": use_labels >= 20 and harmful_use_rate is not None and harmful_use_rate <= 0.10,
+            },
+        ]
+        return {
+            "ready": all(bool(item["passed"]) for item in checks),
+            "requested_mode": "enforce",
+            "effective_mode_until_ready": "shadow",
+            "checks": checks,
+            "labels": labels,
+            "use_labels": use_labels,
+            "harmful_use": harmful_use,
+            "brier_score": round(brier, 6) if brier is not None else None,
+            "expected_calibration_error": round(ece, 6) if ece is not None else None,
+            "harmful_use_rate": round(harmful_use_rate, 6) if harmful_use_rate is not None else None,
+            "claim_boundary": "Passing this gate permits a controlled enforcement trial; it does not prove introspection or consciousness.",
         }
 
     def claim_memories(
@@ -2023,6 +2194,189 @@ class CortexStore:
             self.log_access(memory_id, outcome if outcome != "harmful" else "wrong")
         return ids
 
+    def label_task_outcome(self, task_id: str, outcome: str, *, actor: str) -> dict[str, Any]:
+        """Apply one auditable, reversible outcome label to a used recall task."""
+
+        if outcome not in {"helpful", "harmful", "validated", "corrected"}:
+            raise ValueError("outcome must be helpful, harmful, validated, or corrected")
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        now = utc_now()
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """SELECT u.memory_id,u.query,u.session_id,u.outcome,m.content
+                   FROM usage_records u JOIN memories m ON m.id=u.memory_id
+                   WHERE u.task_id=? AND u.used=1 ORDER BY u.created_at,u.memory_id""",
+                (task_id,),
+            ).fetchall()
+            if not rows:
+                raise ValueError("this task has no attributed memories to label")
+            active = conn.execute(
+                "SELECT * FROM task_outcome_labels WHERE task_id=? AND active=1", (task_id,)
+            ).fetchone()
+            if active and str(active["outcome"]) == outcome:
+                return {"changed": False, "label_id": active["label_id"], "outcome": outcome, "task_id": task_id}
+            prior_outcome = str(active["prior_outcome"] if active else rows[0]["outcome"] or "used")
+            if prior_outcome not in {"used", "helpful", "harmful", "validated", "corrected"}:
+                prior_outcome = "used"
+            if active:
+                self._reverse_task_outcome_tx(conn, dict(active), now, reversed_by=actor_value)
+            label_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO task_outcome_labels(
+                     label_id,task_id,outcome,actor,source,prior_outcome,active,created_at
+                   ) VALUES(?,?,?,?, 'dashboard',?,1,?)""",
+                (label_id, task_id, outcome, actor_value, prior_outcome, now),
+            )
+            memory_ids = [str(row["memory_id"]) for row in rows]
+            placeholders = ",".join("?" for _ in memory_ids)
+            conn.execute(
+                f"UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND memory_id IN ({placeholders})",
+                (outcome, now, task_id, *memory_ids),
+            )
+            conn.execute(
+                f"""UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
+                    WHERE task_id=? AND memory_id IN ({placeholders})""",
+                (outcome, now, task_id, *memory_ids),
+            )
+            conn.execute(
+                "UPDATE recall_budget_observations SET outcome=?,resolved_at=? WHERE task_id=?",
+                (outcome, now, task_id),
+            )
+            count_columns = {
+                "helpful": "helpful_count",
+                "harmful": "harmful_count",
+                "validated": "validated_count",
+                "corrected": "correction_count",
+            }
+            if prior_outcome != outcome:
+                if prior_outcome in count_columns:
+                    prior_column = count_columns[prior_outcome]
+                    conn.execute(
+                        f"UPDATE memories SET {prior_column}=MAX(0,{prior_column}-1) "
+                        f"WHERE id IN ({placeholders})",
+                        memory_ids,
+                    )
+                outcome_column = count_columns[outcome]
+                conn.execute(
+                    f"UPDATE memories SET {outcome_column}={outcome_column}+1 "
+                    f"WHERE id IN ({placeholders})",
+                    memory_ids,
+                )
+            event = "wrong" if outcome == "harmful" else outcome
+            marker = f"task-outcome:{label_id}"
+            conn.executemany(
+                "INSERT INTO access_log(memory_id,event,query,session_id,score,created_at) VALUES(?,?,?,?,NULL,?)",
+                [(memory_id, event, marker, rows[0]["session_id"], now) for memory_id in memory_ids],
+            )
+            task_type_row = conn.execute(
+                "SELECT task_type FROM recall_budget_observations WHERE task_id=?", (task_id,)
+            ).fetchone()
+            if outcome in {"helpful", "validated"}:
+                conn.execute(
+                    """INSERT INTO evaluation_cases(
+                         case_id,task_id,query,relevant_memory_ids,task_type,source_label_id,active,created_at,updated_at
+                       ) VALUES(?,?,?,?,?,?,1,?,?)
+                       ON CONFLICT(task_id) DO UPDATE SET
+                         query=excluded.query,relevant_memory_ids=excluded.relevant_memory_ids,
+                         task_type=excluded.task_type,source_label_id=excluded.source_label_id,
+                         active=1,updated_at=excluded.updated_at""",
+                    (
+                        str(uuid.uuid4()),
+                        task_id,
+                        str(rows[0]["query"] or ""),
+                        json.dumps(memory_ids),
+                        str(task_type_row["task_type"] if task_type_row else "general"),
+                        label_id,
+                        now,
+                        now,
+                    ),
+                )
+            else:
+                conn.execute("UPDATE evaluation_cases SET active=0,updated_at=? WHERE task_id=?", (now, task_id))
+            conn.execute(
+                "UPDATE tool_guidance_exposures SET task_outcome=? WHERE task_id=?",
+                (outcome, task_id),
+            )
+        return {
+            "changed": True,
+            "label_id": label_id,
+            "task_id": task_id,
+            "outcome": outcome,
+            "memory_ids": memory_ids,
+        }
+
+    def undo_task_outcome_label(self, task_id: str, *, actor: str) -> bool:
+        """Undo the active dashboard label and restore its preceding task outcome."""
+
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        now = utc_now()
+        with self.transaction() as conn:
+            active = conn.execute(
+                "SELECT * FROM task_outcome_labels WHERE task_id=? AND active=1", (task_id,)
+            ).fetchone()
+            if not active:
+                return False
+            self._reverse_task_outcome_tx(conn, dict(active), now, reversed_by=actor_value)
+        return True
+
+    def _reverse_task_outcome_tx(
+        self,
+        conn: sqlite3.Connection,
+        label: dict[str, Any],
+        now: str,
+        *,
+        reversed_by: str,
+    ) -> None:
+        task_id = str(label["task_id"])
+        outcome = str(label["outcome"])
+        prior_outcome = str(label.get("prior_outcome") or "used")
+        rows = conn.execute(
+            "SELECT memory_id FROM usage_records WHERE task_id=? AND used=1", (task_id,)
+        ).fetchall()
+        memory_ids = [str(row["memory_id"]) for row in rows]
+        if memory_ids and prior_outcome != outcome:
+            placeholders = ",".join("?" for _ in memory_ids)
+            count_columns = {
+                "helpful": "helpful_count",
+                "harmful": "harmful_count",
+                "validated": "validated_count",
+                "corrected": "correction_count",
+            }
+            count_column = count_columns[outcome]
+            conn.execute(
+                f"UPDATE memories SET {count_column}=MAX(0,{count_column}-1) WHERE id IN ({placeholders})",
+                memory_ids,
+            )
+            if prior_outcome in count_columns:
+                prior_column = count_columns[prior_outcome]
+                conn.execute(
+                    f"UPDATE memories SET {prior_column}={prior_column}+1 WHERE id IN ({placeholders})",
+                    memory_ids,
+                )
+        conn.execute(
+            "UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND used=1",
+            (prior_outcome, now, task_id),
+        )
+        conn.execute(
+            """UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
+               WHERE task_id=? AND outcome IN ('helpful','harmful','validated','corrected')""",
+            (prior_outcome, now, task_id),
+        )
+        conn.execute(
+            "UPDATE recall_budget_observations SET outcome=?,resolved_at=? WHERE task_id=?",
+            (prior_outcome, now, task_id),
+        )
+        conn.execute("DELETE FROM access_log WHERE query=?", (f"task-outcome:{label['label_id']}",))
+        conn.execute(
+            "UPDATE task_outcome_labels SET active=0,reversed_at=?,reversed_by=? WHERE label_id=?",
+            (now, reversed_by, label["label_id"]),
+        )
+        conn.execute("UPDATE evaluation_cases SET active=0,updated_at=? WHERE task_id=?", (now, task_id))
+        conn.execute(
+            "UPDATE tool_guidance_exposures SET task_outcome=? WHERE task_id=?",
+            (prior_outcome if prior_outcome != "used" else None, task_id),
+        )
+
     def record_episode(self, user_content: str, assistant_content: str, *, session_id: str | None = None) -> bool:
         user_content = normalize_text(user_content)
         assistant_content = normalize_text(assistant_content)
@@ -2200,6 +2554,89 @@ class CortexStore:
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         return [item for _, item in ranked[:limit]]
 
+    def record_tool_guidance_exposures(
+        self,
+        *,
+        session_id: str | None,
+        task_id: str | None,
+        task_type: str,
+        tool_guidance: Sequence[dict[str, Any]] = (),
+        workflow_guidance: Sequence[dict[str, Any]] = (),
+    ) -> int:
+        """Record which reinforced guidance was actually shown before a tool turn."""
+
+        now = utc_now()
+        rows: list[tuple[Any, ...]] = []
+        for guidance in tool_guidance:
+            successes = int(guidance.get("success_count") or 0)
+            failures = int(guidance.get("failure_count") or 0)
+            reliability = successes / max(1, successes + failures)
+            tool_name = str(guidance.get("tool_name") or "")
+            if not tool_name:
+                continue
+            rows.append(
+                (
+                    str(uuid.uuid4()), session_id, task_id, task_type, "tool",
+                    f"{task_type}:{tool_name}", tool_name, reliability, now,
+                )
+            )
+        for guidance in workflow_guidance:
+            successes = int(guidance.get("success_count") or 0)
+            failures = int(guidance.get("failure_count") or 0)
+            reliability = successes / max(1, successes + failures)
+            workflow_key = str(guidance.get("workflow_key") or "")
+            if not workflow_key:
+                continue
+            rows.append(
+                (
+                    str(uuid.uuid4()), session_id, task_id, task_type, "workflow",
+                    workflow_key, None, reliability, now,
+                )
+            )
+        if not rows:
+            return 0
+        with self.transaction() as conn:
+            conn.executemany(
+                """INSERT INTO tool_guidance_exposures(
+                     exposure_id,session_id,task_id,task_type,guidance_type,guidance_key,
+                     recommended_tool,predicted_reliability,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+        return len(rows)
+
+    def resolve_tool_guidance_exposures(
+        self,
+        *,
+        session_id: str,
+        executions: Sequence[Any],
+        workflow: Any | None,
+    ) -> int:
+        """Resolve recent guidance as followed or not followed without treating either as causal."""
+
+        with self.transaction() as conn:
+            rows = conn.execute(
+                """SELECT * FROM tool_guidance_exposures
+                   WHERE session_id=? AND resolved_at IS NULL
+                   ORDER BY created_at DESC LIMIT 100""",
+                (session_id,),
+            ).fetchall()
+            now = utc_now()
+            for row in rows:
+                if row["guidance_type"] == "tool":
+                    matching = [item for item in executions if item.tool_name == row["recommended_tool"]]
+                    followed = bool(matching)
+                    success = int(any(item.success for item in matching)) if matching else None
+                else:
+                    followed = bool(workflow and workflow.workflow_key == row["guidance_key"])
+                    success = int(bool(workflow.success)) if followed else None
+                conn.execute(
+                    """UPDATE tool_guidance_exposures SET followed=?,success=?,resolved_at=?
+                       WHERE exposure_id=?""",
+                    (int(followed), success, now, row["exposure_id"]),
+                )
+        return len(rows)
+
     def document_manifest(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM document_sources").fetchall()
@@ -2323,6 +2760,204 @@ class CortexStore:
             "edges": [dict(r) for r in edges],
             "dependencies": self.dependencies(memory_id),
             "recent_access": [dict(r) for r in accesses],
+        }
+
+    def outcome_lab_snapshot(self, *, limit: int = 40) -> dict[str, Any]:
+        """Return private task-level outcomes and the measurement readiness model."""
+
+        bounded = max(1, min(int(limit), 100))
+        with self._lock:
+            task_rows = self._conn.execute(
+                """SELECT u.task_id,MAX(u.query) query,MIN(u.session_id) session_id,
+                          MIN(u.created_at) created_at,COUNT(*) selected_count,SUM(u.used) used_count,
+                          b.task_type,b.mode recall_mode,b.estimated_tokens,
+                          l.label_id,l.outcome label_outcome,l.actor,l.created_at labeled_at
+                   FROM usage_records u
+                   LEFT JOIN recall_budget_observations b ON b.task_id=u.task_id
+                   LEFT JOIN task_outcome_labels l ON l.task_id=u.task_id AND l.active=1
+                   GROUP BY u.task_id
+                   HAVING SUM(u.used)>0
+                   ORDER BY MIN(u.created_at) DESC LIMIT ?""",
+                (bounded,),
+            ).fetchall()
+            eligible_count = int(
+                self._conn.execute(
+                    "SELECT COUNT(DISTINCT task_id) count FROM usage_records WHERE used=1"
+                ).fetchone()["count"]
+            )
+            label_summary = self._conn.execute(
+                """SELECT COUNT(*) labeled_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_count
+                   FROM task_outcome_labels WHERE active=1"""
+            ).fetchone()
+            evaluation_case_count = int(
+                self._conn.execute("SELECT COUNT(*) count FROM evaluation_cases WHERE active=1").fetchone()["count"]
+            )
+            tasks: list[dict[str, Any]] = []
+            for row in task_rows:
+                item = dict(row)
+                memory_rows = self._conn.execute(
+                    """SELECT u.memory_id,u.attribution,u.score,m.kind,m.state,m.content,m.source_category
+                       FROM usage_records u JOIN memories m ON m.id=u.memory_id
+                       WHERE u.task_id=? AND u.used=1 ORDER BY u.attribution DESC,u.score DESC LIMIT 8""",
+                    (row["task_id"],),
+                ).fetchall()
+                item["memories"] = [dict(memory) for memory in memory_rows]
+                tasks.append(item)
+        labeled = int(label_summary["labeled_count"] or 0)
+        positive = int(label_summary["positive_count"] or 0)
+        negative = int(label_summary["negative_count"] or 0)
+        return {
+            "tasks": tasks,
+            "eligible_tasks": eligible_count,
+            "labeled_tasks": labeled,
+            "unlabeled_tasks": max(0, eligible_count - labeled),
+            "label_coverage": round(labeled / eligible_count, 6) if eligible_count else 0.0,
+            "positive_count": positive,
+            "negative_count": negative,
+            "observed_helpfulness": round(positive / max(1, positive + negative), 6) if labeled else None,
+            "evaluation_case_count": evaluation_case_count,
+            "evaluation_min_cases": 8,
+            "metacognition_gate": self.metacognition_enforcement_gate(),
+            "definitions": {
+                "observed_helpfulness": "Helpful or validated labels divided by all explicit positive and negative task labels.",
+                "label_coverage": "Used recall tasks with an explicit operator outcome divided by all used recall tasks.",
+                "causal_status": "Outcome labels are observational. Only paired randomized conditions support causal claims.",
+            },
+        }
+
+    def active_evaluation_cases(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT c.case_id,c.task_id,c.query,c.relevant_memory_ids,c.task_type,c.created_at,c.updated_at
+                   FROM evaluation_cases c
+                   JOIN task_outcome_labels l ON l.label_id=c.source_label_id AND l.active=1
+                   WHERE c.active=1 ORDER BY c.created_at"""
+            ).fetchall()
+        cases: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            try:
+                ids = json.loads(str(item.pop("relevant_memory_ids") or "[]"))
+            except json.JSONDecodeError:
+                ids = []
+            item["relevant_memory_ids"] = [str(value) for value in ids if isinstance(value, str)]
+            if item["query"] and item["relevant_memory_ids"]:
+                cases.append(item)
+        return cases
+
+    def begin_evaluation_run(self, *, suite: str, suite_version: str, case_count: int) -> str:
+        run_id = str(uuid.uuid4())
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO evaluation_runs(
+                     run_id,suite,suite_version,status,phase,progress,message,case_count,started_at
+                   ) VALUES(?,?,?,'running','snapshot',1,'Opening the private evaluation set.',?,?)""",
+                (run_id, suite, suite_version, max(1, int(case_count)), utc_now()),
+            )
+            self._conn.commit()
+        return run_id
+
+    def update_evaluation_progress(
+        self,
+        run_id: str,
+        *,
+        phase: str,
+        progress: int,
+        message: str,
+    ) -> bool:
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE evaluation_runs SET phase=?,progress=?,message=?
+                   WHERE run_id=? AND status='running'""",
+                (str(phase)[:64], max(0, min(99, int(progress))), str(message)[:300], run_id),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def complete_evaluation_run(self, run_id: str, report: dict[str, Any]) -> bool:
+        adaptive = report.get("conditions", {}).get("adaptive", {}).get("summary", {})
+        fixed = report.get("conditions", {}).get("fixed", {}).get("summary", {})
+        delta = report.get("adaptive_minus_fixed", {})
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE evaluation_runs SET
+                     status='completed',phase='completed',progress=100,message=?,
+                     adaptive_hit_at_k=?,adaptive_recall_at_k=?,adaptive_mrr=?,
+                     fixed_hit_at_k=?,fixed_recall_at_k=?,fixed_mrr=?,
+                     context_delta_p50=?,latency_delta_p95=?,result_json=?,error=NULL,completed_at=?
+                   WHERE run_id=? AND status='running'""",
+                (
+                    f"Private evaluation complete across {int(report.get('case_count') or 0)} labeled cases.",
+                    adaptive.get("hit_at_k"), adaptive.get("mean_recall_at_k"), adaptive.get("mrr"),
+                    fixed.get("hit_at_k"), fixed.get("mean_recall_at_k"), fixed.get("mrr"),
+                    delta.get("context_tokens_p50"), delta.get("retrieval_p95_ms"),
+                    json.dumps(report, sort_keys=True), utc_now(), run_id,
+                ),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def fail_evaluation_run(self, run_id: str, error: str) -> bool:
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE evaluation_runs SET status='failed',phase='failed',progress=100,
+                       message='Private evaluation stopped before completion.',error=?,completed_at=?
+                   WHERE run_id=? AND status='running'""",
+                (str(error)[:500], utc_now(), run_id),
+            )
+            self._conn.commit()
+        return bool(result.rowcount)
+
+    def abandon_active_evaluations(self) -> int:
+        with self._lock:
+            result = self._conn.execute(
+                """UPDATE evaluation_runs SET status='failed',phase='interrupted',progress=100,
+                       message='Dashboard restarted before this run completed.',
+                       error='interrupted by dashboard restart',completed_at=?
+                   WHERE status='running'""",
+                (utc_now(),),
+            )
+            self._conn.commit()
+        return int(result.rowcount)
+
+    def evaluation_snapshot(self, *, limit: int = 40) -> dict[str, Any]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT run_id,suite,suite_version,status,phase,progress,message,case_count,
+                          adaptive_hit_at_k,adaptive_recall_at_k,adaptive_mrr,
+                          fixed_hit_at_k,fixed_recall_at_k,fixed_mrr,
+                          context_delta_p50,latency_delta_p95,result_json,error,started_at,completed_at
+                   FROM evaluation_runs ORDER BY started_at DESC LIMIT ?""",
+                (max(1, min(int(limit), 100)),),
+            ).fetchall()
+            case_count = int(
+                self._conn.execute("SELECT COUNT(*) count FROM evaluation_cases WHERE active=1").fetchone()["count"]
+            )
+        runs: list[dict[str, Any]] = []
+        latest_result: dict[str, Any] = {}
+        for row in rows:
+            item = dict(row)
+            raw = item.pop("result_json", "{}")
+            if not latest_result and item.get("status") == "completed":
+                try:
+                    parsed = json.loads(str(raw or "{}"))
+                except json.JSONDecodeError:
+                    parsed = {}
+                latest_result = parsed if isinstance(parsed, dict) else {}
+            runs.append(item)
+        completed = [row for row in runs if row.get("status") == "completed"]
+        return {
+            "case_count": case_count,
+            "minimum_cases": 8,
+            "ready": case_count >= 8,
+            "runs": runs,
+            "active": next((row for row in runs if row.get("status") == "running"), None),
+            "latest": completed[0] if completed else None,
+            "latest_result": latest_result,
+            "completed_count": len(completed),
+            "claim_boundary": "This is private retrieval evaluation, not complete-agent accuracy or inference speed.",
         }
 
     def begin_benchmark_run(
@@ -2493,6 +3128,188 @@ class CortexStore:
             "completed_count": len(completed),
         }
 
+    def tool_evaluation_snapshot(self, *, limit: int = 80) -> dict[str, Any]:
+        """Summarize whether reinforced guidance was followed and what happened next."""
+
+        with self._lock:
+            aggregate = self._conn.execute(
+                """SELECT COUNT(*) exposures,
+                          SUM(CASE WHEN resolved_at IS NOT NULL THEN 1 ELSE 0 END) resolved,
+                          SUM(CASE WHEN followed=1 THEN 1 ELSE 0 END) followed,
+                          SUM(CASE WHEN followed=0 THEN 1 ELSE 0 END) not_followed,
+                          SUM(CASE WHEN followed=1 AND success=1 THEN 1 ELSE 0 END) followed_success,
+                          SUM(CASE WHEN followed=1 AND success=0 THEN 1 ELSE 0 END) followed_failure,
+                          SUM(CASE WHEN task_outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_outcomes,
+                          SUM(CASE WHEN task_outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_outcomes,
+                          AVG(predicted_reliability) avg_predicted_reliability
+                   FROM tool_guidance_exposures"""
+            ).fetchone()
+            by_type = self._conn.execute(
+                """SELECT guidance_type,COUNT(*) exposures,
+                          SUM(CASE WHEN followed=1 THEN 1 ELSE 0 END) followed,
+                          SUM(CASE WHEN followed=1 AND success=1 THEN 1 ELSE 0 END) followed_success,
+                          AVG(predicted_reliability) avg_predicted_reliability
+                   FROM tool_guidance_exposures GROUP BY guidance_type ORDER BY guidance_type"""
+            ).fetchall()
+            recent = self._conn.execute(
+                """SELECT exposure_id,task_id,task_type,guidance_type,guidance_key,recommended_tool,
+                          predicted_reliability,followed,success,task_outcome,created_at,resolved_at
+                   FROM tool_guidance_exposures ORDER BY created_at DESC LIMIT ?""",
+                (max(1, min(int(limit), 250)),),
+            ).fetchall()
+            execution = self._conn.execute(
+                "SELECT COUNT(*) count,SUM(success) successes FROM tool_executions"
+            ).fetchone()
+            workflow = self._conn.execute(
+                """SELECT COUNT(*) strategies,
+                          SUM(CASE WHEN success_count+failure_count>=4 AND distinct_tasks>=3 THEN 1 ELSE 0 END) evaluable
+                   FROM tool_workflow_stats"""
+            ).fetchone()
+        exposures = int(aggregate["exposures"] or 0)
+        resolved = int(aggregate["resolved"] or 0)
+        followed = int(aggregate["followed"] or 0)
+        followed_success = int(aggregate["followed_success"] or 0)
+        return {
+            "exposures": exposures,
+            "resolved": resolved,
+            "followed": followed,
+            "not_followed": int(aggregate["not_followed"] or 0),
+            "follow_rate": round(followed / resolved, 6) if resolved else None,
+            "followed_success_rate": round(followed_success / followed, 6) if followed else None,
+            "followed_success": followed_success,
+            "followed_failure": int(aggregate["followed_failure"] or 0),
+            "positive_task_outcomes": int(aggregate["positive_outcomes"] or 0),
+            "negative_task_outcomes": int(aggregate["negative_outcomes"] or 0),
+            "avg_predicted_reliability": (
+                round(float(aggregate["avg_predicted_reliability"]), 6)
+                if aggregate["avg_predicted_reliability"] is not None else None
+            ),
+            "tool_executions": int(execution["count"] or 0),
+            "tool_execution_success_rate": round(
+                int(execution["successes"] or 0) / max(1, int(execution["count"] or 0)), 6
+            ),
+            "workflow_strategies": int(workflow["strategies"] or 0),
+            "evaluable_workflows": int(workflow["evaluable"] or 0),
+            "by_type": [dict(row) for row in by_type],
+            "recent": [dict(row) for row in recent],
+            "ready_for_comparison": followed >= 20,
+            "claim_boundary": (
+                "Follow-through is observational: it shows whether reinforced guidance preceded a matching tool or "
+                "workflow and its recorded result. It does not prove that guidance caused the outcome."
+            ),
+        }
+
+    def evidence_hierarchy_snapshot(self, *, limit: int = 24) -> dict[str, Any]:
+        """Build a read-only hierarchy of raw evidence, supported claims, and bundle candidates."""
+
+        bounded = max(1, min(int(limit), 80))
+        with self._lock:
+            supported_rows = self._conn.execute(
+                """SELECT m.id,m.kind,m.content,m.confidence,m.currentness_confidence,m.dirty,
+                          COUNT(d.evidence_id) evidence_count
+                   FROM memories m JOIN memory_dependencies d ON d.memory_id=m.id AND d.active=1
+                   WHERE m.state IN ('active','cold')
+                   GROUP BY m.id HAVING COUNT(d.evidence_id)>0
+                   ORDER BY m.dirty ASC,COUNT(d.evidence_id) DESC,m.updated_at DESC LIMIT ?""",
+                (bounded,),
+            ).fetchall()
+            structured_rows = self._conn.execute(
+                """SELECT subject,predicate,COUNT(*) member_count,AVG(confidence) avg_confidence,
+                          SUM(CASE WHEN dirty=1 THEN 1 ELSE 0 END) dirty_count
+                   FROM memories
+                   WHERE state IN ('active','cold') AND subject IS NOT NULL AND subject<>''
+                   GROUP BY subject,predicate HAVING COUNT(*)>=2
+                   ORDER BY COUNT(*) DESC,subject LIMIT ?""",
+                (bounded,),
+            ).fetchall()
+            source_rows = self._conn.execute(
+                """SELECT source_category,kind,COUNT(*) member_count,AVG(confidence) avg_confidence
+                   FROM memories WHERE state IN ('active','cold')
+                   GROUP BY source_category,kind HAVING COUNT(*)>=3
+                   ORDER BY COUNT(*) DESC LIMIT ?""",
+                (bounded,),
+            ).fetchall()
+            total_memories = int(
+                self._conn.execute("SELECT COUNT(*) count FROM memories WHERE state IN ('active','cold')").fetchone()["count"]
+            )
+            dependency_count = int(
+                self._conn.execute("SELECT COUNT(*) count FROM memory_dependencies WHERE active=1").fetchone()["count"]
+            )
+            supported: list[dict[str, Any]] = []
+            for row in supported_rows:
+                item = dict(row)
+                evidence = self._conn.execute(
+                    """SELECT e.id,e.kind,e.state,e.content,e.source_category,d.relation,d.weight
+                       FROM memory_dependencies d JOIN memories e ON e.id=d.evidence_id
+                       WHERE d.memory_id=? AND d.active=1 ORDER BY d.weight DESC,e.updated_at DESC LIMIT 8""",
+                    (row["id"],),
+                ).fetchall()
+                item["evidence"] = [dict(record) for record in evidence]
+                item["status"] = "needs_repair" if item["dirty"] else "supported"
+                supported.append(item)
+        return {
+            "raw_evidence_count": total_memories,
+            "dependency_count": dependency_count,
+            "supported_claims": supported,
+            "structured_bundles": [dict(row) for row in structured_rows],
+            "source_bundles": [dict(row) for row in source_rows],
+            "summary_candidates": sum(
+                1 for row in structured_rows if int(row["dirty_count"] or 0) == 0 and int(row["member_count"] or 0) >= 3
+            ),
+            "levels": [
+                {"level": "raw", "label": "Raw episodes and observations", "mutable": False},
+                {"level": "claim", "label": "Claims with explicit evidence links", "mutable": True},
+                {"level": "bundle", "label": "Read-only summary candidates", "mutable": False},
+            ],
+            "claim_boundary": (
+                "Bundles are navigation and evaluation candidates, not generated truths. Raw evidence remains "
+                "addressable and no summary memory is written automatically."
+            ),
+        }
+
+    def sleep_hypotheses_snapshot(self, *, limit: int = 300) -> dict[str, list[dict[str, Any]]]:
+        """Translate Sleep proposals into testable post-run observational hypotheses."""
+
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT p.proposal_id,p.run_id,p.kind,p.src_id,p.dst_id,p.score,p.evidence_count,
+                          p.rationale,p.created_at,r.mode,r.completed_at,
+                          (SELECT COUNT(DISTINCT u.task_id) FROM usage_records u
+                           WHERE u.used=1 AND u.memory_id IN (p.src_id,p.dst_id)
+                             AND u.created_at>=COALESCE(r.completed_at,r.started_at)) post_use_tasks,
+                          (SELECT COUNT(DISTINCT u.task_id) FROM usage_records u
+                           WHERE u.used=1 AND u.outcome IN ('helpful','validated')
+                             AND u.memory_id IN (p.src_id,p.dst_id)
+                             AND COALESCE(u.resolved_at,u.created_at)>=COALESCE(r.completed_at,r.started_at)) positive_tasks,
+                          (SELECT COUNT(DISTINCT u.task_id) FROM usage_records u
+                           WHERE u.used=1 AND u.outcome IN ('harmful','corrected')
+                             AND u.memory_id IN (p.src_id,p.dst_id)
+                             AND COALESCE(u.resolved_at,u.created_at)>=COALESCE(r.completed_at,r.started_at)) negative_tasks,
+                          CASE WHEN EXISTS(
+                            SELECT 1 FROM sleep_edge_changes c WHERE c.run_id=p.run_id
+                              AND c.src_id=p.src_id AND c.dst_id=p.dst_id
+                          ) OR EXISTS(
+                            SELECT 1 FROM sleep_state_changes s WHERE s.run_id=p.run_id
+                              AND s.memory_id=p.src_id
+                          ) THEN 1 ELSE 0 END applied
+                   FROM sleep_proposals p JOIN sleep_runs r ON r.run_id=p.run_id
+                   ORDER BY p.created_at DESC,p.score DESC LIMIT ?""",
+                (max(1, min(int(limit), 1000)),),
+            ).fetchall()
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            item = dict(row)
+            applied = bool(item["applied"])
+            observations = int(item["post_use_tasks"] or 0)
+            item["hypothesis"] = _sleep_hypothesis_text(str(item["kind"] or "proposal"))
+            item["success_metric"] = "Helpful or validated future use without harmful/corrected use."
+            item["causal_status"] = (
+                "observational_after_apply" if applied else "proposal_only_no_exposure"
+            )
+            item["evidence_ready"] = applied and observations >= 8
+            grouped.setdefault(str(item["run_id"]), []).append(item)
+        return grouped
+
     def stats(self) -> dict[str, Any]:
         with self._lock:
             state_rows = self._conn.execute("SELECT state,COUNT(*) AS n FROM memories GROUP BY state").fetchall()
@@ -2510,6 +3327,10 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM metacognitive_predictions) metacognitive_predictions, "
                 "(SELECT COUNT(*) FROM metacognitive_predictions "
                 " WHERE outcome IN ('helpful','validated','harmful','corrected')) metacognitive_labels, "
+                "(SELECT COUNT(*) FROM task_outcome_labels WHERE active=1) task_outcome_labels, "
+                "(SELECT COUNT(*) FROM evaluation_cases WHERE active=1) evaluation_cases, "
+                "(SELECT COUNT(*) FROM evaluation_runs WHERE status='completed') evaluation_runs, "
+                "(SELECT COUNT(*) FROM tool_guidance_exposures) tool_guidance_exposures, "
                 "(SELECT COUNT(*) FROM benchmark_runs WHERE status='completed') benchmark_runs, "
                 "(SELECT COUNT(*) FROM pruning_regret) pruning_regrets, "
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
@@ -2973,10 +3794,16 @@ class CortexStore:
             "sleep_edge_changes": [dict(row) for row in sleep_edge_change_rows],
             "sleep_state_changes": [dict(row) for row in sleep_state_change_rows],
             "sleep_effects": {str(row["run_id"]): dict(row) for row in sleep_effect_rows},
+            "sleep_hypotheses": self.sleep_hypotheses_snapshot(),
             "capacity_impact_by_day": [dict(row) for row in capacity_impact_rows],
+            "outcome_lab": self.outcome_lab_snapshot(),
+            "evaluations": self.evaluation_snapshot(),
+            "evidence_hierarchy": self.evidence_hierarchy_snapshot(),
+            "tool_evaluation": self.tool_evaluation_snapshot(),
             "metacognition": {
                 "mode": str(metacognition_summary.get("latest_mode") or "shadow"),
                 "summary": metacognition_summary,
+                "enforcement_gate": self.metacognition_enforcement_gate(),
                 "calibration_bins": metacognition_bins,
                 "by_day": [dict(row) for row in metacognition_day_rows],
                 "by_source": [dict(row) for row in metacognition_source_rows],
@@ -3300,6 +4127,21 @@ def _retention_score(memory: dict[str, Any]) -> float:
     if int(memory.get("duplicate_count", 0)) > 0:
         score -= min(0.12, 0.03 * int(memory["duplicate_count"]))
     return _clamp(score)
+
+
+def _sleep_hypothesis_text(kind: str) -> str:
+    category = kind.casefold()
+    if category in {"association", "association_reinforcement"}:
+        return "If this evidence-backed connection is applied, future cues should retrieve both memories more reliably."
+    if category in {"edge_downscale", "lifecycle"}:
+        return "If this cooling or pruning change is applied, context cost should fall without later pruning regret."
+    if category == "consolidation":
+        return "If these duplicates are consolidated, retrieval redundancy should fall without losing labeled recall."
+    if category in {"interference_review", "conflict"}:
+        return "If this interference is resolved, competing-fact errors should fall on time-labeled questions."
+    if category == "dependency_repair":
+        return "If dependent evidence is repaired, unsupported active inference should fall without hiding valid claims."
+    return "If this proposal is applied, its named quality metric should improve without harming retrieval or reversibility."
 
 
 def _periods_overlap(
