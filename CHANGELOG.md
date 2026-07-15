@@ -27,6 +27,7 @@
 - added schema 15 typed operator-review decisions and a unified, reversible Review Inbox for cleanup, connection, conflict, claim, and real-answer training;
 - added schema 16 policy candidates, evidence replay, new-review shadow gates, explicit scoped/core promotion, active policy versions, and rollback;
 - added schema 17 per-review reach controls: item-only decisions stay out of policy training, eligible exact duplicates can be handled together without generalizing, and only explicit Teach Kaya choices feed the compiler;
+- simplified Train Kaya reviews into action first, reach second, and an optional action-specific reason; no taxonomy choice blocks a decision, and free-form or no-reason paths remain valid;
 - added a guided Train Kaya dashboard path with five progress stages, next-action guidance, inspectable proposed standards, and active-policy monitoring;
 - wired promoted operator policies into bounded automatic-write admission, Sleep connection witnesses, retrieval ranking, and lifecycle retention without allowing code self-modification or bypassing existing safety gates;
 - stopped promoting raw tool executions and aggregate telemetry into recallable memory while preserving the dedicated tool execution, statistics, and workflow ledgers;
