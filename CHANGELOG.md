@@ -10,6 +10,11 @@
 - added explicit reversible apply mode plus `sleep-undo`; default scheduling remains shadow-only;
 - added an optional provider reflection stage with a separate per-run token ceiling, strict output validation, proposal-only writes, and zero-token default;
 - added nightly low-priority systemd scheduling, schema 6 run/evidence/proposal/change records, and dashboard observability;
+- expanded dashboard Sleep observability with schedule state, selectable run history, exact proposal and before/after change ledgers, reversals, and clearly non-causal post-run observations;
+- reorganized Brain Health into recall integrity, memory quality, learning-loop, and Sleep-maintenance layers;
+- added a daily Accuracy × capacity view that compares outcome-backed memory helpfulness, stored capacity, and average recall context with visible sample size and descriptive-only correlation;
+- fixed Timeline totals and memory-type charts to use complete daily aggregates instead of the 1,000-row interactive-detail cap;
+- added schema 7 metacognitive prediction records, conservative outcome-band calibration, shadow use/verify/abstain decisions, and a dedicated Trust monitor with Brier/ECE evidence;
 - added psychology/neuroscience design notes with primary-source references and explicit software/biology boundaries;
 - added Sleep safety, idempotency, budget, outage, and reversibility tests.
 

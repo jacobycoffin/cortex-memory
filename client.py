@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .metacognition import assess_retrieval
 from .retrieval import MemoryRetriever
 from .security import sanitize_memory
 from .sleep import SleepConfig, run_sleep
@@ -112,6 +113,15 @@ class CortexMemory:
             token_budget=token_budget,
             include_archived=include_archived,
         )
+        assessments = []
+        for result in results:
+            prior = assess_retrieval(result)
+            learned = self.store.calibrate_metacognitive_probability(
+                prior.raw_probability,
+                task_type=task_type,
+                source_category=prior.source_category,
+            )
+            assessments.append(assess_retrieval(result, calibration=learned))
         items = [(str(result.memory["id"]), float(result.score)) for result in results]
         task_id = self.store.create_usage_batch(
             items,
@@ -121,9 +131,15 @@ class CortexMemory:
             recall_mode="external_adapter",
             requested_budget=token_budget,
             estimated_tokens=sum(int(result.estimated_tokens) for result in results),
+            metacognitive_assessments=[assessment.as_record() for assessment in assessments],
+            metacognition_mode="shadow",
         )
         memories = [result.as_dict() for result in results]
+        assessment_by_id = {assessment.memory_id: assessment for assessment in assessments}
         for memory in memories:
+            assessment = assessment_by_id.get(str(memory["id"]))
+            if assessment:
+                memory["metacognition"] = assessment.as_record()
             self.store.log_access(
                 str(memory["id"]),
                 "selected",

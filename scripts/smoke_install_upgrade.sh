@@ -37,6 +37,7 @@ for relative_path in \
   favicon.svg \
   favicon.ico \
   apple-touch-icon.png \
+  metacognition.py \
   plugin.yaml \
   sleep.py \
   store.py \

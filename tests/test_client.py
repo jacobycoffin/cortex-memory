@@ -26,6 +26,8 @@ class CortexClientTests(unittest.TestCase):
                     task_type="deployment",
                 )
                 self.assertEqual(batch.memories[0]["id"], memory_id)
+                self.assertIn("metacognition", batch.memories[0])
+                self.assertIn(batch.memories[0]["metacognition"]["decision"], {"use", "verify", "abstain"})
                 self.assertIn("fallible evidence", batch.context())
                 affected = batch.finish([memory_id], outcome="helpful")
                 self.assertEqual(affected, [memory_id])

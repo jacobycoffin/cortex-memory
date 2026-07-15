@@ -1,6 +1,6 @@
 name: cortex
 version: 0.3.0-dev.1
-description: "Cortex Memory's Hermes adapter: attention-gated recall, workflow learning, offline consolidation, and reversible self-repair."
+description: "Cortex Memory's Hermes adapter: attention-gated recall, source monitoring, workflow learning, offline consolidation, and reversible self-repair."
 hooks:
   - on_memory_write
   - on_pre_compress

@@ -41,6 +41,10 @@ Cortex does **not** simulate a brain. Terms such as attention, activation, conso
 
 - [Schultz, Dopamine reward prediction error coding (2016)](https://pubmed.ncbi.nlm.nih.gov/27069377/) — review of prediction-error signals. Cortex uses outcome deltas only as a loose inspiration; it contains no dopamine model.
 
+### Metamemory and monitoring
+
+- [Ryals et al., DLPFC stimulation improves memory monitoring (2016)](https://pubmed.ncbi.nlm.nih.gov/26970142/) — memory-monitoring judgments improved without improving memory performance itself. This motivates separating Cortex retrieval from its reliability monitor; it does not imply that the software reproduces prefrontal anatomy.
+
 ## Anatomy without mythology
 
 Human memory depends on distributed, interacting systems. A few careful lessons are useful for software design:
@@ -53,6 +57,7 @@ Human memory depends on distributed, interacting systems. A few careful lessons 
 | Memories can become labile and update after retrieval. | Version corrections and invalidate derived beliefs when evidence changes. | Software revision does not reproduce molecular reconsolidation. |
 | Forgetting can reduce interference and reflect changing relevance. | Cool low-value evidence reversibly and measure pruning regret. | Age alone does not prove a memory is biologically or computationally useless. |
 | Skill learning differs from one-shot declarative recall. | Learn tool procedures only from repeated, outcome-backed traces. | Tool statistics are not basal-ganglia circuitry. |
+| Memory performance and confidence monitoring can dissociate. | Estimate reliability after retrieval and calibrate it against later outcomes. | A probability table is not a prefrontal cortex or conscious introspection. |
 
 The amygdala and emotional salience are intentionally **not** modeled. User emotion is not a safe proxy for factual importance, and amplifying emotionally charged content could worsen agent behavior.
 
@@ -69,6 +74,7 @@ The amygdala and emotional salience are intentionally **not** modeled. User emot
 | Adaptive forgetting | retention score, cold/archive states, regret search | storage size, latency, pruning regret | no pruning; age-only; adaptive retention |
 | Procedural reinforcement | single-call and ordered workflow statistics | first-tool accuracy, attempts, completion rate | no guidance; tool-only; workflow guidance |
 | Temporal context | validity intervals and supersession | historical/current question accuracy | time-unaware ranker |
+| Metamemory | pre-outcome use/verify/abstain monitor with outcome calibration | Brier score, expected calibration error, selective risk | rank-only baseline; monitor shadow vs enforcement |
 
 The feature is justified only when the relevant metric improves without unacceptable harm elsewhere.
 
@@ -85,6 +91,7 @@ Implemented in 0.2:
 - versioned correction and evidence invalidation;
 - adaptive reversible lifecycle, consolidation, and pruning-regret tracking;
 - live dashboard evidence for recall cost and behavior.
+- shadow metacognitive source monitoring with inspectable probabilities, decisions, outcomes, and calibration curves.
 
 Not implemented or not claimed:
 

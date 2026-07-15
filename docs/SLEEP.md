@@ -17,7 +17,7 @@ Normal agent activity is the “wake” phase: new events arrive, memories are r
 
 The default and recommended deployment mode is shadow-only. Sleep writes a report and proposals without changing retrieval state. A separate explicit `--mode apply --apply` path exists for bounded, reversible association, downscaling, and lifecycle changes after shadow evidence has been reviewed. Sleep never hard-deletes memories or silently applies model-generated conclusions. Every proposal must name its evidence and reason. Pinned, protected, prospective, quarantined, and corrected memories keep their existing lifecycle protections.
 
-The Brain dashboard exposes this safe default under **Cognition → Cortex Sleep**. Its **Start shadow Sleep** control runs the deterministic pass with provider reflection disabled, rejects concurrent runs, and streams the current phase—episode replay, connection review, pruning review, lifecycle preview, consolidation, and report finalization—before refreshing the proposal list. Apply mode remains CLI/operator-only.
+The Brain dashboard exposes this safe default under **Cognition → Cortex Sleep**. Its **Start shadow Sleep** control runs the deterministic pass with provider reflection disabled, rejects concurrent runs, and streams the current phase—episode replay, connection review, pruning review, lifecycle preview, consolidation, and report finalization. The same view reads the installed timer when available, keeps a selectable run history, expands proposals into their source and destination memories, and shows applied or reversed edge/state journals separately. Apply mode remains CLI/operator-only.
 
 ## A bounded cycle
 
@@ -105,6 +105,8 @@ When an operator configures a value above zero:
 
 Every reflection proposal must cite active memory IDs, fit a typed proposal schema, stay within the run’s candidate scope, and pass deterministic validation. A reflection call cannot directly change memory state, prune evidence, strengthen an edge, or create an authoritative fact. With the budget at zero, the cycle skips provider reflection entirely and still produces its deterministic maintenance report.
 
+The Insights page plots daily stored-memory capacity with resolved helpful/harmful outcome labels and reports average recall context alongside it. That rate is an outcome-backed memory-helpfulness proxy. It is not general agent answer accuracy, and days without helpful or harmful labels remain visibly unlabeled. Any capacity/quality correlation is descriptive, not proof that growth or Sleep caused the change.
+
 The included Linux timer reads `$HERMES_HOME/cortex/sleep.env`. The installer creates it with permission mode `0600` and only `CORTEX_SLEEP_TOKEN_BUDGET=0`. An operator who deliberately enables reflection supplies `CORTEX_SLEEP_ENDPOINT`, `CORTEX_SLEEP_MODEL`, `CORTEX_SLEEP_TOKEN_BUDGET`, `CORTEX_SLEEP_API_KEY_ENV`, and the corresponding key variable there. Run a manual shadow cycle and inspect the report before relying on the schedule.
 
 ## What a Sleep report should make clear
@@ -117,7 +119,9 @@ A useful report explains rather than anthropomorphizes:
 - the evidence IDs and dependencies for every proposed summary or relation;
 - why a proposal was rejected or protected;
 - estimated context, provider tokens, local runtime, and provider cost when applicable;
-- the exact operator action required to review, apply, or discard proposals.
+- the exact operator action required to review, apply, or discard proposals;
+- the exact before-and-after values for any applied edge or lifecycle transition, including whether it was later reversed;
+- how many labeled recall outcomes occurred after the run, while stating that temporal sequence alone does not establish causation.
 
 Until longitudinal and ablation tests show otherwise, Cortex Sleep should be described as an experimental maintenance design. The relevant success criteria are measurable software outcomes—retrieval quality, contradiction handling, context cost, pruning regret, restoration rate, and unsupported-inference rate—not resemblance to human sleep.
 

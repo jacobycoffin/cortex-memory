@@ -784,8 +784,8 @@
     .insight-note p, .health-action p, .health-area p, .glossary-row p { margin: 4px 0 0; color: var(--muted); font-size: .66rem; line-height: 1.45; }
     .trend-panel { margin-bottom: 14px; }
     .trend-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; }
-    .trend-legend-item { display: inline-grid; grid-template-columns: 8px auto; gap: 6px; align-items: center; color: var(--muted); font-size: .64rem; }
-    .trend-legend-item i { width: 8px; height: 8px; }
+    .trend-legend-item { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: .64rem; }
+    .trend-legend-item i { flex: 0 0 auto; width: 8px; height: 8px; }
     .trend-legend-item strong { color: var(--text); font-family: ui-monospace,monospace; font-size: .62rem; font-weight: 650; }
     .trend-chart { display: block; width: 100%; height: auto; min-height: 260px; overflow: visible; }
     .funnel-list { display: grid; gap: 15px; }
@@ -1065,6 +1065,138 @@
     .sleep-step-list { display: grid; gap: 7px; margin-top: 12px; }
     .sleep-step { display: grid; grid-template-columns: 56px minmax(0,1fr); gap: 9px; color: var(--muted); font-size: .61rem; line-height: 1.35; }
     .sleep-step span { color: var(--faint); font-family: ui-monospace,monospace; text-transform: uppercase; }
+    .sleep-observatory { display: grid; gap: 14px; margin: 20px 0; }
+    .sleep-observatory-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 18px; padding: 5px 0 2px; border-bottom: 3px solid var(--text); }
+    .sleep-observatory-head h2 { margin: 4px 0 6px; font-family: var(--display); font-size: clamp(1.45rem,3vw,2.15rem); font-weight: 540; letter-spacing: -.025em; }
+    .sleep-observatory-head p { max-width: 760px; margin: 0 0 14px; color: var(--muted); font-size: .76rem; line-height: 1.5; }
+    .sleep-command-grid { display: grid; grid-template-columns: minmax(260px,.72fr) minmax(0,1.28fr); gap: 14px; }
+    .sleep-schedule-card { border-left: 3px solid var(--accent); }
+    .sleep-schedule-time { margin-top: 11px; font-family: var(--display); font-size: clamp(1.25rem,2.5vw,1.85rem); line-height: 1.05; overflow-wrap: anywhere; }
+    .sleep-schedule-card > p { margin: 9px 0 0; color: var(--muted); font-size: .69rem; line-height: 1.48; }
+    .sleep-schedule-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+    .sleep-schedule-meta span { padding: 5px 7px; border: 1px solid var(--border); color: var(--text-soft); font-family: ui-monospace,monospace; font-size: .56rem; text-transform: uppercase; }
+    .sleep-run-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); border-top: 1px solid var(--border); }
+    .sleep-run-stat { min-width: 0; padding: 13px 12px 2px 0; }
+    .sleep-run-stat + .sleep-run-stat { padding-left: 12px; border-left: 1px solid var(--border); }
+    .sleep-run-stat strong { display: block; font: 540 1.25rem/1 var(--display); overflow-wrap: anywhere; }
+    .sleep-run-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: .59rem; line-height: 1.35; }
+    .sleep-process-panel { overflow: hidden; }
+    .sleep-process { display: grid; grid-template-columns: repeat(6,minmax(0,1fr)); margin-top: 8px; border: 1px solid var(--border); }
+    .sleep-process article { position: relative; min-width: 0; padding: 14px 12px; background: var(--surface-2); }
+    .sleep-process article + article { border-left: 1px solid var(--border); }
+    .sleep-process article:not(:last-child)::after { content: "→"; position: absolute; z-index: 2; right: -9px; top: 17px; width: 18px; height: 18px; display: grid; place-items: center; background: var(--surface); color: var(--accent); font-family: ui-monospace,monospace; font-size: .62rem; }
+    .sleep-process span { color: var(--accent); font-family: ui-monospace,monospace; font-size: .55rem; letter-spacing: .05em; text-transform: uppercase; }
+    .sleep-process strong { display: block; margin-top: 8px; font-size: .7rem; line-height: 1.3; }
+    .sleep-process p { margin: 6px 0 0; color: var(--muted); font-size: .6rem; line-height: 1.45; }
+    .sleep-audit-layout { display: grid; grid-template-columns: minmax(210px,.28fr) minmax(0,.72fr); gap: 14px; align-items: start; }
+    .sleep-run-browser { position: sticky; top: 62px; overflow: hidden; }
+    .sleep-run-browser-head { display: flex; justify-content: space-between; gap: 8px; padding: 13px 14px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+    .sleep-run-browser-head span { font-size: .7rem; font-weight: 750; }
+    .sleep-run-browser-head small { color: var(--muted); font-size: .57rem; }
+    #sleep-run-history { max-height: 640px; overflow-y: auto; }
+    .sleep-run-button { width: 100%; display: grid; gap: 5px; padding: 13px 14px; border: 0; border-bottom: 1px solid var(--border); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+    .sleep-run-button:hover { background: var(--surface-2); }
+    .sleep-run-button.active { background: color-mix(in srgb,var(--accent) 8%,var(--surface-2)); box-shadow: inset 3px 0 0 var(--accent); }
+    .sleep-run-button-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .sleep-run-button strong { font-size: .68rem; }
+    .sleep-run-button-status { color: var(--green); font-family: ui-monospace,monospace; font-size: .53rem; text-transform: uppercase; }
+    .sleep-run-button-status.failed { color: var(--red); }
+    .sleep-run-button small { color: var(--muted); font-size: .58rem; line-height: 1.35; }
+    .sleep-run-audit { min-width: 0; }
+    .sleep-effect-board { display: grid; grid-template-columns: minmax(0,1.05fr) minmax(0,.95fr); gap: 10px; margin: 12px 0 18px; }
+    .sleep-effect-card { min-width: 0; padding: 14px; border: 1px solid var(--border); background: var(--surface-2); }
+    .sleep-effect-card.proposed { border-left: 3px solid var(--amber); }
+    .sleep-effect-card.applied { border-left: 3px solid var(--green); }
+    .sleep-effect-card.observed { border-left: 3px solid var(--blue); }
+    .sleep-effect-card span { color: var(--faint); font-family: ui-monospace,monospace; font-size: .55rem; text-transform: uppercase; }
+    .sleep-effect-card strong { display: block; margin-top: 8px; font-family: var(--display); font-size: 1.08rem; }
+    .sleep-effect-card p { margin: 6px 0 0; color: var(--muted); font-size: .62rem; line-height: 1.45; }
+    .sleep-effect-signals { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .sleep-effect-signals b { padding: 4px 6px; border: 1px solid var(--border); color: var(--text-soft); font: 500 .55rem/1.2 ui-monospace,monospace; }
+    .sleep-ledger-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .sleep-ledger-head h3 { margin: 0; font-size: .8rem; }
+    .sleep-ledger-head p { margin: 4px 0 0; color: var(--muted); font-size: .62rem; }
+    .sleep-ledger-filters { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+    .sleep-ledger-filters .ghost-btn { min-height: 28px; padding: 0 8px; font-size: .57rem; }
+    .sleep-ledger-filters .active { border-color: var(--accent); color: var(--accent); }
+    .sleep-proposal-row { grid-template-columns: minmax(92px,118px) minmax(0,1fr) minmax(96px,auto); }
+    .sleep-memory-pair { display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr); gap: 6px; align-items: stretch; margin-top: 9px; }
+    .sleep-memory-ref { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text-soft); text-align: left; font: inherit; cursor: pointer; }
+    .sleep-memory-ref:hover { border-color: var(--accent); }
+    .sleep-memory-ref span { display: block; color: var(--faint); font-family: ui-monospace,monospace; font-size: .52rem; text-transform: uppercase; }
+    .sleep-memory-ref strong { display: -webkit-box; margin-top: 5px; overflow: hidden; color: var(--text-soft); font-size: .62rem; font-weight: 600; line-height: 1.38; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+    .sleep-memory-arrow { align-self: center; color: var(--accent); font-family: ui-monospace,monospace; font-size: .62rem; }
+    .sleep-change-detail { margin-top: 7px; color: var(--muted); font-family: ui-monospace,monospace; font-size: .55rem; line-height: 1.4; overflow-wrap: anywhere; }
+    .sleep-proposal-state.applied { color: var(--green); }
+    .sleep-proposal-state.proposed { color: var(--amber); }
+    .sleep-proposal-state.reversed { color: var(--blue); }
+    .health-domain-grid { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; border: 1px solid var(--border); }
+    .health-domain-grid .health-area { grid-template-columns: 10px minmax(0,1fr); padding: 16px 14px; border-bottom: 0; background: var(--surface-2); }
+    .health-domain-grid .health-area + .health-area { border-left: 1px solid var(--border); }
+    .health-domain-grid .health-area-status { grid-column: 2; justify-self: start; padding: 4px 6px; border: 1px solid var(--border); }
+    #health-maintenance .sleep-effect-card { margin-top: 8px; }
+    .health-technical { margin-top: 14px; }
+    .health-technical > summary { padding: 16px 18px; cursor: pointer; color: var(--text-soft); font-size: .7rem; font-weight: 750; }
+    .health-technical[open] > summary { border-bottom: 1px solid var(--border); }
+    .capacity-impact-panel { margin-bottom: 18px; }
+    .capacity-impact-summary { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin-bottom: 14px; border: 1px solid var(--border); background: var(--surface-2); }
+    .capacity-impact-stat { min-width: 0; padding: 12px 14px; }
+    .capacity-impact-stat + .capacity-impact-stat { border-left: 1px solid var(--border); }
+    .capacity-impact-stat strong { display: block; font: 540 1.15rem/1 var(--display); overflow-wrap: anywhere; }
+    .capacity-impact-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: .59rem; line-height: 1.35; }
+    .capacity-impact-chart { display: block; width: 100%; height: auto; min-height: 260px; overflow: visible; }
+    .capacity-area { opacity: .1; }
+    .capacity-line, .accuracy-line { fill: none; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+    .accuracy-line { stroke-width: 3; }
+    .capacity-impact-note { margin: 8px 0 0; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: .61rem; line-height: 1.48; }
+    .metacognition-banner { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 18px; align-items: center; padding: 18px 20px; border-left: 3px solid var(--blue); background: color-mix(in srgb,var(--blue) 5%,var(--surface)); }
+    .metacognition-banner h2 { margin: 4px 0 6px; font-family: var(--display); font-size: 1.2rem; font-weight: 540; }
+    .metacognition-banner p { max-width: 760px; margin: 0; color: var(--muted); font-size: .69rem; line-height: 1.5; }
+    .monitor-mode { min-width: 150px; padding: 11px 13px; border: 1px solid var(--border); background: var(--surface-2); text-align: right; }
+    .monitor-mode strong { display: block; font-size: .72rem; }
+    .monitor-mode span { display: block; margin-top: 4px; color: var(--muted); font-family: ui-monospace,monospace; font-size: .55rem; text-transform: uppercase; }
+    .metacognition-flow { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); margin: 14px 0; border: 1px solid var(--border); }
+    .metacognition-step { position: relative; min-width: 0; padding: 14px; background: var(--surface-2); }
+    .metacognition-step + .metacognition-step { border-left: 1px solid var(--border); }
+    .metacognition-step:not(:last-child)::after { content: "→"; position: absolute; z-index: 2; right: -9px; top: 17px; width: 18px; height: 18px; display: grid; place-items: center; background: var(--surface); color: var(--blue); font-family: ui-monospace,monospace; font-size: .62rem; }
+    .metacognition-step span { color: var(--blue); font-family: ui-monospace,monospace; font-size: .53rem; text-transform: uppercase; }
+    .metacognition-step strong { display: block; margin-top: 7px; font-size: .69rem; }
+    .metacognition-step p { margin: 5px 0 0; color: var(--muted); font-size: .59rem; line-height: 1.42; }
+    .calibration-chart { display: block; width: 100%; height: auto; min-height: 300px; overflow: visible; }
+    .calibration-ideal { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 5 5; }
+    .calibration-observed { fill: none; stroke: var(--blue); stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+    .calibration-point { fill: var(--surface); stroke: var(--blue); stroke-width: 3; }
+    .calibration-note { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); color: var(--muted); font-size: .61rem; line-height: 1.48; }
+    .decision-mix { display: grid; gap: 13px; margin-top: 14px; }
+    .decision-mix-row { display: grid; grid-template-columns: 64px minmax(0,1fr) 54px; gap: 10px; align-items: center; }
+    .decision-mix-row span { color: var(--text-soft); font-size: .64rem; font-weight: 700; text-transform: capitalize; }
+    .decision-mix-row strong { text-align: right; font-family: ui-monospace,monospace; font-size: .62rem; }
+    .decision-fill.use { background: var(--green); }
+    .decision-fill.verify { background: var(--amber); }
+    .decision-fill.abstain { background: var(--red); }
+    .source-monitor-list { display: grid; gap: 0; }
+    .source-monitor-row { display: grid; grid-template-columns: minmax(130px,1fr) 92px 92px 120px; gap: 12px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--border); }
+    .source-monitor-row:last-child { border-bottom: 0; }
+    .source-monitor-row span { color: var(--muted); font-size: .61rem; }
+    .source-monitor-row strong { font-family: ui-monospace,monospace; font-size: .63rem; font-weight: 650; }
+    .prediction-list { display: grid; gap: 8px; }
+    .prediction-row { display: grid; grid-template-columns: minmax(0,1fr) 92px 92px; gap: 12px; align-items: start; padding: 13px 14px; border: 1px solid var(--border); background: var(--surface-2); }
+    .prediction-memory { min-width: 0; border: 0; padding: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+    .prediction-memory strong { display: block; overflow: hidden; color: var(--text); font-size: .68rem; line-height: 1.4; text-overflow: ellipsis; white-space: nowrap; }
+    .prediction-memory p { margin: 5px 0 0; color: var(--muted); font-size: .59rem; line-height: 1.43; }
+    .prediction-signals { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .prediction-signals span { padding: 3px 5px; border: 1px solid var(--border); color: var(--faint); font: 500 .52rem/1.2 ui-monospace,monospace; }
+    .prediction-score { text-align: right; }
+    .prediction-score strong { display: block; font: 540 1.05rem/1 var(--display); }
+    .prediction-score span { display: block; margin-top: 5px; color: var(--muted); font-size: .52rem; text-transform: uppercase; }
+    .prediction-status { display: grid; gap: 6px; justify-items: end; }
+    .decision-chip { justify-self: end; padding: 5px 7px; border: 1px solid currentColor; font: 650 .54rem/1 ui-monospace,monospace; text-transform: uppercase; }
+    .decision-chip.use { color: var(--green); }
+    .decision-chip.verify { color: var(--amber); }
+    .decision-chip.abstain { color: var(--red); }
+    .decision-chip.pending, .decision-chip.used, .decision-chip.ignored, .decision-chip.withheld { color: var(--muted); }
+    .decision-chip.helpful, .decision-chip.validated { color: var(--green); }
+    .decision-chip.harmful, .decision-chip.corrected { color: var(--red); }
     .settings-shortcut { width: auto; padding: 0 11px; }
     .settings-shortcut .settings-label { font-size: .69rem; }
     .settings-grid { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(280px,.65fr); gap: 14px; }
@@ -1084,10 +1216,13 @@
     .settings-security-card { padding: 15px; border: 1px solid var(--border); background: var(--surface-2); }
     .settings-security-card strong { display: block; font-size: .75rem; }
     .settings-security-card p { margin: 6px 0 13px; color: var(--muted); font-size: .68rem; line-height: 1.5; }
-    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid { grid-template-columns: 1fr; } }
+    @media (max-width: 1100px) { .sleep-process { grid-template-columns: repeat(3,minmax(0,1fr)); } .sleep-process article:nth-child(4) { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:nth-child(5), .sleep-process article:nth-child(6) { border-top: 1px solid var(--border); } .health-domain-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .health-domain-grid .health-area:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(4) { border-top: 1px solid var(--border); } }
+    @media (max-width: 920px) { .principle-grid { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-grid, .sleep-command-grid, .sleep-audit-layout { grid-template-columns: 1fr; } .sleep-run-browser { position: static; } #sleep-run-history { max-height: 290px; } }
     @media (max-width: 920px) { .settings-grid { grid-template-columns: 1fr; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: repeat(2,minmax(0,1fr)); } }
-    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-cycle-head { align-items: stretch; flex-direction: column; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
+    @media (max-width: 620px) { .principle-grid { grid-template-columns: 1fr; } .mode-row { grid-template-columns: 80px minmax(0,1fr); } .mode-stat { grid-column: 2; } .lifecycle-row { grid-template-columns: 70px minmax(0,1fr); } .lifecycle-row > :last-child { grid-column: 2; } .sleep-observatory-head { align-items: stretch; flex-direction: column; } .sleep-controls { justify-content: flex-start; margin-bottom: 12px; } .sleep-process { grid-template-columns: 1fr; } .sleep-process article + article { border-left: 0; border-top: 1px solid var(--border); } .sleep-process article:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .sleep-run-stats, .health-domain-grid, .capacity-impact-summary { grid-template-columns: repeat(2,minmax(0,1fr)); } .sleep-run-stat:nth-child(3), .capacity-impact-stat:nth-child(3) { padding-left: 0; border-left: 0; border-top: 1px solid var(--border); } .sleep-run-stat:nth-child(4), .capacity-impact-stat:nth-child(4) { border-top: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(even) { border-left: 1px solid var(--border); } .health-domain-grid .health-area:nth-child(odd) { border-left: 0; } .health-domain-grid .health-area:nth-child(n+3) { border-top: 1px solid var(--border); } .sleep-effect-board { grid-template-columns: 1fr; } .sleep-ledger-head { align-items: flex-start; flex-direction: column; } .sleep-ledger-filters { justify-content: flex-start; } .sleep-cycle-head { align-items: stretch; flex-direction: column; } .sleep-status-chip { max-width: 100%; align-self: flex-start; } .sleep-proposal-row { grid-template-columns: minmax(72px,92px) minmax(0,1fr); } .sleep-proposal-meta { grid-column: 2; justify-items: start; grid-auto-flow: column; justify-content: start; } .sleep-proposal-state { text-align: left; } .settings-theme-grid, .settings-theme-slot .theme-menu { grid-template-columns: 1fr; } }
     @media (max-width: 430px) { .sleep-metric-grid { grid-template-columns: 1fr; } .sleep-proposal-row { grid-template-columns: 1fr; gap: 6px; } .sleep-proposal-meta { grid-column: 1; } }
+    @media (max-width: 1100px) { .metacognition-flow { grid-template-columns: repeat(2,minmax(0,1fr)); } .metacognition-step:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:nth-child(4) { border-top: 1px solid var(--border); } }
+    @media (max-width: 620px) { .metacognition-banner { grid-template-columns: 1fr; } .monitor-mode { text-align: left; } .metacognition-flow { grid-template-columns: 1fr; } .metacognition-step + .metacognition-step { border-left: 0; border-top: 1px solid var(--border); } .metacognition-step:not(:last-child)::after { content: "↓"; right: 16px; top: auto; bottom: -9px; } .source-monitor-row { grid-template-columns: minmax(0,1fr) 80px; } .source-monitor-row > :nth-child(3), .source-monitor-row > :nth-child(4) { display: none; } .prediction-row { grid-template-columns: minmax(0,1fr) 72px; } .prediction-row > .decision-chip:last-child { grid-column: 2; } }
   </style>
 </head>
 <body>
@@ -1138,9 +1273,10 @@
         <button class="nav-btn" data-view="timeline" aria-selected="false"><span class="nav-icon">03</span><span class="nav-text">Timeline</span></button>
         <button class="nav-btn" data-view="insights" aria-selected="false"><span class="nav-icon">04</span><span class="nav-text">Insights</span></button>
         <button class="nav-btn" data-view="cognition" aria-selected="false"><span class="nav-icon">05</span><span class="nav-text">Cognition</span></button>
-        <button class="nav-btn" data-view="tools" aria-selected="false"><span class="nav-icon">06</span><span class="nav-text">Tool notes</span></button>
-        <button class="nav-btn" data-view="health" aria-selected="false"><span class="nav-icon">07</span><span class="nav-text">Health</span></button>
-        <button class="nav-btn" data-view="explorer" aria-selected="false"><span class="nav-icon">08</span><span class="nav-text">Index</span></button>
+        <button class="nav-btn" data-view="trust" aria-selected="false"><span class="nav-icon">06</span><span class="nav-text">Trust monitor</span></button>
+        <button class="nav-btn" data-view="tools" aria-selected="false"><span class="nav-icon">07</span><span class="nav-text">Tool notes</span></button>
+        <button class="nav-btn" data-view="health" aria-selected="false"><span class="nav-icon">08</span><span class="nav-text">Health</span></button>
+        <button class="nav-btn" data-view="explorer" aria-selected="false"><span class="nav-icon">09</span><span class="nav-text">Index</span></button>
       </nav>
       <div class="sidebar-spacer"></div>
       <div class="brain-mini">
@@ -1280,6 +1416,13 @@
         <section class="view" id="view-insights" aria-labelledby="insights-heading">
           <div class="page-heading"><div><div class="eyebrow">Patterns Cortex can already see</div><h1 id="insights-heading">Insights</h1><p>Useful signals derived from recall, connection, source, and tool-learning activity.</p></div></div>
           <div class="metric-grid" id="insight-metrics"></div>
+          <div class="panel panel-pad capacity-impact-panel">
+            <div class="panel-heading"><div><h2>Accuracy × capacity</h2><p>Does observed memory usefulness hold up as the brain stores more? Daily outcomes are plotted against total stored memories.</p></div><select class="control" id="capacity-impact-range" aria-label="Accuracy and capacity date range"><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="365">Last year</option></select></div>
+            <div class="capacity-impact-summary" id="capacity-impact-summary"></div>
+            <div class="trend-legend" id="capacity-impact-legend"></div>
+            <svg class="capacity-impact-chart" id="capacity-impact-chart" viewBox="0 0 900 330" role="img" aria-label="Daily observed memory helpfulness and stored memory capacity"></svg>
+            <p class="capacity-impact-note" id="capacity-impact-note">This is an outcome-backed memory accuracy proxy, not general answer accuracy. Helpful and validated outcomes count positive; harmful and corrected outcomes count negative; ignored outcomes are shown as coverage but excluded from the rate.</p>
+          </div>
           <div class="panel panel-pad trend-panel">
             <div class="panel-heading"><div><h2>Brain activity by day</h2><p>New memories, new links, lifecycle pruning, and tool calls on the same daily timeline.</p></div><select class="control" id="trends-range" aria-label="Trend date range"><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="90">Last 90 days</option></select></div>
             <div class="trend-legend" id="trend-legend"></div>
@@ -1307,19 +1450,51 @@
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context over time</h2><p>Daily estimated memory tokens injected into prompts</p></div><span class="chip" id="recall-window">No samples</span></div><div class="recall-strip" id="recall-strip"></div></div>
           </div>
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">0 outcomes</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
-          <div class="sleep-grid" id="cortex-sleep">
-            <div class="panel panel-pad">
-              <div class="panel-heading"><div><h2>Cortex Sleep</h2><p>An offline cycle that replays recent experience, looks for useful structure, and proposes careful maintenance.</p></div><div class="sleep-controls"><span class="chip" id="sleep-status" aria-live="polite">Waiting</span><button class="primary-btn" id="sleep-start" type="button">Start shadow Sleep</button></div></div>
-              <div id="sleep-cycle-summary" aria-live="polite"></div>
-              <div class="sleep-progress" id="sleep-progress" hidden aria-live="polite"><div class="sleep-progress-head"><div><strong id="sleep-progress-title">Preparing Sleep</strong><p id="sleep-progress-message">Opening a bounded shadow review.</p></div><span class="sleep-progress-value" id="sleep-progress-value">0%</span></div><div class="sleep-progress-track"><div class="sleep-progress-fill" id="sleep-progress-fill"></div></div><div class="sleep-step-list" id="sleep-step-list"></div></div>
-              <div class="sleep-metric-grid" id="sleep-metrics"></div>
-              <div class="sleep-safety" id="sleep-safety"><span class="sleep-safety-mark">S</span><div><strong>Shadow watches without changing memory.</strong><p>In shadow mode, Cortex records what it would connect, cool, or consolidate. Apply mode may commit only proposals that pass the configured safety gates.</p></div></div>
+          <section class="sleep-observatory" id="cortex-sleep" aria-labelledby="sleep-heading">
+            <div class="sleep-observatory-head">
+              <div><div class="eyebrow">Offline maintenance log</div><h2 id="sleep-heading">Cortex Sleep</h2><p>See when maintenance runs, every rule it checks, what it proposed, what actually changed, and what happened afterward.</p></div>
+              <div class="sleep-controls"><span class="chip" id="sleep-status" aria-live="polite">Waiting</span><button class="primary-btn" id="sleep-start" type="button">Start shadow Sleep</button></div>
             </div>
-            <div class="panel panel-pad">
-              <div class="panel-heading"><div><h2>Recent sleep proposals</h2><p>Potential associations, interference warnings, lifecycle moves, and consolidation candidates from offline review.</p></div><span class="chip" id="sleep-proposal-total">0 proposals</span></div>
-              <div class="sleep-proposal-list" id="sleep-proposal-list"></div>
+            <div class="sleep-command-grid">
+              <div class="panel panel-pad sleep-schedule-card">
+                <div class="sleep-kicker">Schedule</div>
+                <div class="sleep-schedule-time" id="sleep-next-run">Checking timer…</div>
+                <p id="sleep-schedule-copy">Reading the configured maintenance window.</p>
+                <div class="sleep-schedule-meta" id="sleep-schedule-meta"></div>
+              </div>
+              <div class="panel panel-pad">
+                <div class="panel-heading"><div><h2>Run record</h2><p>Completed cycles, proposals, failures, and actual changes.</p></div><span class="chip" id="sleep-run-total">0 runs</span></div>
+                <div class="sleep-run-stats" id="sleep-run-stats"></div>
+              </div>
             </div>
-          </div>
+            <div class="panel panel-pad sleep-process-panel">
+              <div class="panel-heading"><div><h2>Exactly what one cycle does</h2><p>The deterministic path runs locally. Reflection stays off unless an operator gives it a separate budget.</p></div><span class="chip">Bounded · reversible</span></div>
+              <div class="sleep-process" id="sleep-process">
+                <article><span>01 · Replay</span><strong>Revisit older evidence</strong><p>Reads up to 250 episodes older than 12 hours and resolved usage outcomes.</p></article>
+                <article><span>02 · Connect</span><strong>Require repeated witnesses</strong><p>Proposes a link only after the same pair appears in at least two independent replay witnesses.</p></article>
+                <article><span>03 · Interference</span><strong>Find disagreement</strong><p>Flags active structured claims that share a subject and predicate but disagree on value.</p></article>
+                <article><span>04 · Downscale</span><strong>Reduce stale influence</strong><p>Gently lowers weak, old association weights. It does not delete an edge.</p></article>
+                <article><span>05 · Lifecycle</span><strong>Preview cooling and archive</strong><p>Uses age, utility, protection, importance, corrections, and regret—not retrieval count alone.</p></article>
+                <article><span>06 · Consolidate</span><strong>Group near-duplicates</strong><p>Suggests a canonical memory while preserving every source record and its audit history.</p></article>
+              </div>
+            </div>
+            <div class="sleep-progress" id="sleep-progress" hidden aria-live="polite"><div class="sleep-progress-head"><div><strong id="sleep-progress-title">Preparing Sleep</strong><p id="sleep-progress-message">Opening a bounded shadow review.</p></div><span class="sleep-progress-value" id="sleep-progress-value">0%</span></div><div class="sleep-progress-track"><div class="sleep-progress-fill" id="sleep-progress-fill"></div></div><div class="sleep-step-list" id="sleep-step-list"></div></div>
+            <div class="sleep-audit-layout">
+              <aside class="panel sleep-run-browser">
+                <div class="sleep-run-browser-head"><span>Run history</span><small>Select a cycle</small></div>
+                <div id="sleep-run-history"></div>
+              </aside>
+              <div class="panel panel-pad sleep-run-audit">
+                <div class="panel-heading"><div><h2>Selected run</h2><p id="sleep-run-subtitle">Choose a run to inspect its evidence and effects.</p></div><span class="chip" id="sleep-proposal-total">0 records</span></div>
+                <div id="sleep-cycle-summary" aria-live="polite"></div>
+                <div class="sleep-metric-grid" id="sleep-metrics"></div>
+                <div class="sleep-effect-board" id="sleep-effects"></div>
+                <div class="sleep-ledger-head"><div><h3>What it touched</h3><p>Open a memory to inspect its provenance, scores, and other links.</p></div><div class="sleep-ledger-filters" id="sleep-ledger-filters"><button class="ghost-btn active" type="button" data-sleep-filter="all">All</button><button class="ghost-btn" type="button" data-sleep-filter="connections">Connections</button><button class="ghost-btn" type="button" data-sleep-filter="pruning">Cooling / archive</button><button class="ghost-btn" type="button" data-sleep-filter="review">Review</button></div></div>
+                <div class="sleep-proposal-list" id="sleep-proposal-list"></div>
+                <div class="sleep-safety" id="sleep-safety"><span class="sleep-safety-mark">S</span><div><strong>Proposed is not applied.</strong><p>Shadow mode writes an audit report only. Apply mode is operator-only, never hard-deletes a memory, and records reversible before-and-after state for every committed change.</p></div></div>
+              </div>
+            </div>
+          </section>
           <div class="dashboard-grid equal">
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Self-healing trail</h2><p>Cooling, archiving, restoration, and reversible consolidation</p></div></div><div class="lifecycle-feed" id="lifecycle-feed"></div></div>
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Learned workflows</h2><p>Multi-step tool paths reinforced only after distinct successful tasks</p></div></div><div class="lifecycle-feed" id="workflow-feed"></div></div>
@@ -1337,6 +1512,41 @@
           </div>
         </section>
 
+        <section class="view" id="view-trust" aria-labelledby="trust-heading">
+          <div class="page-heading"><div><div class="eyebrow">Metacognition · source monitoring</div><h1 id="trust-heading">Does Cortex know when to doubt itself?</h1><p>Retrieval finds relevant memories. This monitor separately estimates whether each one should be used, verified, or withheld.</p></div></div>
+          <div class="panel metacognition-banner">
+            <div><div class="eyebrow">Safe learning phase</div><h2>Observe the judgments before enforcing them.</h2><p>Shadow mode records the decision and follows it through later outcomes, but it does not remove anything from Kaya’s prompt. Once calibration is trustworthy, enforcement can be enabled deliberately.</p></div>
+            <div class="monitor-mode" id="metacognition-mode"><strong>Shadow mode</strong><span>Observing only</span></div>
+          </div>
+          <div class="metacognition-flow" aria-label="Metacognitive monitoring process">
+            <article class="metacognition-step"><span>01 · Retrieve</span><strong>Find relevant evidence</strong><p>Lexical, semantic, temporal, utility, and graph signals produce recall candidates.</p></article>
+            <article class="metacognition-step"><span>02 · Estimate</span><strong>Predict reliability</strong><p>Source, currentness, prior outcomes, contradictions, and stale risk create a probability.</p></article>
+            <article class="metacognition-step"><span>03 · Decide</span><strong>Use, verify, or abstain</strong><p>The trust decision is independent of the ranking score that found the memory.</p></article>
+            <article class="metacognition-step"><span>04 · Learn</span><strong>Compare with outcomes</strong><p>Helpful and harmful labels reveal whether confidence was calibrated or overconfident.</p></article>
+          </div>
+          <div class="metric-grid" id="metacognition-metrics"></div>
+          <div class="dashboard-grid equal">
+            <div class="panel panel-pad">
+              <div class="panel-heading"><div><h2>Calibration curve</h2><p>Predicted reliability versus observed helpfulness · five probability bands · explicit outcomes only</p></div><span class="chip" id="calibration-samples">0 labels</span></div>
+              <svg class="calibration-chart" id="calibration-chart" viewBox="0 0 900 340" role="img" aria-label="Predicted reliability compared with observed helpfulness"></svg>
+              <p class="calibration-note" id="calibration-note">The diagonal is perfect calibration. Points above it were too cautious; points below it were overconfident.</p>
+            </div>
+            <div class="panel panel-pad">
+              <div class="panel-heading"><div><h2>Decision mix</h2><p>What the monitor would do with each recalled memory</p></div><span class="chip">Shadow policy</span></div>
+              <div class="decision-mix" id="metacognition-decision-mix"></div>
+              <div class="insight-note"><span class="insight-note-mark">T</span><div><strong>How to test it</strong><p>Ask Kaya something that should use memory, then reply “that worked” or “that’s wrong.” The prediction will move from used to a labeled outcome here.</p></div></div>
+            </div>
+          </div>
+          <div class="panel panel-pad">
+            <div class="panel-heading"><div><h2>Source calibration</h2><p>Prediction volume and labeled helpfulness by provenance</p></div></div>
+            <div class="source-monitor-list" id="metacognition-sources"></div>
+          </div>
+          <div class="panel panel-pad">
+            <div class="panel-heading"><div><h2>Recent trust decisions</h2><p>Open a memory to inspect its provenance. The probability is logged before the outcome.</p></div><select class="control" id="metacognition-filter" aria-label="Filter metacognitive decisions"><option value="all">All decisions</option><option value="use">Use</option><option value="verify">Verify</option><option value="abstain">Abstain</option></select></div>
+            <div class="prediction-list" id="metacognition-predictions"></div>
+          </div>
+        </section>
+
         <section class="view" id="view-tools" aria-labelledby="tools-heading">
           <div class="page-heading"><div><div class="eyebrow">Procedural notes</div><h1 id="tools-heading">What works</h1><p>Which tools succeed, where they succeed, and what Cortex has learned from repetition.</p></div></div>
           <div class="metric-grid" id="tool-metrics"></div>
@@ -1345,20 +1555,21 @@
         </section>
 
         <section class="view" id="view-health" aria-labelledby="health-heading">
-          <div class="page-heading"><div><div class="eyebrow">Is the brain working correctly?</div><h1 id="health-heading">Brain health</h1><p>Start with the first action card. Red blocks safe use, amber needs a decision, and blue resolves through normal activity.</p></div></div>
+          <div class="page-heading"><div><div class="eyebrow">A plain answer, then the evidence</div><h1 id="health-heading">Brain health</h1><p>Health separates whether recall is safe from whether the memory set could be cleaner. Only failed integrity checks block normal use.</p></div></div>
           <div class="health-hero panel" id="health-hero"><div class="health-symbol">…</div><div><h2>Checking Cortex…</h2><p class="small-meta">Looking for damaged indexes, unresolved memories, and feedback still being processed.</p></div><div class="health-score-large">Checking</div></div>
           <div class="metric-grid" id="health-metrics"></div>
-          <div class="panel panel-pad health-action-panel"><div class="panel-heading"><div><h2>Your next steps</h2><p>Start with 01. Every card explains why it matters, what to do, and when it is resolved.</p></div></div><div class="health-action-summary" id="health-action-summary"></div><div class="health-actions" id="health-actions"></div></div>
+          <div class="panel panel-pad"><div class="panel-heading"><div><h2>Four independent health layers</h2><p>A review queue or an idle learning record does not mean the database is broken.</p></div></div><div class="health-areas health-domain-grid" id="health-areas"></div></div>
+          <div class="panel panel-pad health-action-panel"><div class="panel-heading"><div><h2>What needs attention</h2><p>Concrete work only, ordered by consequence. Automatic items stay informational.</p></div></div><div class="health-action-summary" id="health-action-summary"></div><div class="health-actions" id="health-actions"></div></div>
           <section class="panel panel-pad health-reviewer" id="health-reviewer" hidden aria-live="polite">
             <div class="health-review-head"><div><div class="eyebrow">Guided review</div><h2 id="health-review-title">One decision at a time</h2><p class="small-meta" id="health-review-subtitle">Cortex will explain the choice and preserve the history.</p></div><button class="ghost-btn" id="health-review-close" type="button">Close review</button></div>
             <div class="health-review-progress" id="health-review-progress"></div>
             <div id="health-review-body"></div>
           </section>
           <div class="dashboard-grid equal">
-            <div class="panel panel-pad"><div class="panel-heading"><div><h2>What the statuses mean</h2><p>System safety, human decisions, automatic learning, and source coverage are separate.</p></div></div><div class="health-areas" id="health-areas"></div></div>
-            <div class="panel panel-pad"><div class="panel-heading"><div><h2>Memory states, in plain English</h2><p>Nothing here is permanently deleted by routine maintenance</p></div></div><div class="lifecycle-strip" id="lifecycle-strip"></div><div class="health-glossary" id="health-glossary"></div></div>
+            <div class="panel panel-pad"><div class="panel-heading"><div><h2>Memory states, in plain English</h2><p>Routine maintenance changes recall priority; it does not erase history.</p></div></div><div class="lifecycle-strip" id="lifecycle-strip"></div><div class="health-glossary" id="health-glossary"></div></div>
+            <div class="panel panel-pad"><div class="panel-heading"><div><h2>Maintenance proof</h2><p>The latest Sleep cycle, schedule state, and exact live changes.</p></div><button class="ghost-btn" type="button" data-go="cognition">Open Sleep log</button></div><div id="health-maintenance"></div></div>
           </div>
-          <div class="panel panel-pad"><div class="panel-heading"><div><h2>Technical details</h2><p>Use this only when a red action card says search or database integrity failed.</p></div></div><div class="health-list" id="health-checks"></div><dl class="detail-grid health-system" id="system-details"></dl></div>
+          <details class="panel health-technical"><summary>Technical checks and system details</summary><div class="panel-pad"><p class="small-meta">Use these rows when Health reports a red integrity problem.</p><div class="health-list" id="health-checks"></div><dl class="detail-grid health-system" id="system-details"></dl></div></details>
         </section>
 
         <section class="view" id="view-explorer" aria-labelledby="explorer-heading">
@@ -1413,7 +1624,7 @@
     const savedGraphPositions = parseJson(localStorage.getItem("cortex-graph-positions") || "{}", {});
     const app = {
       data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
-      healthReview: { kind: null, index: 0, pending: null, busy: false },
+      healthReview: { kind: null, index: 0, pending: null, busy: false }, sleepRunId: null, sleepFilter: "all", metacognitionFilter: "all",
       graph: {
         scale: 1, panX: 0, panY: 0, showLabels: localStorage.getItem("cortex-graph-labels") !== "false",
         rendererMode: localStorage.getItem("cortex-graph-renderer") || "physics", renderToken: 0,
@@ -1597,7 +1808,15 @@
     document.getElementById("health-review-close").addEventListener("click", closeHealthReview);
     document.getElementById("timeline-range").addEventListener("change", renderTimeline);
     document.getElementById("trends-range").addEventListener("change", renderTrendChart);
+    document.getElementById("capacity-impact-range").addEventListener("change", renderCapacityImpactChart);
+    document.getElementById("metacognition-filter").addEventListener("change", event => { app.metacognitionFilter=event.target.value||"all"; renderMetacognitivePredictions(); });
     document.getElementById("sleep-start").addEventListener("click", startSleepSession);
+    document.getElementById("sleep-ledger-filters").addEventListener("click", event => {
+      const button=event.target.closest("[data-sleep-filter]");if(!button)return;
+      app.sleepFilter=button.dataset.sleepFilter||"all";
+      document.querySelectorAll("[data-sleep-filter]").forEach(item=>item.classList.toggle("active",item===button));
+      if(app.data)renderSleepLedger(app.data.sleep_proposals||[],app.data.sleep_edge_changes||[],app.data.sleep_state_changes||[]);
+    });
     document.getElementById("graph-plus").addEventListener("click", () => zoomActiveRenderer(1.22));
     document.getElementById("graph-minus").addEventListener("click", () => zoomActiveRenderer(1 / 1.22));
     document.getElementById("graph-reset").addEventListener("click", fitActiveRenderer);
@@ -1656,7 +1875,7 @@
     }
 
     function renderAll() {
-      renderOverview(); renderTimeline(); renderInsights(); renderCognition(); renderTools(); renderHealth(); renderExplorer();
+      renderOverview(); renderTimeline(); renderInsights(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
       if (app.view === "graph") renderActiveGraph();
     }
 
@@ -1668,6 +1887,7 @@
       if (name === "graph") requestAnimationFrame(renderActiveGraph);
       if (name === "timeline") requestAnimationFrame(renderTimeline);
       if (name === "insights") requestAnimationFrame(renderInsights);
+      if (name === "trust") requestAnimationFrame(renderMetacognition);
     }
 
     function toggleThemeMenu() {
@@ -1695,7 +1915,7 @@
       requestAnimationFrame(() => {
         const bg = cssVar("--bg");
         document.querySelector('meta[name="theme-color"]').setAttribute("content", bg);
-        if (app.data) { renderActivityChart(); renderKindDonut(); renderHealth(); renderTimeline(); renderInsights(); if (app.view === "graph") renderActiveGraph(); }
+        if (app.data) { renderActivityChart(); renderKindDonut(); renderHealth(); renderTimeline(); renderInsights(); renderMetacognition(); if (app.view === "graph") renderActiveGraph(); }
       });
     }
 
@@ -2276,22 +2496,21 @@
 
     function renderTimeline() {
       if(!app.data)return;
-      const range=document.getElementById("timeline-range").value, now=Date.now(), cutoff=range==="all"?0:now-Number(range)*86400000;
-      const memories=(app.data.memories||[]).filter(row=>{const t=Date.parse(row.observed_at);return Number.isFinite(t)&&t>=cutoff;}).sort((a,b)=>Date.parse(a.observed_at)-Date.parse(b.observed_at));
+      const range=document.getElementById("timeline-range").value,now=Date.now(),cutoff=range==="all"?0:now-Number(range)*86400000,cutoffDay=range==="all"?"":dateKey(new Date(now-(Number(range)-1)*86400000)),detailMemories=app.data.memories||[],fallbackTimeline=[...detailMemories.reduce((map,memory)=>{const day=dateKey(memory.observed_at),key=`${day}:${memory.kind}`,row=map.get(key)||{day,kind:memory.kind,count:0};row.count++;map.set(key,row);return map;},new Map()).values()],timelineSource=Array.isArray(app.data.memory_timeline_by_day_kind)?app.data.memory_timeline_by_day_kind:fallbackTimeline,timelineRows=timelineSource.filter(row=>row.day&&(!cutoffDay||row.day>=cutoffDay)),memories=detailMemories.filter(row=>{const t=Date.parse(row.observed_at);return Number.isFinite(t)&&t>=cutoff;}).sort((a,b)=>Date.parse(a.observed_at)-Date.parse(b.observed_at));
       const access=(app.data.recent_access||[]).filter(row=>Date.parse(row.created_at)>=cutoff),accessEvents=(app.data.access_by_day||[]).filter(row=>Date.parse(`${row.day}T23:59:59Z`)>=cutoff).reduce((sum,row)=>sum+Number(row.count||0),0);
-      const activeDays=unique(memories.map(row=>dateKey(row.observed_at))).length,kindCounts=countBy(memories,"kind"),topKind=Object.entries(kindCounts).sort((a,b)=>b[1]-a[1])[0];
-      metricCards("timeline-metrics",[["Captured",memories.length,range==="all"?"Across all observed history":`Within the last ${range} days`,"→"],["Days with learning",activeDays,"Days when at least one memory was added","▦"],["Recall events",accessEvents,"Retrieval, selection, injection, and use events in this period","↗"],["Most captured",topKind?humanize(topKind[0]):"—",topKind?`${formatNum(topKind[1])} memories`:"No memories in this period","●"]],true);
-      renderTimelineBars(memories);
+      const captured=timelineRows.reduce((sum,row)=>sum+Number(row.count||0),0),activeDays=unique(timelineRows.map(row=>row.day)).length,kindCounts=timelineRows.reduce((counts,row)=>{counts[row.kind]=(counts[row.kind]||0)+Number(row.count||0);return counts;},{}),topKind=Object.entries(kindCounts).sort((a,b)=>b[1]-a[1])[0];
+      metricCards("timeline-metrics",[["Captured",captured,range==="all"?"Across all observed history":`Within the last ${range} calendar days`,"→"],["Days with learning",activeDays,"Days when at least one memory was added","▦"],["Recall events",accessEvents,"Retrieval, selection, injection, and use events in this period","↗"],["Most captured",topKind?humanize(topKind[0]):"—",topKind?`${formatNum(topKind[1])} memories`:"No memories in this period","●"]],true);
+      renderTimelineBars(timelineRows);
       renderTimelineTrail(memories,access);
-      renderTimelineKinds(kindCounts,memories.length);
+      renderTimelineKinds(kindCounts,captured);
     }
 
-    function renderTimelineBars(memories) {
+    function renderTimelineBars(timelineRows) {
       const svg=document.getElementById("timeline-svg"),legend=document.getElementById("timeline-legend");svg.replaceChildren();legend.replaceChildren();
-      if(!memories.length){svg.append(svgText(410,180,"No memories were captured in this time range","axis-label","middle"));return;}
-      const dates=memories.map(row=>new Date(row.observed_at)).filter(date=>!Number.isNaN(date.getTime())),minDate=new Date(Math.min(...dates)),maxDate=new Date(Math.max(...dates)),spanDays=Math.max(1,Math.ceil((maxDate-minDate)/86400000)+1),weekly=spanDays>70,buckets=new Map();
-      memories.forEach(memory=>{const date=new Date(memory.observed_at),key=weekly?weekKey(date):dateKey(date),bucket=buckets.get(key)||{key,date:weekly?startOfWeek(date):new Date(`${key}T00:00:00Z`),total:0,kinds:{}};bucket.total++;bucket.kinds[memory.kind]=(bucket.kinds[memory.kind]||0)+1;buckets.set(key,bucket);});
-      const rows=[...buckets.values()].sort((a,b)=>a.date-b.date),kinds=unique(memories.map(row=>row.kind)).sort(),max=Math.max(1,...rows.map(row=>row.total)),W=820,H=360,L=42,R=14,T=18,B=46,plotW=W-L-R,plotH=H-T-B,slot=plotW/rows.length,barW=Math.max(5,Math.min(44,slot*.68));
+      if(!timelineRows.length){svg.append(svgText(410,180,"No memories were captured in this time range","axis-label","middle"));return;}
+      const dates=timelineRows.map(row=>new Date(`${row.day}T00:00:00Z`)).filter(date=>!Number.isNaN(date.getTime())),minDate=new Date(Math.min(...dates)),maxDate=new Date(Math.max(...dates)),spanDays=Math.max(1,Math.ceil((maxDate-minDate)/86400000)+1),weekly=spanDays>70,buckets=new Map();
+      timelineRows.forEach(item=>{const date=new Date(`${item.day}T00:00:00Z`),key=weekly?weekKey(date):item.day,bucket=buckets.get(key)||{key,date:weekly?startOfWeek(date):date,total:0,kinds:{}},count=Number(item.count||0);bucket.total+=count;bucket.kinds[item.kind]=(bucket.kinds[item.kind]||0)+count;buckets.set(key,bucket);});
+      const rows=[...buckets.values()].sort((a,b)=>a.date-b.date),kinds=unique(timelineRows.map(row=>row.kind)).sort(),max=Math.max(1,...rows.map(row=>row.total)),W=820,H=360,L=42,R=14,T=18,B=46,plotW=W-L-R,plotH=H-T-B,slot=plotW/rows.length,barW=Math.max(5,Math.min(44,slot*.68));
       for(let i=0;i<=4;i++){const value=Math.round(max*(4-i)/4),y=T+i*plotH/4;svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,class:"axis-line"}),svgText(L-7,y+4,String(value),"axis-label","end"));}
       rows.forEach((row,index)=>{const x=L+index*slot+(slot-barW)/2;let y=H-B; kinds.forEach(kind=>{const count=row.kinds[kind]||0;if(!count)return;const height=count/max*plotH;y-=height;const rect=svgEl("rect",{x,y,width:barW,height:Math.max(1,height),fill:kindColor(kind),class:"timeline-bar"});const title=svgEl("title");title.textContent=`${weekly?"Week of ":""}${shortDate(row.date)} · ${humanize(kind)}: ${count}`;rect.append(title);svg.append(rect);});if(index%Math.max(1,Math.ceil(rows.length/7))===0||index===rows.length-1)svg.append(svgText(x+barW/2,H-15,row.date.toLocaleDateString(undefined,{month:"short",day:"numeric"}),"axis-label","middle"));});
       kinds.forEach(kind=>{const item=el("span","");const swatch=el("i","legend-swatch");swatch.style.background=kindColor(kind);item.append(swatch,document.createTextNode(humanize(kind)));legend.append(item);});
@@ -2326,8 +2545,26 @@
       renderMemoryRanking("hub-list",[...active].sort((a,b)=>connectionCount(b.id)-connectionCount(a.id)).slice(0,6),memory=>`${connectionCount(memory.id)} connections · ${humanize(memory.kind)}`);
       renderInsightSources(sourceCounts,memories.length);
       renderInsightTools(tools);
+      renderCapacityImpactChart();
       renderTrendChart();
     }
+
+    function renderCapacityImpactChart() {
+      if(!app.data)return;
+      const range=Math.max(30,Number(document.getElementById("capacity-impact-range").value||90)),rows=(app.data.capacity_impact_by_day||[]).slice(-range).map(row=>{const positive=Number(row.helpful_outcomes||0),negative=Number(row.harmful_outcomes||0),labeled=positive+negative;return{...row,capacity:Number(row.stored_capacity||0),recalls:Number(row.recall_runs||0),tokens:Number(row.avg_context_tokens||0),resolved:Number(row.resolved_outcomes||0),labeled,accuracy:labeled?positive/labeled*100:null};}),svg=document.getElementById("capacity-impact-chart"),legend=document.getElementById("capacity-impact-legend"),summary=document.getElementById("capacity-impact-summary");svg.replaceChildren();legend.replaceChildren();summary.replaceChildren();
+      const labeledRows=rows.filter(row=>row.accuracy!==null),labeledTotal=labeledRows.reduce((sum,row)=>sum+row.labeled,0),positiveTotal=labeledRows.reduce((sum,row)=>sum+Number(row.helpful_outcomes||0),0),accuracy=labeledTotal?positiveTotal/labeledTotal*100:null,latest=rows[rows.length-1]||{},first=rows[0]||{},capacityGrowth=Number(latest.capacity||0)-Number(first.capacity||0),avgTokens=weightedAverage(rows.filter(row=>row.recalls&&row.tokens),"tokens","recalls"),correlation=pearson(labeledRows.map(row=>[row.capacity,row.accuracy]));[[accuracy===null?"—":`${accuracy.toFixed(1)}%`,`${formatNum(labeledTotal)} labeled helpful/harmful outcomes`],[formatNum(latest.capacity||0),`${capacityGrowth>=0?"+":""}${formatNum(capacityGrowth)} stored memories in view`],[avgTokens?`${Math.round(avgTokens)} tok`:"—","average context per recall"],[correlation===null?"Need more days":`${correlation>=0?"+":""}${correlation.toFixed(2)} r`,`${labeledRows.length} labeled days · descriptive only`]].forEach(([value,label])=>{const card=el("div","capacity-impact-stat");card.append(el("strong","",value),el("span","",label));summary.append(card);});
+      const series=[{label:"Memory helpfulness",color:cssVar("--green"),note:labeledTotal?`${accuracy.toFixed(1)}% across ${formatNum(labeledTotal)} labels`:"no labels"},{label:"Stored capacity",color:cssVar("--violet"),note:`${formatNum(latest.capacity||0)} memories`}];series.forEach(item=>{const entry=el("span","trend-legend-item"),swatch=el("i","");swatch.style.background=item.color;entry.append(swatch,el("span","",item.label),el("strong","",item.note));legend.append(entry);});
+      if(!rows.length){svg.append(svgText(450,150,"Capacity history begins after Cortex records its first day","chart-label","middle"));return;}
+      const W=900,H=330,L=50,R=56,T=28,B=42,plotW=W-L-R,plotH=H-T-B,maxCapacity=Math.max(1,...rows.map(row=>row.capacity)),x=index=>L+index*plotW/Math.max(1,rows.length-1),capacityY=value=>T+(maxCapacity-value)*plotH/maxCapacity,accuracyY=value=>T+(100-value)*plotH/100;
+      const desc=svgEl("desc");desc.textContent="Stored memory count and daily observed memory helpfulness. Missing accuracy days have no helpful or harmful labels.";svg.append(desc);
+      for(let index=0;index<5;index++){const y=T+index*plotH/4,rate=100-index*25,cap=Math.round(maxCapacity*(4-index)/4);svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,class:"chart-grid"}),svgText(L-9,y+4,`${rate}%`,"chart-label","end"),svgText(W-R+9,y+4,formatNum(cap),"chart-label","start"));}
+      const capacityPoints=rows.map((row,index)=>({x:x(index),y:capacityY(row.capacity),...row})),capacityPath=capacityPoints.map((point,index)=>`${index?"L":"M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),capacityArea=`${capacityPath} L${capacityPoints[capacityPoints.length-1].x},${H-B} L${capacityPoints[0].x},${H-B} Z`;svg.append(svgEl("path",{d:capacityArea,fill:cssVar("--violet"),class:"capacity-area"}),svgEl("path",{d:capacityPath,stroke:cssVar("--violet"),class:"capacity-line"}));
+      const accuracySegments=chartSegments(rows,row=>row.accuracy!==null,(row,index)=>({x:x(index),y:accuracyY(row.accuracy),...row}));accuracySegments.forEach(segment=>svg.append(svgEl("path",{d:segment.map((point,index)=>`${index?"L":"M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),stroke:cssVar("--green"),class:"accuracy-line"})));labeledRows.forEach(row=>{const index=rows.indexOf(row),dot=svgEl("circle",{cx:x(index),cy:accuracyY(row.accuracy),r:Math.min(7,3+Math.sqrt(row.labeled)),fill:cssVar("--surface"),stroke:cssVar("--green"),"stroke-width":"2"}),title=svgEl("title");title.textContent=`${row.day}: ${row.accuracy.toFixed(1)}% helpful across ${row.labeled} labeled outcomes · ${row.capacity} stored memories`;dot.append(title);svg.append(dot);});
+      const labelEvery=Math.max(1,Math.ceil(rows.length/6));rows.forEach((row,index)=>{if(index%labelEvery===0||index===rows.length-1)svg.append(svgText(x(index),H-13,shortDay(row.day),"chart-label","middle"));});svg.append(svgText(L,T-10,"Outcome-backed usefulness","chart-label"),svgText(W-R,T-10,"Stored memories","chart-label","end"));
+    }
+    function chartSegments(rows,present,project){const segments=[];let current=[];rows.forEach((row,index)=>{if(present(row))current.push(project(row,index));else if(current.length){segments.push(current);current=[];}});if(current.length)segments.push(current);return segments;}
+    function weightedAverage(rows,valueKey,weightKey){const weight=rows.reduce((sum,row)=>sum+Number(row[weightKey]||0),0);return weight?rows.reduce((sum,row)=>sum+Number(row[valueKey]||0)*Number(row[weightKey]||0),0)/weight:0;}
+    function pearson(pairs){if(pairs.length<3)return null;const meanX=pairs.reduce((sum,pair)=>sum+pair[0],0)/pairs.length,meanY=pairs.reduce((sum,pair)=>sum+pair[1],0)/pairs.length,numerator=pairs.reduce((sum,pair)=>sum+(pair[0]-meanX)*(pair[1]-meanY),0),denX=Math.sqrt(pairs.reduce((sum,pair)=>sum+(pair[0]-meanX)**2,0)),denY=Math.sqrt(pairs.reduce((sum,pair)=>sum+(pair[1]-meanY)**2,0));return denX&&denY?numerator/(denX*denY):null;}
 
     function renderTrendChart() {
       if(!app.data)return;
@@ -2389,36 +2626,52 @@
     }
 
     function renderSleep(runs,proposals,runtime={}) {
-      const byNewest=(left,right)=>{const a=Date.parse(left.completed_at||left.started_at||left.created_at||0),b=Date.parse(right.completed_at||right.started_at||right.created_at||0);return (Number.isFinite(b)?b:0)-(Number.isFinite(a)?a:0);};
-      const latest=[...runs].sort(byNewest)[0],summaryHost=document.getElementById("sleep-cycle-summary"),metricHost=document.getElementById("sleep-metrics"),proposalHost=document.getElementById("sleep-proposal-list"),statusHost=document.getElementById("sleep-status"),recent=[...proposals].sort(byNewest).slice(0,12);
-      summaryHost.replaceChildren();metricHost.replaceChildren();proposalHost.replaceChildren();
-      document.getElementById("sleep-proposal-total").textContent=`${formatNum(proposals.length)} proposals`;
-
-      const addMetric=(label,value,copy)=>{const card=el("div","sleep-metric");card.append(el("span","",label),el("strong","",value),el("small","",copy));metricHost.append(card);};
-      if(!latest){
-        statusHost.textContent="Waiting";
-        summaryHost.append(emptyState("No sleep cycles yet","This section will wake up after Cortex completes its first scheduled offline review."));
-        const waiting=el("div","sleep-metric sleep-metric-empty");waiting.append(el("span","","Offline evidence"),el("strong","","—"),el("small","","Replay, proposal, and reflection-token metrics will appear after the first cycle."));metricHost.append(waiting);
-      }else{
-        const mode=String(latest.mode||"unknown").toLowerCase(),status=String(latest.status||"unknown").toLowerCase(),isFinished=["complete","completed","success","succeeded"].includes(status),isRunning=["running","started","in_progress"].includes(status),hasError=Boolean(latest.error),tone=hasError||status==="failed"||status==="error"?"failed":isFinished?"ready":isRunning?"running":"",statusLabel=hasError&&isFinished?"Completed with error":isFinished?"Completed":isRunning?"Running":humanize(status),modeLabel=mode==="shadow"?"Shadow":mode==="apply"?"Apply":humanize(mode);
-        statusHost.textContent=`${modeLabel} · ${statusLabel}`;
-        const card=el("div","sleep-cycle-card"),head=el("div","sleep-cycle-head"),title=el("div","");title.append(el("div","sleep-kicker","Last offline cycle"),el("div","sleep-cycle-title",`${modeLabel} review ${statusLabel.toLowerCase()}`));
-        const endDate=latest.completed_at||latest.started_at,timeCopy=endDate&&Number.isFinite(Date.parse(endDate))?`${timeAgo(new Date(endDate))} · run ${String(latest.run_id||"unavailable").slice(0,8)}`:`Run ${String(latest.run_id||"unavailable").slice(0,8)}`;title.append(el("div","sleep-cycle-time",timeCopy));head.append(title,el("span",`sleep-status-chip ${tone}`,statusLabel));card.append(head);
-        const explanation=mode==="shadow"?"Cortex replayed recent experience and recorded proposals without changing memory.":mode==="apply"?"Cortex reviewed recent experience under apply mode; only proposals that passed configured safety gates could change memory.":"Cortex reviewed recent experience using the configured offline-cycle mode.";card.append(el("p","sleep-summary",explanation));
-        if(latest.error)card.append(el("div","sleep-error",`Cycle error: ${String(latest.error)}`));
-        summaryHost.append(card);
-
-        const scanned=Number(latest.episodes_scanned||0),replayed=Number(latest.episodes_replayed||0),associations=Number(latest.association_proposals||0),interference=Number(latest.interference_proposals||0),decay=Number(latest.edge_decay_proposals||0),lifecycle=Number(latest.lifecycle_candidates||0),consolidation=Number(latest.consolidation_candidates||0),proposalCount=associations+interference+decay+lifecycle+consolidation,tokenBudget=Number(latest.reflection_token_budget||0),estimatedTokens=Number(latest.reflection_estimated_tokens||0);
-        addMetric("Episode replay",`${formatNum(replayed)} / ${formatNum(scanned)}`,scanned?`${percent(replayed,scanned)}% of scanned episodes revisited`:"No episodes were available to replay");
-        addMetric("Structure proposals",formatNum(associations+interference+decay),`${formatNum(associations)} links · ${formatNum(interference)} interference · ${formatNum(decay)} decay`);
-        addMetric("Lifecycle candidates",formatNum(lifecycle+consolidation),`${formatNum(lifecycle)} state moves · ${formatNum(consolidation)} consolidations · ${formatNum(proposalCount)} total ideas`);
-        addMetric("Reflection context",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:estimatedTokens?`${formatNum(estimatedTokens)} tok`:"—",tokenBudget?`${percent(estimatedTokens,tokenBudget)}% of the offline reflection budget estimated`:"No reflection-token budget recorded");
-      }
-
+      const ordered=[...runs].sort(sleepNewest),latest=ordered[0];
+      if(!app.sleepRunId||!ordered.some(run=>run.run_id===app.sleepRunId))app.sleepRunId=latest?.run_id||null;
+      const selected=ordered.find(run=>run.run_id===app.sleepRunId)||latest;
+      renderSleepSchedule(app.data?.sleep_schedule||{});
+      renderSleepRunStats(ordered);
+      renderSleepHistory(ordered);
       renderSleepProgress(runtime);
-      if(!recent.length){proposalHost.append(emptyState("No sleep proposals yet","A proposal appears only when offline review finds a possible connection, conflict, lifecycle move, or consolidation worth recording."));return;}
-      recent.forEach(proposal=>{const row=el("div","sleep-proposal-row"),kind=humanize(proposal.kind||"proposal"),copy=el("div","sleep-proposal-copy"),created=proposal.created_at&&Number.isFinite(Date.parse(proposal.created_at))?timeAgo(new Date(proposal.created_at)):"Time not recorded",status=humanize(proposal.status||"proposed"),hasScore=proposal.score!==null&&proposal.score!==undefined&&proposal.score!=="",numericScore=Number(proposal.score),score=hasScore&&Number.isFinite(numericScore)?`${Math.round((numericScore<=1?numericScore*100:numericScore))}% score`:"No score";copy.append(el("p","",String(proposal.rationale||"No rationale was recorded for this proposal.")),el("small","",created));const meta=el("div","sleep-proposal-meta");meta.append(el("span","sleep-proposal-state",status),el("span","sleep-proposal-score",score));row.append(el("div","sleep-proposal-kind",kind),copy,meta);proposalHost.append(row);});
+      const summaryHost=document.getElementById("sleep-cycle-summary"),metricHost=document.getElementById("sleep-metrics"),statusHost=document.getElementById("sleep-status");summaryHost.replaceChildren();metricHost.replaceChildren();
+      if(!selected){
+        statusHost.textContent="Waiting";
+        document.getElementById("sleep-run-subtitle").textContent="No completed maintenance record exists yet.";
+        summaryHost.append(emptyState("No Sleep cycles yet","Start a shadow run or wait for the scheduled window. The first report will appear here without changing live memory."));
+        const waiting=el("div","sleep-metric sleep-metric-empty");waiting.append(el("span","","Offline evidence"),el("strong","","—"),el("small","","Replay, proposals, actual changes, and after-run observations will appear after the first cycle."));metricHost.append(waiting);
+        document.getElementById("sleep-effects").replaceChildren();
+        renderSleepLedger(proposals,app.data?.sleep_edge_changes||[],app.data?.sleep_state_changes||[]);
+        return;
+      }
+      const mode=String(selected.mode||"unknown").toLowerCase(),status=String(selected.status||"unknown").toLowerCase(),isFinished=["complete","completed","success","succeeded"].includes(status),isRunning=["running","started","in_progress"].includes(status),hasError=Boolean(selected.error),tone=hasError||status==="failed"||status==="error"?"failed":isFinished?"ready":isRunning?"running":"",statusLabel=hasError&&isFinished?"Completed with warning":isFinished?"Completed":isRunning?"Running":humanize(status),modeLabel=mode==="shadow"?"Shadow":mode==="apply"?"Apply":humanize(mode),duration=sleepDuration(selected);
+      if(selected===latest&&!(["starting","running"].includes(String(runtime.status))))statusHost.textContent=`${modeLabel} · ${statusLabel}`;
+      document.getElementById("sleep-run-subtitle").textContent=`Run ${shortId(selected.run_id)} · ${formatDate(selected.started_at)} · ${duration}`;
+      const card=el("div","sleep-cycle-card"),head=el("div","sleep-cycle-head"),title=el("div","");title.append(el("div","sleep-kicker",`Selected ${modeLabel.toLowerCase()} cycle`),el("div","sleep-cycle-title",mode==="shadow"?"A complete preview; live memory stayed unchanged":"A gated apply cycle with reversible changes"),el("div","sleep-cycle-time",`Started ${formatDate(selected.started_at)} · finished in ${duration} · cutoff ${formatDate(selected.cutoff_at)}`));head.append(title,el("span",`sleep-status-chip ${tone}`,statusLabel));card.append(head);
+      card.append(el("p","sleep-summary",mode==="shadow"?"Cortex replayed recorded evidence and wrote proposals only. Every item below says what would change; none of it entered normal recall.":"Cortex reviewed the same bounded evidence and committed only validated actions. Exact before-and-after rows appear below."));
+      if(selected.error)card.append(el("div","sleep-error",`Cycle note: ${String(selected.error)}`));summaryHost.append(card);
+      const report=selected.report||{},scanned=Number(selected.episodes_scanned||0),replayed=Number(selected.episodes_replayed||0),usage=Number(report.usage_tasks_replayed||0),evidence=Number(report.evidence_added||0),tokenBudget=Number(selected.reflection_token_budget||0),estimatedTokens=Number(selected.reflection_estimated_tokens||0);
+      addSleepMetric(metricHost,"Episode replay",`${formatNum(replayed)} / ${formatNum(scanned)}`,scanned?`${percent(replayed,scanned)}% of eligible episodes revisited`:"No eligible episodes in this run");
+      addSleepMetric(metricHost,"Outcome replay",formatNum(usage),`${formatNum(evidence)} new independent evidence ${evidence===1?"record":"records"}`);
+      addSleepMetric(metricHost,"Runtime",duration,`${formatNum(selected.applied_changes||0)} reported applied changes`);
+      addSleepMetric(metricHost,"Model reflection",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:"Off",tokenBudget?humanize(selected.reflection_status||"unknown"):"Deterministic local analysis only");
+      renderSleepEffects(selected,proposals);
+      renderSleepLedger(proposals,app.data?.sleep_edge_changes||[],app.data?.sleep_state_changes||[]);
     }
+
+    function sleepNewest(left,right){const a=Date.parse(left.completed_at||left.started_at||left.created_at||0),b=Date.parse(right.completed_at||right.started_at||right.created_at||0);return(Number.isFinite(b)?b:0)-(Number.isFinite(a)?a:0);}
+    function sleepDuration(run){const start=Date.parse(run.started_at),end=Date.parse(run.completed_at);if(!Number.isFinite(start)||!Number.isFinite(end)||end<start)return String(run.status)==="running"?"in progress":"duration unavailable";const seconds=Math.max(0,Math.round((end-start)/1000));return seconds<60?`${seconds}s`:seconds<3600?`${Math.floor(seconds/60)}m ${seconds%60}s`:`${Math.floor(seconds/3600)}h ${Math.round(seconds%3600/60)}m`;}
+    function addSleepMetric(host,label,value,copy){const card=el("div","sleep-metric");card.append(el("span","",label),el("strong","",value),el("small","",copy));host.append(card);}
+    function renderSleepSchedule(schedule){const next=document.getElementById("sleep-next-run"),copy=document.getElementById("sleep-schedule-copy"),meta=document.getElementById("sleep-schedule-meta"),nextValue=String(schedule.next_run||"").trim(),parsed=Date.parse(nextValue);next.textContent=nextValue?(Number.isFinite(parsed)?formatDate(nextValue):nextValue):(schedule.schedule||"Nightly · 03:00–05:00 local window");copy.textContent=String(schedule.detail||"Starts nightly in a bounded idle window; manual shadow runs are available at any time.");meta.replaceChildren();[[schedule.active===true?"Timer active":schedule.active===false?"Timer inactive":"Timer state unknown",schedule.active===false?"bad":""],[schedule.enabled===true?"Enabled at login":schedule.enabled===false?"Not enabled":"Bundled default",""],[schedule.last_trigger?`Last trigger ${formatDate(schedule.last_trigger)}`:String(schedule.source||"Schedule source"),""]].forEach(([label,tone])=>meta.append(el("span",tone,label)));}
+    function renderSleepRunStats(runs){const host=document.getElementById("sleep-run-stats"),completed=runs.filter(run=>String(run.status).toLowerCase()==="completed"),failed=runs.filter(run=>String(run.status).toLowerCase()==="failed"),durations=completed.map(run=>{const a=Date.parse(run.started_at),b=Date.parse(run.completed_at);return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,b-a):0;}).filter(Boolean),avg=durations.length?`${Math.round(durations.reduce((a,b)=>a+b,0)/durations.length/1000)}s`:"—",proposals=runs.reduce((total,run)=>total+sleepProposalCount(run),0),changes=runs.reduce((total,run)=>total+Number(run.applied_changes||0),0);host.replaceChildren();document.getElementById("sleep-run-total").textContent=`${formatNum(runs.length)} runs`;[[runs.length,"cycles recorded"],[runs.length?`${Math.round(completed.length/runs.length*100)}%`:"—",`${failed.length} failed`],[avg,"average runtime"],[proposals,`${changes} live changes`]].forEach(([value,label])=>{const card=el("div","sleep-run-stat");card.append(el("strong","",formatNum(value)),el("span","",label));host.append(card);});}
+    function sleepProposalCount(run){return Number(run.association_proposals||0)+Number(run.interference_proposals||0)+Number(run.edge_decay_proposals||0)+Number(run.lifecycle_candidates||0)+Number(run.consolidation_candidates||0)+Number(run.dependency_candidates||0);}
+    function renderSleepHistory(runs){const host=document.getElementById("sleep-run-history");host.replaceChildren();if(!runs.length){host.append(emptyState("No run history","Scheduled and manual cycles will appear here."));return;}runs.forEach(run=>{const button=el("button",`sleep-run-button ${run.run_id===app.sleepRunId?"active":""}`),top=el("div","sleep-run-button-top"),status=String(run.status||"unknown").toLowerCase();button.type="button";top.append(el("strong","",formatDate(run.started_at)),el("span",`sleep-run-button-status ${status==="failed"?"failed":""}`,`${humanize(run.mode)} · ${humanize(status)}`));button.append(top,el("small","",`${sleepDuration(run)} · ${formatNum(sleepProposalCount(run))} proposals · ${formatNum(run.applied_changes||0)} changed`));button.addEventListener("click",()=>{app.sleepRunId=run.run_id;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],app.data.sleep_runtime||{});});host.append(button);});}
+    function renderSleepEffects(run,proposals){const host=document.getElementById("sleep-effects"),runProposals=proposals.filter(item=>item.run_id===run.run_id),effects=app.data?.sleep_effects?.[run.run_id]||{},mode=String(run.mode||"shadow"),connectionIdeas=runProposals.filter(item=>["association","association_reinforcement"].includes(item.kind)).length,pruneIdeas=runProposals.filter(item=>["edge_downscale","lifecycle"].includes(item.kind)).length,reviewIdeas=runProposals.length-connectionIdeas-pruneIdeas,liveEdges=Number(effects.live_edge_changes||0),liveStates=Number(effects.live_state_changes||0),reversed=Number(effects.reversed_edge_changes||0)+Number(effects.reversed_state_changes||0),live=liveEdges+liveStates;host.replaceChildren();const direct=el("div",`sleep-effect-card ${mode==="shadow"?"proposed":"applied"}`),directCopy=mode==="shadow"?"This run observed and proposed. It did not change retrieval state, edge weights, or memory availability.":`${formatNum(liveEdges)} connection ${liveEdges===1?"change":"changes"} and ${formatNum(liveStates)} lifecycle ${liveStates===1?"change":"changes"} remain active; every one has stored before-and-after values.${reversed?` ${formatNum(reversed)} ${reversed===1?"change was":"changes were"} later reversed.`:""}`;direct.append(el("span","",mode==="shadow"?"Direct effect · proposal only":"Direct effect · committed"),el("strong","",mode==="shadow"?"0 live changes":`${formatNum(live)} live changes`),el("p","",directCopy));const signals=el("div","sleep-effect-signals"),signalRows=mode==="shadow"?[[connectionIdeas,"connect"],[pruneIdeas,"cool / archive"],[reviewIdeas,"review"]]:[[live,"still active"],[reversed,"reversed"],[run.applied_changes||0,"committed originally"]];signalRows.forEach(([count,label])=>signals.append(el("b","",`${formatNum(count)} ${label}`)));direct.append(signals);const observed=el("div","sleep-effect-card observed");observed.append(el("span","","Observed after this run"),el("strong","",`${formatNum(effects.recall_runs_after||0)} recalls`),el("p","","These are follow-up observations until the next Sleep cycle. They show what happened afterward, not proof that Sleep caused it."));const outcomes=el("div","sleep-effect-signals");[[effects.helpful_outcomes_after||0,"helpful"],[effects.harmful_outcomes_after||0,"harmful / corrected"],[effects.pruning_regrets_after||0,"pruning regret"]].forEach(([count,label])=>outcomes.append(el("b","",`${formatNum(count)} ${label}`)));observed.append(outcomes);host.append(direct,observed);}
+    function sleepRecordCategory(kind){if(["association","association_reinforcement","edge_change","connection_added"].includes(kind))return"connections";if(["edge_downscale","lifecycle","state_change"].includes(kind))return"pruning";return"review";}
+    function renderSleepLedger(proposals,edgeChanges,stateChanges){const host=document.getElementById("sleep-proposal-list"),runId=app.sleepRunId;host.replaceChildren();if(!runId){document.getElementById("sleep-proposal-total").textContent="0 records";host.append(emptyState("No run selected","Choose a cycle to inspect exactly what it touched."));return;}const proposalRecords=proposals.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"proposal"})),edgeRecords=edgeChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"edge",kind:Number(item.prior_exists)?"edge_change":"connection_added",status:item.reversed_at?"reversed":"applied",rationale:Number(item.prior_exists)?`Changed ${humanize(item.relation)} weight from ${sleepWeight(item.prior_weight)} to ${sleepWeight(item.next_weight)}.`:`Created a ${humanize(item.relation)} connection at weight ${sleepWeight(item.next_weight)}.`,score:item.next_weight})),stateRecords=stateChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"state",kind:"state_change",status:item.reversed_at?"reversed":"applied",src_id:item.memory_id,src_kind:item.memory_kind,src_content:item.memory_content,rationale:`Changed memory availability from ${humanize(item.prior_state)} to ${humanize(item.next_state)}.`})),records=[...edgeRecords,...stateRecords,...proposalRecords].sort(sleepNewest).filter(item=>app.sleepFilter==="all"||sleepRecordCategory(item.kind)===app.sleepFilter);document.getElementById("sleep-proposal-total").textContent=`${formatNum(records.length)} records`;if(!records.length){host.append(emptyState("Nothing in this category","This run did not record a matching proposal or applied change."));return;}records.forEach(record=>renderSleepRecord(host,record));}
+    function renderSleepRecord(host,record){const row=el("article","sleep-proposal-row"),kind=humanize(record.kind||"proposal"),copy=el("div","sleep-proposal-copy"),created=record.created_at&&Number.isFinite(Date.parse(record.created_at))?timeAgo(new Date(record.created_at)):"Time not recorded",status=String(record.status||"proposed").toLowerCase(),numericScore=Number(record.score),score=Number.isFinite(numericScore)?`${Math.round((numericScore<=1?numericScore*100:numericScore))}% signal`:"No score";copy.append(el("p","",String(record.rationale||"No rationale was recorded.")));const refs=el("div","sleep-memory-pair");if(record.src_id)refs.append(sleepMemoryRef(record.src_id,record.src_kind,record.src_content,"Memory A"));if(record.dst_id){refs.append(el("span","sleep-memory-arrow",sleepRecordCategory(record.kind)==="connections"?"↔":"→"),sleepMemoryRef(record.dst_id,record.dst_kind,record.dst_content,"Memory B"));}if(record.src_id)copy.append(refs);const details=record.record_type==="proposal"?sleepProposalDetails(record):record.record_type==="edge"?`${humanize(record.relation)} · evidence ${formatNum(record.prior_evidence_count||0)} → ${formatNum(record.next_evidence_count||0)}`:`${humanize(record.prior_state)} → ${humanize(record.next_state)}`;copy.append(el("div","sleep-change-detail",`${details} · ${created}`));const meta=el("div","sleep-proposal-meta");meta.append(el("span",`sleep-proposal-state ${status}`,humanize(status)),el("span","sleep-proposal-score",score));row.append(el("div","sleep-proposal-kind",kind),copy,meta);host.append(row);}
+    function sleepMemoryRef(id,kind,content,label){const button=el("button","sleep-memory-ref");button.type="button";button.append(el("span","",`${label} · ${humanize(kind||"memory")} · ${shortId(id)}`),el("strong","",truncate(cleanMemory(content||"Memory text unavailable"),180)));button.addEventListener("click",()=>selectMemory(id));return button;}
+    function sleepProposalDetails(record){const details=parseJson(record.details_json||"{}",{}),parts=[`${formatNum(record.evidence_count||0)} evidence`];if(details.distinct_witnesses)parts.push(`${formatNum(details.distinct_witnesses)} independent witnesses`);if(details.next_state)parts.push(`would move to ${humanize(details.next_state)}`);if(details.prior_weight!==undefined&&details.next_weight!==undefined)parts.push(`weight ${sleepWeight(details.prior_weight)} → ${sleepWeight(details.next_weight)}`);if(details.action)parts.push(`action ${humanize(details.action)}`);return parts.join(" · ");}
+    function sleepWeight(value){const n=Number(value);return Number.isFinite(n)?n.toFixed(2):"none";}
 
     function renderSleepProgress(runtime) {
       const status=String(runtime.status||"idle").toLowerCase(),active=status==="starting"||status==="running",progress=Math.max(0,Math.min(100,Number(runtime.progress||0))),panel=document.getElementById("sleep-progress"),button=document.getElementById("sleep-start"),statusHost=document.getElementById("sleep-status"),steps=Array.isArray(runtime.steps)?runtime.steps:[];
@@ -2445,6 +2698,52 @@
 
     async function pollSleepStatus(){try{const response=await fetch("/api/sleep/status",{cache:"no-store",credentials:"same-origin"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const runtime=await response.json();app.data.sleep_runtime=runtime;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],runtime);if(["starting","running"].includes(String(runtime.status)))scheduleSleepPoll();else await load(true);}catch(error){showToast(`Sleep status unavailable: ${error.message}`,true);}}
 
+    function renderMetacognition() {
+      if(!app.data)return;
+      const monitor=app.data.metacognition||{},summary=monitor.summary||{},labeled=Number(summary.labeled_count||0),negative=Number(summary.negative_count||0),ready=labeled>=8,ece=Number(summary.expected_calibration_error),brier=Number(summary.brier_score),mode=String(monitor.mode||"shadow").toLowerCase(),modeHost=document.getElementById("metacognition-mode");
+      modeHost.replaceChildren(el("strong","",mode==="enforce"?"Enforced":"Shadow mode"),el("span","",mode==="enforce"?"Decisions affect recall":"Observing only"));
+      metricCards("metacognition-metrics",[
+        ["Calibration error",ready&&Number.isFinite(ece)?`${(ece*100).toFixed(1)}%`:"Learning",ready?"Expected calibration error · lower is better":`${Math.max(0,8-labeled)} more labeled outcomes needed`,"◎"],
+        ["Harmful labels",labeled?`${percent(negative,labeled)}%`:"—",`${formatNum(negative)} harmful or corrected of ${formatNum(labeled)} labeled`,"!"],
+        ["Brier score",ready&&Number.isFinite(brier)?brier.toFixed(3):"Learning",ready?"Probability error · 0 is perfect":"Shown after 8 explicit outcomes","◇"]
+      ],true);
+      renderCalibrationChart(monitor.calibration_bins||[],labeled);
+      renderMetacognitiveDecisionMix(summary);
+      renderMetacognitiveSources(monitor.by_source||[]);
+      renderMetacognitivePredictions();
+    }
+
+    function renderCalibrationChart(bins,labeled) {
+      const svg=document.getElementById("calibration-chart"),note=document.getElementById("calibration-note"),sampleHost=document.getElementById("calibration-samples"),W=900,H=340,L=72,R=30,T=28,B=58,plotW=W-L-R,plotH=H-T-B;svg.replaceChildren();sampleHost.textContent=`${formatNum(labeled)} labels`;
+      if(labeled<8){svg.append(svgText(W/2,145,"Calibration begins after 8 explicit outcomes","chart-title","middle"),svgText(W/2,174,`${Math.max(0,8-labeled)} more helpful, validated, harmful, or corrected labels needed`,"chart-label","middle"));note.textContent="Cortex is logging probabilities now, but it will not present a calibration score from an underpowered sample.";return;}
+      for(let index=0;index<5;index++){const ratio=index/4,x=L+ratio*plotW,y=T+(1-ratio)*plotH,label=`${Math.round(ratio*100)}%`;svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,class:"chart-grid"}),svgText(L-10,y+4,label,"chart-label","end"),svgText(x,H-28,label,"chart-label","middle"));}
+      svg.append(svgEl("line",{x1:L,y1:H-B,x2:W-R,y2:H-B,class:"chart-axis"}),svgEl("line",{x1:L,y1:T,x2:L,y2:H-B,class:"chart-axis"}),svgEl("path",{d:`M${L},${H-B} L${W-R},${T}`,class:"calibration-ideal"}),svgText(W-R-4,T+16,"Perfect calibration","chart-label","end"),svgText(L+plotW/2,H-7,"Predicted reliability","chart-label","middle"));
+      const yLabel=svgText(16,T+plotH/2,"Observed helpfulness","chart-label","middle");yLabel.setAttribute("transform",`rotate(-90 16 ${T+plotH/2})`);svg.append(yLabel);
+      const points=bins.map(row=>{const samples=Number(row.sample_count||0),predicted=Number(row.avg_probability||0),actual=Number(row.positive_count||0)/Math.max(1,samples);return{samples,predicted,actual,x:L+predicted*plotW,y:T+(1-actual)*plotH};}).filter(point=>point.samples>0).sort((a,b)=>a.predicted-b.predicted);
+      if(points.length>1)svg.append(svgEl("path",{d:points.map((point,index)=>`${index?"L":"M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" "),class:"calibration-observed"}));
+      points.forEach(point=>{const dot=svgEl("circle",{cx:point.x,cy:point.y,r:6,class:"calibration-point"}),title=svgEl("title");title.textContent=`${Math.round(point.predicted*100)}% predicted · ${Math.round(point.actual*100)}% helpful · ${point.samples} labels`;dot.append(title);svg.append(dot,svgText(point.x,Math.max(T+12,point.y-12),`n=${point.samples}`,"chart-label","middle"));});
+      note.textContent="The dashed diagonal is perfect calibration. Points above it were too cautious; points below it were overconfident. Only explicit helpful, validated, harmful, and corrected outcomes are included.";
+    }
+
+    function renderMetacognitiveDecisionMix(summary) {
+      const host=document.getElementById("metacognition-decision-mix"),rows=[["use",Number(summary.use_count||0)],["verify",Number(summary.verify_count||0)],["abstain",Number(summary.abstain_count||0)]],total=rows.reduce((count,row)=>count+row[1],0);host.replaceChildren();
+      if(!total){host.append(emptyState("Waiting for recall decisions","The next memory-bearing Kaya turn will create the first shadow judgment."));return;}
+      rows.forEach(([name,count])=>{const row=el("div","decision-mix-row"),track=el("div","bar-track"),fill=el("div",`bar-fill decision-fill ${name}`);fill.style.width=`${count/Math.max(1,total)*100}%`;track.append(fill);row.append(el("span","",name),track,el("strong","",`${formatNum(count)} · ${percent(count,total)}%`));host.append(row);});
+    }
+
+    function renderMetacognitiveSources(rows) {
+      const host=document.getElementById("metacognition-sources");host.replaceChildren();
+      if(!rows.length){host.append(emptyState("No source judgments yet","Source-level calibration appears after Cortex evaluates recalled memories."));return;}
+      rows.forEach(item=>{const labels=Number(item.labeled_count||0),positive=Number(item.positive_count||0),row=el("div","source-monitor-row"),copy=el("div","");copy.append(el("strong","",humanize(item.source_category)),el("span","",`${formatNum(item.prediction_count)} predictions`));row.append(copy,el("strong","",`${Math.round(Number(item.avg_probability||0)*100)}% predicted`),el("strong","",labels?`${percent(positive,labels)}% observed`:"Learning"),el("span","",`${formatNum(labels)} explicit labels`));host.append(row);});
+    }
+
+    function renderMetacognitivePredictions() {
+      if(!app.data)return;
+      const monitor=app.data.metacognition||{},rows=(monitor.recent_predictions||[]).filter(item=>app.metacognitionFilter==="all"||item.decision===app.metacognitionFilter).slice(0,60),host=document.getElementById("metacognition-predictions");host.replaceChildren();
+      if(!rows.length){host.append(emptyState("No matching trust decisions","Use Kaya normally, or choose another decision filter."));return;}
+      rows.forEach(item=>{const row=el("article","prediction-row"),memory=el("button","prediction-memory"),features=item.features||{},signals=el("div","prediction-signals");memory.type="button";memory.append(el("strong","",truncate(cleanMemory(item.memory_content),150)),el("p","",`${item.reason} · ${humanize(item.source_category)} · ${humanize(item.task_type)} · ${timeAgo(new Date(item.created_at))}`));[[`match ${Math.round(Number(features.direct_relevance||0)*100)}%`],[`source ${Math.round(Number(features.source_prior||0)*100)}%`],[`stale ${Math.round(Number(features.stale_risk||0)*100)}%`],[item.calibration_scope==="prior"?"prior only":`${humanize(item.calibration_scope)} · n=${formatNum(item.calibration_samples)}`]].forEach(([label])=>signals.append(el("span","",label)));memory.append(signals);memory.addEventListener("click",()=>selectMemory(item.memory_id));const score=el("div","prediction-score");score.append(el("strong","",`${Math.round(Number(item.calibrated_probability||0)*100)}%`),el("span","","reliability"));const status=el("div","prediction-status");status.append(el("span",`decision-chip ${item.decision}`,item.decision),el("span",`decision-chip ${item.outcome}`,item.outcome));row.append(memory,score,status);host.append(row);});
+    }
+
     function renderTools() {
       if(!app.data)return;
       const tools=app.data.tools||[], attempts=tools.reduce((n,t)=>n+Number(t.success_count||0)+Number(t.failure_count||0),0),success=tools.reduce((n,t)=>n+Number(t.success_count||0),0),failures=tools.reduce((n,t)=>n+Number(t.failure_count||0),0),rate=attempts?Math.round(success/attempts*100):0;
@@ -2460,12 +2759,13 @@
 
     function renderHealth() {
       if(!app.data)return;
-      const d=app.data,a=d.audit||{},memories=d.memories||[],quarantined=memories.filter(memory=>memory.state==="quarantine").length,dirty=Number(d.stats.dirty_memories||0),contradictions=Number(d.contradiction_count||0),unsupported=Number(a.unsupported_inferences||0),pending=Number(d.stats.pending_usage||0),structural=technicalIssueCount(a),decisionItems=dirty+contradictions+quarantined+unsupported,decisionTasks=[contradictions,quarantined,dirty,unsupported].filter(Boolean).length,status=structural?"repair":"ready",hero=document.getElementById("health-hero");hero.replaceChildren();
-      const statusCopy=structural?["×","Pause and repair the index",`${formatNum(structural)} structural checks failed. Search results may be incomplete, so start with the red action card before relying on recall.`,"Needs repair"]:decisionTasks?["✓","Safe to use",`The database and search index are healthy. ${formatNum(decisionTasks)} optional review ${decisionTasks===1?"task can":"tasks can"} improve memory quality, but ${decisionTasks===1?"it does":"they do"} not block recall.`,"Healthy"]:["✓","Healthy and caught up","Cortex's database and search index are intact, and there are no memory decisions waiting for you.","Healthy"],symbol=el("div","health-symbol",statusCopy[0]),copy=el("div","");copy.append(el("h2","",statusCopy[1]),el("p","small-meta",statusCopy[2]));hero.append(symbol,copy,el("div",`health-score-large ${status}`,statusCopy[3]));
-      metricCards("health-metrics",[["System safety",structural?"Pause use":"Safe to use",structural?`${formatNum(structural)} integrity checks failed`:"Database and search agree",structural?"!":"✓"],["Your decisions",decisionTasks,decisionItems?`${formatNum(decisionItems)} memory items grouped into clear review tasks`:"Nothing needs a human decision","↔"],["Resolves automatically",pending,pending?"Normal agent use will close these feedback records":"The learning loop is caught up","…"],["Vault coverage",d.stats.documents,`${formatNum(d.stats.document_chunks)} indexed sections`,"▤"]],true);
-      renderHealthActions({structural,dirty,contradictions,quarantined,unsupported,pending});
-      renderHealthAreas({structural,decisionTasks,pending,documents:Number(d.stats.documents||0),chunks:Number(d.stats.document_chunks||0)});
-      const checkDefs=[["Database integrity",a.ok?0:1],["Duplicate memory groups",a.duplicate_groups||0],["Missing search-index rows",a.missing_fts_rows||0],["Orphan search-index rows",a.orphan_fts_rows||0],["Semantic feature-stat mismatches",a.feature_stat_mismatches||0],["Orphan semantic feature stats",a.orphan_feature_stats||0],["Invalid score values",a.invalid_score_rows||0],["Orphan document chunks",a.orphan_document_chunks||0],["Orphan Sleep proposals",a.orphan_sleep_proposals||0],["Stuck usage records",a.stuck_pending_usage||0]],checks=document.getElementById("health-checks");checks.replaceChildren();
+      const d=app.data,a=d.audit||{},memories=d.memories||[],quarantined=memories.filter(memory=>memory.state==="quarantine").length,dirty=Number(d.stats.dirty_memories||0),contradictions=Number(d.contradiction_count||0),unsupported=Number(a.unsupported_inferences||0),duplicates=Number(a.duplicate_groups||0),pending=Number(d.stats.pending_usage||0),stuck=Number(a.stuck_pending_usage||0),structural=technicalIssueCount(a),decisionItems=dirty+contradictions+quarantined+unsupported+duplicates,decisionTasks=[contradictions,quarantined,dirty,unsupported,duplicates].filter(Boolean).length,maintenance=sleepHealthState(d),status=structural?"repair":"ready",hero=document.getElementById("health-hero");hero.replaceChildren();
+      const attention=decisionTasks+Number(maintenance.needsAttention)+Number(stuck>0),statusCopy=structural?["×","Recall may be incomplete",`${formatNum(structural)} index or database checks failed. Pause decisions based on recall until the red repair task is clear.`,"Repair first"]:attention?["✓","Safe to recall",`The storage and search path are intact. ${formatNum(attention)} non-blocking ${attention===1?"area could":"areas could"} use attention; each is separated below.`,"Operational"]:["✓","Healthy and observable","Recall is structurally safe, the review queue is clear, the learning loop is caught up, and maintenance is current.","Healthy"],symbol=el("div","health-symbol",statusCopy[0]),copy=el("div","");copy.append(el("h2","",statusCopy[1]),el("p","small-meta",statusCopy[2]));hero.append(symbol,copy,el("div",`health-score-large ${status}`,statusCopy[3]));
+      metricCards("health-metrics",[["Recall integrity",structural?"Blocked":"Passed",structural?`${formatNum(structural)} checks can affect retrieval`:"Database, FTS, features, and scores agree",structural?"!":"✓"],["Memory quality",decisionItems,decisionItems?`${formatNum(decisionTasks)} review queues; normal recall still works`:"No conflicting, blocked, or unsupported items","↔"],["Learning loop",pending,stuck?`${formatNum(stuck)} feedback records are older than one day`:pending?"Waiting for normal task outcomes":"All outcomes resolved","…"],["Sleep maintenance",maintenance.label,maintenance.copy,"◐"]],true);
+      renderHealthActions({structural,dirty,contradictions,quarantined,unsupported,duplicates,pending,stuck,maintenance});
+      renderHealthAreas({structural,decisionTasks,pending,stuck,maintenance,documents:Number(d.stats.documents||0),chunks:Number(d.stats.document_chunks||0)});
+      renderHealthMaintenance(maintenance,d);
+      const checkDefs=[["Recall integrity gate",structural],["Duplicate memory groups",duplicates],["Missing search-index rows",a.missing_fts_rows||0],["Orphan search-index rows",a.orphan_fts_rows||0],["Missing semantic features",a.missing_feature_memories||0],["Semantic feature-stat mismatches",a.feature_stat_mismatches||0],["Orphan semantic feature stats",a.orphan_feature_stats||0],["Invalid score values",a.invalid_score_rows||0],["Orphan document chunks",a.orphan_document_chunks||0],["Orphan Sleep proposals",a.orphan_sleep_proposals||0],["Stuck usage records",stuck]],checks=document.getElementById("health-checks");checks.replaceChildren();
       checkDefs.forEach(([label,value])=>{const row=el("div","health-row");row.append(el("span","",label),el("span",`health-value ${value?"warn":"good"}`,value?formatNum(value):"Clear"));checks.append(row);});
       const states=d.stats.states||{},total=Math.max(1,Object.values(states).reduce((n,v)=>n+v,0)),strip=document.getElementById("lifecycle-strip"),glossary=document.getElementById("health-glossary");strip.replaceChildren();glossary.replaceChildren();Object.entries(states).forEach(([state,count])=>{const part=el("span","");part.style.width=`${count/total*100}%`;part.style.background=stateColor(state);part.title=`${humanize(state)}: ${count}`;strip.append(part);});
       const definitions={active:"Available for the connected agent to recall.",cold:"Kept safely, but ranked lower until it becomes relevant again.",archived:"Retained for history but excluded from normal recall.",quarantine:"Blocked from recall because it needs review.",tombstoned:"Marked as removed while preserving an audit trail."};Object.entries(states).forEach(([state,count])=>{const row=el("div","glossary-row");row.append(el("strong","",`${humanize(state)} · ${formatNum(count)}`),el("p","",definitions[state]||"A managed Cortex lifecycle state."));glossary.append(row);});
@@ -2473,21 +2773,25 @@
       renderHealthReviewer();
     }
 
-    function renderHealthActions({structural,dirty,contradictions,quarantined,unsupported,pending}) {
-      const host=document.getElementById("health-actions"),summary=document.getElementById("health-action-summary"),decisionTasks=[contradictions,quarantined,dirty,unsupported].filter(Boolean).length,actions=[];host.replaceChildren();summary.replaceChildren();
-      [[`${structural?1:0} ${structural?"repair":"repairs"} required`,structural?"bad":""],[`${decisionTasks} human ${decisionTasks===1?"decision":"decisions"}`,decisionTasks?"review":""],[`${pending} automatic ${pending===1?"follow-up":"follow-ups"}`,pending?"auto":""]].forEach(([copy,tone])=>summary.append(el("span",`health-summary-chip ${tone}`,copy)));
+    function renderHealthActions({structural,dirty,contradictions,quarantined,unsupported,duplicates,pending,stuck,maintenance}) {
+      const host=document.getElementById("health-actions"),summary=document.getElementById("health-action-summary"),decisionTasks=[contradictions,quarantined,dirty,unsupported,duplicates].filter(Boolean).length,actions=[];host.replaceChildren();summary.replaceChildren();
+      [[`${structural?1:0} blocking ${structural?"repair":"repairs"}`,structural?"bad":""],[`${decisionTasks} optional ${decisionTasks===1?"review":"reviews"}`,decisionTasks?"review":""],[`${pending} learning automatically`,pending?"auto":""],[maintenance.label,maintenance.needsAttention?"review":""]].forEach(([copy,tone])=>summary.append(el("span",`health-summary-chip ${tone}`,copy)));
       if(structural)actions.push({tone:"bad",priority:"Fix now",title:"Repair search and database integrity",count:`${formatNum(structural)} failed checks`,summary:"Search results may be incomplete. Resolve this before evaluating the quality of individual memories.",why:"Structural failures are the only Health category that can make ordinary recall incomplete.",steps:["Open the failed checks below and note their exact names.","Copy and run the audit command on the Cortex host.","Repair the reported index data or restore the latest known-good backup, then run the audit again."],complete:"The audit returns OK and every structural check reads Clear.",target:"checks",primary:"Show failed checks",instructions:"cortex-memory audit",copyLabel:"Copy audit command"});
       if(quarantined)actions.push({tone:"review",priority:"Needs your decision",title:"Review blocked memories",count:`${formatNum(quarantined)} blocked`,summary:"These memories cannot enter agent context until you decide whether they are safe and accurate.",why:"Cortex detected unsafe prompt-like content or another reason to block recall instead of guessing.",steps:["Open the blocked memories and read the quarantine reason and provenance.","If the underlying fact is valid, restate it as clean evidence through your agent.","If it is unsafe or untrustworthy, leave it quarantined; no deletion is required."],complete:"Every blocked item is either deliberately quarantined or replaced by a safe, sourced memory.",target:"quarantine",primary:"Open blocked memories",instructions:"Review the quarantined Cortex memories. Inspect each reason and source. Restate valid facts as clean, versioned evidence; leave unsafe or untrusted content blocked. Do not hard-delete the audit history.",copyLabel:"Copy instructions"});
       if(contradictions)actions.push({tone:"review",priority:"Simple review",title:"Choose between conflicting memories",count:`${formatNum(contradictions)} pairs`,summary:"Cortex will show you one pair at a time. You only choose which statement is current, whether both are valid, or whether to skip it.",why:"A conflict can mean an old fact was replaced, two time periods differ, or both claims are valid in different situations.",steps:["Press Review here.","Read the two memory cards and their dates.","Choose one plain-language answer. Cortex preserves the old history automatically."],complete:"The pair is marked contextual or the outdated memory is archived with an audit trail.",target:"contradictions",primary:"Review here"});
       if(dirty)actions.push({tone:"review",priority:"Needs your decision",title:"Re-check memories built from changed evidence",count:`${formatNum(dirty)} changed`,summary:"These derived memories depend on evidence that was corrected or replaced.",why:"Cortex lowers trust in downstream conclusions when their supporting evidence changes.",steps:["Open dependency links and inspect the changed source.","Confirm whether the derived memory is still true.","Correct or regenerate it if the conclusion no longer follows from active evidence."],complete:"Every derived memory points to current evidence or has been corrected, cooled, or archived reversibly.",target:"dependencies",primary:"Open dependency map",instructions:"Review Cortex memories whose supporting evidence changed. Verify each derived claim against active sources. Preserve it if still supported; otherwise create a versioned correction or allow it to cool. Keep provenance and history intact.",copyLabel:"Copy instructions"});
       if(unsupported)actions.push({tone:"review",priority:"Simple review",title:"Check inferred memories",count:`${formatNum(unsupported)} inferred`,summary:"Cortex will show one statement at a time. Tell it whether the statement is correct, should be archived, or should be skipped for now.",why:"Cortex refuses to treat an agent guess as durable truth until evidence or an explicit user decision supports it.",steps:["Press Review here.","Read the statement and its source.","Choose Correct, Archive, or Not sure."],complete:"The inference is explicitly confirmed or moved safely out of normal recall.",target:"unsupported",primary:"Review here"});
-      if(pending)actions.push({tone:"auto",priority:"No action needed",title:"Let normal use finish feedback",count:`${formatNum(pending)} waiting`,summary:"Cortex is waiting to learn whether recently recalled context helped. This does not make the brain unhealthy.",why:"The connected harness resolves these records when later task outcomes are reported.",steps:["Keep using your agent normally.","Check again after those tasks finish; intervene only if Technical details reports a stuck usage record."],complete:"The pending count falls automatically as outcomes arrive.",target:null});
+      if(duplicates)actions.push({tone:"review",priority:"Review in Sleep",title:"Inspect exact duplicate groups",count:`${formatNum(duplicates)} groups`,summary:"These do not damage recall, but consolidation can reduce repeated evidence competing for the same context budget.",why:"Duplicate content is a memory-quality issue, not an index-integrity failure.",steps:["Open the Sleep log.","Run a shadow cycle to preview consolidation candidates.","Keep the stronger canonical memory and preserve the source records."],complete:"The duplicate groups are consolidated or deliberately retained.",target:"sleep",primary:"Open Sleep log"});
+      if(maintenance.needsAttention)actions.push({tone:"review",priority:"Maintenance",title:maintenance.actionTitle,count:maintenance.label,summary:maintenance.actionCopy,why:"Sleep is the auditable maintenance path. A missing or failed cycle does not break recall, but it removes evidence that offline review is current.",steps:["Open the Sleep log and inspect the timer state.","Run a manual shadow cycle; it cannot change live memory.","Confirm the run completes and produces an evidence ledger."],complete:"A recent shadow cycle completed and the next scheduled window is visible.",target:"sleep",primary:"Open Sleep log"});
+      if(stuck)actions.push({tone:"auto",priority:"Check adapter",title:"Close stale learning outcomes",count:`${formatNum(stuck)} older than one day`,summary:"These records no longer look like ordinary in-flight tasks. The connected harness may not be reporting outcomes.",why:"Stale feedback weakens budget learning but does not make stored recall unsafe.",steps:["Verify the harness reports task outcomes after recall.","Complete or cancel abandoned tasks through the normal adapter path.","Run the audit again and confirm Stuck usage records returns to Clear."],complete:"No pending usage record is older than one day.",instructions:"cortex-memory audit",copyLabel:"Copy audit command"});
       if(!actions.length)actions.push({tone:"good",priority:"Complete",title:"Nothing needs your attention",count:"0 tasks",summary:"Cortex is structurally healthy, its review queue is clear, and the learning loop is caught up.",why:"All current health gates have passed.",steps:["Continue normal use. Cortex will keep monitoring integrity, evidence, and outcomes."],complete:"No action is required.",target:null});
       actions.forEach((action,index)=>{const row=el("article",`health-action ${action.tone}`),number=el("div","health-action-index",String(index+1).padStart(2,"0")),body=el("div","health-action-copy"),head=el("div","health-action-head");head.append(el("strong","",action.title),el("span","health-priority",action.priority),el("span","health-action-count",action.count));body.append(head,el("p","",action.summary));const why=el("div","health-action-why");why.append(el("b","","Why it is flagged: "),document.createTextNode(action.why));body.append(why);const steps=el("ol","health-action-steps");action.steps.forEach(step=>steps.append(el("li","",step)));body.append(steps);const complete=el("div","health-action-complete");complete.append(el("b","","Resolved when: "),document.createTextNode(action.complete));body.append(complete);if(action.target||action.instructions){const buttons=el("div","health-action-buttons");if(action.target){const primary=el("button",index===0&&action.tone!=="auto"?"primary-btn":"ghost-btn",action.primary);primary.type="button";primary.addEventListener("click",()=>openHealthTarget(action.target));buttons.append(primary);}if(action.instructions){const copy=el("button","ghost-btn",action.copyLabel||"Copy instructions");copy.type="button";copy.addEventListener("click",()=>copyHealthInstructions(action.instructions));buttons.append(copy);}body.append(buttons);}row.append(number,body);host.append(row);});
     }
-    function renderHealthAreas({structural,decisionTasks,pending,documents,chunks}) {const host=document.getElementById("health-areas");host.replaceChildren();const areas=[["System integrity",structural?"bad":"good",structural?"Action required":"No action",structural?`${structural} database or search checks failed. Start with the red card.`:"The database, search index, and stored rows agree."],["Memory quality",decisionTasks?"review":"good",decisionTasks?`${decisionTasks} decisions`:"No action",decisionTasks?"Amber tasks improve accuracy but do not block normal recall.":"No contradictions, unsupported claims, or blocked memories need a decision."],["Learning loop",pending?"auto":"good",pending?"Automatic":"Caught up",pending?`${pending} outcomes will resolve through normal agent use.`:"All recorded recall outcomes have been resolved."],["Source coverage","good","Reference",`${documents} vault notes are represented by ${formatNum(chunks)} searchable sections. Coverage is not an accuracy score.`]];areas.forEach(([title,tone,status,copy])=>{const row=el("div",`health-area ${tone}`);row.append(el("span","health-area-dot"));const text=el("div","");text.append(el("strong","",title),el("p","",copy));row.append(text,el("span","health-area-status",status));host.append(row);});}
+    function renderHealthAreas({structural,decisionTasks,pending,stuck,maintenance,documents,chunks}) {const host=document.getElementById("health-areas");host.replaceChildren();const areas=[["01 · Recall integrity",structural?"bad":"good",structural?"Blocks safe recall":"Passed",structural?`${structural} database, search, feature, or score checks can make retrieval incomplete.`:"The database, full-text index, semantic features, and score ranges agree."],["02 · Memory quality",decisionTasks?"review":"good",decisionTasks?`${decisionTasks} review queues`:"Clear",decisionTasks?"Conflicts, blocked items, duplicates, or unsupported claims can be improved without stopping normal recall.":"No memory-quality queue needs a human decision."],["03 · Learning loop",stuck?"review":pending?"auto":"good",stuck?"Adapter check":pending?"Automatic":"Caught up",stuck?`${stuck} outcome records are stale; budget learning may lag.`:pending?`${pending} in-flight outcomes should close through normal agent use.`:"Every recorded recall outcome is resolved."],["04 · Sleep maintenance",maintenance.needsAttention?"review":"good",maintenance.label,`${maintenance.copy} Source coverage: ${documents} notes and ${formatNum(chunks)} searchable sections.`]];areas.forEach(([title,tone,status,copy])=>{const row=el("div",`health-area ${tone}`);row.append(el("span","health-area-dot"));const text=el("div","");text.append(el("strong","",title),el("p","",copy));row.append(text,el("span","health-area-status",status));host.append(row);});}
+    function sleepHealthState(data){const runs=[...(data.sleep_runs||[])].sort(sleepNewest),latest=runs[0],schedule=data.sleep_schedule||{};if(!latest)return{label:"Not run yet",copy:"No offline maintenance report exists.",needsAttention:true,actionTitle:"Create the first maintenance proof",actionCopy:"Run a shadow cycle so Health can show replay, proposals, and zero live changes."};const status=String(latest.status||"").toLowerCase(),ended=Date.parse(latest.completed_at||latest.started_at),ageHours=Number.isFinite(ended)?(Date.now()-ended)/3600000:Infinity;if(status==="failed")return{label:"Last run failed",copy:`The latest cycle stopped ${timeAgo(new Date(latest.started_at))}. Recall still works.`,needsAttention:true,run:latest,actionTitle:"Inspect the failed Sleep cycle",actionCopy:"The last offline maintenance pass did not finish; its error and completed phases are preserved in the run log."};if(ageHours>36)return{label:"Overdue",copy:`The last completed cycle is ${Math.floor(ageHours)} hours old.`,needsAttention:true,run:latest,actionTitle:"Refresh offline maintenance",actionCopy:"The nightly maintenance record is older than its expected window. Check the timer, then run a shadow cycle."};return{label:"Current",copy:`Last ${humanize(latest.mode)} cycle completed ${timeAgo(new Date(latest.completed_at||latest.started_at))}.`,needsAttention:schedule.active===false,run:latest,actionTitle:"Enable the Sleep timer",actionCopy:"The latest run is current, but the installed schedule reports inactive."};}
+    function renderHealthMaintenance(maintenance,data){const host=document.getElementById("health-maintenance"),run=maintenance.run,effects=run?data.sleep_effects?.[run.run_id]||{}:{};host.replaceChildren();const card=el("div",`sleep-effect-card ${maintenance.needsAttention?"proposed":"applied"}`);card.append(el("span","","Maintenance status"),el("strong","",maintenance.label),el("p","",maintenance.copy));const signals=el("div","sleep-effect-signals");if(run){signals.append(el("b","",`${humanize(run.mode)} · ${humanize(run.status)}`),el("b","",`${sleepDuration(run)} runtime`),el("b","",`${formatNum(effects.live_edge_changes||0)} live link changes`),el("b","",`${formatNum(effects.live_state_changes||0)} live state changes`));}else signals.append(el("b","","No run evidence"));card.append(signals);host.append(card);}
     async function copyHealthInstructions(text){try{await navigator.clipboard.writeText(text);showToast("Health instructions copied");}catch(_){const field=document.createElement("textarea");field.value=text;field.setAttribute("readonly","");field.style.position="fixed";field.style.opacity="0";document.body.append(field);field.select();document.execCommand("copy");field.remove();showToast("Health instructions copied");}}
-    function openHealthTarget(target){if(target==="checks"){document.getElementById("health-checks").scrollIntoView({behavior:"smooth",block:"center"});return;}if(target==="contradictions"||target==="unsupported"){startHealthReview(target);return;}if(target==="quarantine"){document.getElementById("memory-state").value="quarantine";app.explorerPage=1;setView("explorer");renderExplorer();return;}setView("graph");if(target==="dependencies")document.getElementById("graph-relation").value="dependency";renderActiveGraph();}
+    function openHealthTarget(target){if(target==="checks"){const details=document.querySelector(".health-technical");details.open=true;details.scrollIntoView({behavior:"smooth",block:"center"});return;}if(target==="sleep"){setView("cognition");requestAnimationFrame(()=>document.getElementById("cortex-sleep").scrollIntoView({behavior:"smooth",block:"start"}));return;}if(target==="contradictions"||target==="unsupported"){startHealthReview(target);return;}if(target==="quarantine"){document.getElementById("memory-state").value="quarantine";app.explorerPage=1;setView("explorer");renderExplorer();return;}setView("graph");if(target==="dependencies")document.getElementById("graph-relation").value="dependency";renderActiveGraph();}
 
     function healthReviewItems(kind=app.healthReview.kind){const reviews=app.data?.health_reviews||{};return kind==="contradictions"?(reviews.contradictions||[]):kind==="unsupported"?(reviews.unsupported_inferences||[]):[];}
     function startHealthReview(kind){app.healthReview={kind,index:0,pending:null,busy:false};setView("health");renderHealthReviewer();requestAnimationFrame(()=>document.getElementById("health-reviewer").scrollIntoView({behavior:"smooth",block:"start"}));}
@@ -2533,7 +2837,7 @@
     function showToast(message,isError=false){const toast=document.getElementById("toast");toast.textContent=message;toast.style.borderColor=isError?"rgba(241,120,132,.4)":"";toast.classList.add("show");clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>toast.classList.remove("show"),2800);}
     function scrollExplorer(){document.querySelector(".explorer-panel").scrollIntoView({behavior:"smooth",block:"start"});}
 
-    function technicalIssueCount(a){const count=Number(a.duplicate_groups||0)+Number(a.orphan_fts_rows||0)+Number(a.missing_fts_rows||0)+Number(a.orphan_feature_rows||0)+Number(a.missing_feature_memories||0)+Number(a.feature_stat_mismatches||0)+Number(a.orphan_feature_stats||0)+Number(a.invalid_score_rows||0)+Number(a.stuck_pending_usage||0)+Number(a.orphan_document_chunks||0)+Number(a.orphan_sleep_proposals||0);return count||Number(a.ok===false);}
+    function technicalIssueCount(a){return Number(a.orphan_fts_rows||0)+Number(a.missing_fts_rows||0)+Number(a.orphan_feature_rows||0)+Number(a.missing_feature_memories||0)+Number(a.feature_stat_mismatches||0)+Number(a.orphan_feature_stats||0)+Number(a.invalid_score_rows||0)+Number(a.orphan_document_chunks||0);}
     function relationFocus(){return document.getElementById("graph-relation")?.value||"";}
     function edgeDisplayColor(relation,transparent=false){const focus=relationFocus();return focus&&relation!==focus?colorWithAlpha(cssVar("--muted"),transparent?.05:.16):edgeColor(relation);}
     function colorWithAlpha(color,alpha){const hex=String(color).trim();if(/^#[0-9a-f]{3}$/i.test(hex)){const parts=hex.slice(1).split("").map(char=>parseInt(char+char,16));return`rgba(${parts.join(",")},${alpha})`;}if(/^#[0-9a-f]{6}$/i.test(hex)){const parts=[1,3,5].map(index=>parseInt(hex.slice(index,index+2),16));return`rgba(${parts.join(",")},${alpha})`;}const match=hex.match(/rgba?\(([^)]+)\)/i);if(match)return`rgba(${match[1].split(",").slice(0,3).join(",")},${alpha})`;return hex;}

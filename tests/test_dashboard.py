@@ -85,8 +85,27 @@ class DashboardInterfaceTests(unittest.TestCase):
             "sleep-proposal-list",
             "sleep-start",
             "sleep-progress",
+            "sleep-next-run",
+            "sleep-run-stats",
+            "sleep-process",
+            "sleep-run-history",
+            "sleep-effects",
+            "sleep-ledger-filters",
             "trend-chart",
             "trend-legend",
+            "capacity-impact-chart",
+            "capacity-impact-legend",
+            "capacity-impact-summary",
+            "capacity-impact-range",
+            "view-trust",
+            "metacognition-mode",
+            "metacognition-metrics",
+            "calibration-chart",
+            "calibration-samples",
+            "metacognition-decision-mix",
+            "metacognition-sources",
+            "metacognition-filter",
+            "metacognition-predictions",
             "kind-guide",
             "view-settings",
             "settings-theme-slot",
@@ -100,6 +119,7 @@ class DashboardInterfaceTests(unittest.TestCase):
             "health-review-progress",
             "health-review-close",
             "health-areas",
+            "health-maintenance",
             "auth-gate",
             "auth-login-form",
             "auth-forced-change-form",
@@ -121,14 +141,28 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function startSleepSession", html)
         self.assertIn("/api/sleep/start", html)
         self.assertIn("function renderTrendChart", html)
+        self.assertIn("app.data.memory_timeline_by_day_kind", html)
+        self.assertIn("renderTimelineBars(timelineRows)", html)
+        self.assertIn("function renderCapacityImpactChart", html)
+        self.assertIn("outcome-backed memory accuracy proxy", html)
+        self.assertIn("function renderMetacognition", html)
+        self.assertIn("function renderCalibrationChart", html)
+        self.assertIn("Does Cortex know when to doubt itself?", html)
+        self.assertIn("Observe the judgments before enforcing them.", html)
+        self.assertIn("used, verified, or withheld", html)
         self.assertIn("function renderKindGuide", html)
         self.assertIn("Cortex Sleep", html)
-        self.assertIn("Shadow watches without changing memory.", html)
+        self.assertIn("Proposed is not applied.", html)
+        self.assertIn("Exactly what one cycle does", html)
+        self.assertIn("function renderSleepLedger", html)
+        self.assertIn("Observed after this run", html)
         self.assertIn("function renderHealthActions", html)
         self.assertIn("function copyHealthInstructions", html)
         self.assertIn("Simple review", html)
-        self.assertIn("No action needed", html)
+        self.assertIn("learning automatically", html)
         self.assertIn("Resolved when:", html)
+        self.assertIn("Four independent health layers", html)
+        self.assertIn("function sleepHealthState", html)
         self.assertIn("function renderHealthReviewer", html)
         self.assertIn("Which statement should Cortex use now?", html)
         self.assertIn("Both are valid in different situations", html)
@@ -173,6 +207,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("CORTEX_DASHBOARD_REVIEWS=1", readme)
         self.assertIn('parsed.path == "/api/sleep/start"', server)
         self.assertIn('SleepConfig(mode="shadow", reflection_token_budget=0)', server)
+        self.assertIn('snapshot["sleep_schedule"] = sleep_schedule()', server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 

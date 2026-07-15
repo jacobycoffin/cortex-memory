@@ -87,6 +87,18 @@ Ranking keeps these signals separate until the final score:
 
 Selection then applies a minimum threshold, duplicate suppression, claim-family caps, type diversity, top-k, and the plan's token budget. A weak result can produce an empty evidence block.
 
+## Metacognitive source monitoring
+
+Retrieval relevance and memory reliability are separate judgments. After ranking, `metacognition.py` computes an inspectable pre-outcome probability from source provenance, memory confidence, source trust, currentness, direct match, outcome-backed utility, stale risk, dirty evidence, supersession, and prior harm. It records one of three proposed actions:
+
+- `use` for sufficiently supported evidence;
+- `verify` for plausible but weak, stale, inferred, or sparsely calibrated evidence;
+- `abstain` below the conservative reliability boundary.
+
+Every judgment is stored in `metacognitive_predictions` before its outcome. Explicit helpful/validated outcomes are positive calibration labels; harmful/corrected outcomes are negative labels. Used, ignored, pending, and withheld records remain visible but do not pretend to be correctness labels.
+
+The default `metacognition_mode=shadow` records what the policy would do without changing the evidence block. `enforce` is experimental: it can withhold `abstain` candidates and labels `verify` candidates inside the model-facing evidence block. Calibration learns conservatively within probability bands, preferring task-and-source evidence and requiring progressively larger samples before task-wide or global fallback. Retrieval frequency alone never changes the probability.
+
 ## Feedback and attribution
 
 Every injected set becomes a pending usage batch. After the answer, Cortex credits only memories with evidence of use:

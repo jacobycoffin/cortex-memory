@@ -7,6 +7,8 @@ import binascii
 import hmac
 import json
 import os
+import shutil
+import subprocess
 import threading
 import time
 import webbrowser
@@ -18,6 +20,66 @@ from urllib.parse import parse_qs, urlparse
 from .dashboard_auth import DashboardAuth, SESSION_COOKIE
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
+
+
+DEFAULT_SLEEP_SCHEDULE = "Nightly · 03:00–05:00 local window"
+
+
+def _sleep_schedule_status() -> dict[str, object]:
+    """Read the installed systemd timer without making the dashboard depend on it."""
+
+    status: dict[str, object] = {
+        "source": "bundled systemd timer",
+        "schedule": os.environ.get("CORTEX_SLEEP_SCHEDULE_LABEL", DEFAULT_SLEEP_SCHEDULE),
+        "active": None,
+        "enabled": None,
+        "next_run": os.environ.get("CORTEX_SLEEP_NEXT_RUN") or None,
+        "last_trigger": None,
+        "detail": "Starts at 03:00 local time with up to two hours of randomized delay; missed runs catch up.",
+    }
+    systemctl = shutil.which("systemctl")
+    if not systemctl:
+        status["source"] = "bundled schedule"
+        status["detail"] += " Live timer state is unavailable on this host."
+        return status
+    try:
+        result = subprocess.run(
+            [
+                systemctl,
+                "--user",
+                "show",
+                "cortex-sleep.timer",
+                "--property=ActiveState",
+                "--property=UnitFileState",
+                "--property=NextElapseUSecRealtime",
+                "--property=LastTriggerUSec",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        status["detail"] += " The installed timer could not be queried."
+        return status
+    if result.returncode != 0:
+        status["detail"] += " The timer is not installed for this dashboard user."
+        return status
+    values = {}
+    for line in result.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator:
+            values[key] = value.strip()
+    status.update(
+        {
+            "source": "live systemd timer",
+            "active": values.get("ActiveState") == "active",
+            "enabled": values.get("UnitFileState") == "enabled",
+            "next_run": values.get("NextElapseUSecRealtime") or status["next_run"],
+            "last_trigger": values.get("LastTriggerUSec") or None,
+        }
+    )
+    return status
 
 
 def _basic_auth_valid(header: str | None, username: str, password: str) -> bool:
@@ -90,6 +152,16 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         "error": None,
     }
     sleep_job: dict[str, threading.Thread | None] = {"thread": None}
+    schedule_cache: dict[str, object] = {"checked_at": 0.0, "value": None}
+
+    def sleep_schedule() -> dict[str, object]:
+        now = time.monotonic()
+        cached = schedule_cache.get("value")
+        if isinstance(cached, dict) and now - float(schedule_cache.get("checked_at") or 0) < 60:
+            return dict(cached)
+        value = _sleep_schedule_status()
+        schedule_cache.update({"checked_at": now, "value": value})
+        return dict(value)
 
     def sleep_status() -> dict[str, object]:
         with sleep_lock:
@@ -203,6 +275,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 snapshot = store.dashboard_snapshot()
                 snapshot["review_writes_enabled"] = reviews_enabled
                 snapshot["sleep_runtime"] = sleep_status()
+                snapshot["sleep_schedule"] = sleep_schedule()
                 self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/sleep/status":

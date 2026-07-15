@@ -174,6 +174,19 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIn("recall_summary", snapshot)
         self.assertIn("tool_workflows", snapshot)
         self.assertIn("lifecycle_events", snapshot)
+        self.assertIn("capacity_impact_by_day", snapshot)
+        self.assertIn("metacognition", snapshot)
+
+    def test_dashboard_timeline_aggregates_ignore_memory_detail_limit(self) -> None:
+        self.store.add_memory("First complete timeline memory.", kind="episode")
+        self.store.add_memory("Second complete timeline memory.", kind="semantic")
+
+        snapshot = self.store.dashboard_snapshot(memory_limit=1)
+        timeline = snapshot["memory_timeline_by_day_kind"]
+
+        self.assertEqual(len(snapshot["memories"]), 1)
+        self.assertEqual(sum(int(row["count"]) for row in timeline), 2)
+        self.assertEqual({row["kind"] for row in timeline}, {"episode", "semantic"})
 
     def test_dashboard_snapshot_includes_daily_activity_trends(self) -> None:
         first, _ = self.store.add_memory("A daily trend memory.", kind="episode")
@@ -189,6 +202,13 @@ class CortexStoreTests(unittest.TestCase):
                    ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 ("trend-tool", "trend-session", "test", "trend", "search", "[]", 1, None, "ok", now),
             )
+            conn.execute(
+                """INSERT INTO recall_budget_observations(
+                   task_id,task_type,mode,requested_budget,estimated_tokens,selected_count,
+                   used_count,outcome,created_at,resolved_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                ("trend-outcome", "test", "focused", 700, 140, 2, 2, "helpful", now, now),
+            )
 
         today = now[:10]
         trend = {row["day"]: row for row in self.store.dashboard_snapshot()["activity_trends"]}[today]
@@ -196,6 +216,10 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(trend["connections_made"], 1)
         self.assertEqual(trend["memories_pruned"], 1)
         self.assertEqual(trend["tool_calls"], 1)
+        capacity = {row["day"]: row for row in self.store.dashboard_snapshot()["capacity_impact_by_day"]}[today]
+        self.assertEqual(capacity["stored_capacity"], 2)
+        self.assertEqual(capacity["helpful_outcomes"], 1)
+        self.assertEqual(capacity["resolved_outcomes"], 1)
 
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()

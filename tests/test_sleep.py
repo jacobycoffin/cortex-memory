@@ -90,6 +90,30 @@ class CortexSleepTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(edge)
 
+    def test_dashboard_snapshot_exposes_sleep_evidence_changes_and_effect_windows(self) -> None:
+        first, second = self._memory_pair()
+        self._two_helpful_witnesses((first, second))
+
+        report = run_sleep(self.store, SleepConfig(mode="apply"))
+        snapshot = self.store.dashboard_snapshot()
+
+        run = next(item for item in snapshot["sleep_runs"] if item["run_id"] == report["run_id"])
+        proposal = next(item for item in snapshot["sleep_proposals"] if item["run_id"] == report["run_id"])
+        change = next(item for item in snapshot["sleep_edge_changes"] if item["run_id"] == report["run_id"])
+        effects = snapshot["sleep_effects"][report["run_id"]]
+
+        self.assertEqual(run["report"]["usage_tasks_replayed"], 2)
+        self.assertEqual(
+            {proposal["src_content"], proposal["dst_content"]},
+            {
+                "Hermes database backups use restic snapshots with encrypted retention.",
+                "The nightly backup verification checks the most recent snapshot before pruning.",
+            },
+        )
+        self.assertEqual(change["relation"], "sleep_replay")
+        self.assertEqual(effects["live_edge_changes"], 1)
+        self.assertEqual(snapshot["sleep_state_changes"], [])
+
     def test_undo_refuses_to_overwrite_a_later_edge_change(self) -> None:
         first, second = self._memory_pair()
         self._two_helpful_witnesses((first, second))

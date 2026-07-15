@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _STOP = {
     "a",
@@ -391,6 +391,32 @@ class CortexStore:
             );
             CREATE INDEX IF NOT EXISTS idx_budget_observations_lookup
               ON recall_budget_observations(task_type,mode,outcome,created_at);
+
+            CREATE TABLE IF NOT EXISTS metacognitive_predictions (
+                prediction_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                task_type TEXT NOT NULL,
+                recall_mode TEXT NOT NULL,
+                monitor_mode TEXT NOT NULL DEFAULT 'shadow',
+                source_category TEXT NOT NULL,
+                raw_probability REAL NOT NULL,
+                calibrated_probability REAL NOT NULL,
+                decision TEXT NOT NULL,
+                applied INTEGER NOT NULL DEFAULT 0,
+                reason TEXT NOT NULL,
+                calibration_scope TEXT NOT NULL DEFAULT 'prior',
+                calibration_samples INTEGER NOT NULL DEFAULT 0,
+                features_json TEXT NOT NULL DEFAULT '{}',
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                resolved_at TEXT,
+                UNIQUE(task_id,memory_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_metacognitive_outcomes
+              ON metacognitive_predictions(task_type,source_category,outcome,created_at);
+            CREATE INDEX IF NOT EXISTS idx_metacognitive_created
+              ON metacognitive_predictions(created_at DESC);
 
             CREATE TABLE IF NOT EXISTS lifecycle_events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1101,6 +1127,71 @@ class CortexStore:
             "negative_count": negative_count,
         }
 
+    def calibrate_metacognitive_probability(
+        self,
+        raw_probability: float,
+        *,
+        task_type: str,
+        source_category: str,
+        min_samples: int = 8,
+    ) -> dict[str, Any]:
+        """Conservatively adjust a reliability estimate from comparable outcomes.
+
+        Calibration stays dormant until a probability band has enough explicit
+        helpful/validated or harmful/corrected outcomes. Exact task and source
+        evidence is preferred, with progressively stricter gates for fallbacks.
+        """
+
+        raw = _clamp(raw_probability)
+        bucket = min(4, int(raw * 5.0))
+        task = normalize_text(task_type)[:80] or "general"
+        source = normalize_text(source_category)[:80] or "AGENT_INFERENCE"
+        required = max(4, int(min_samples))
+        scopes = (
+            ("task_source", "AND task_type=? AND source_category=?", (task, source), required),
+            ("task", "AND task_type=?", (task,), required * 2),
+            ("global", "", (), required * 3),
+        )
+        strongest_sample = 0
+        with self._lock:
+            for scope, clause, params, gate in scopes:
+                row = self._conn.execute(
+                    f"""SELECT COUNT(*) sample_count,
+                               SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count
+                        FROM metacognitive_predictions
+                        WHERE outcome IN ('helpful','validated','harmful','corrected')
+                          AND CASE WHEN raw_probability>=1.0 THEN 4
+                                   ELSE CAST(raw_probability*5 AS INTEGER) END=?
+                          {clause}""",
+                    (bucket, *params),
+                ).fetchone()
+                sample_count = int(row["sample_count"] or 0)
+                strongest_sample = max(strongest_sample, sample_count)
+                if sample_count < gate:
+                    continue
+                positive_count = int(row["positive_count"] or 0)
+                observed_rate = (positive_count + 2.0) / (sample_count + 4.0)
+                weight = min(0.45, sample_count / (sample_count + 24.0))
+                probability = (1.0 - weight) * raw + weight * observed_rate
+                return {
+                    "probability": round(_clamp(probability), 6),
+                    "raw_probability": round(raw, 6),
+                    "scope": scope,
+                    "sample_count": sample_count,
+                    "positive_count": positive_count,
+                    "observed_rate": round(observed_rate, 6),
+                    "weight": round(weight, 6),
+                }
+        return {
+            "probability": round(raw, 6),
+            "raw_probability": round(raw, 6),
+            "scope": "prior",
+            "sample_count": strongest_sample,
+            "positive_count": 0,
+            "observed_rate": None,
+            "weight": 0.0,
+        }
+
     def claim_memories(
         self,
         subject: str,
@@ -1771,9 +1862,14 @@ class CortexStore:
         recall_mode: str | None = None,
         requested_budget: int = 0,
         estimated_tokens: int = 0,
+        metacognitive_assessments: Sequence[dict[str, Any]] = (),
+        metacognition_mode: str = "shadow",
     ) -> str:
         task_id = str(uuid.uuid4())
         now = utc_now()
+        task_type_value = normalize_text(task_type or "general")[:80] or "general"
+        recall_mode_value = normalize_text(recall_mode or "unknown")[:40] or "unknown"
+        monitor_mode = "enforce" if str(metacognition_mode).casefold() == "enforce" else "shadow"
         with self.transaction() as conn:
             for memory_id, score in items:
                 conn.execute(
@@ -1790,12 +1886,49 @@ class CortexStore:
                        ) VALUES(?,?,?,?,?,?,?)""",
                     (
                         task_id,
-                        normalize_text(task_type)[:80],
-                        normalize_text(recall_mode)[:40],
+                        task_type_value,
+                        recall_mode_value,
                         max(1, int(requested_budget)),
                         max(0, int(estimated_tokens)),
                         len(items),
                         now,
+                    ),
+                )
+            for assessment in metacognitive_assessments:
+                memory_id = str(assessment.get("memory_id") or "")
+                if not memory_id:
+                    continue
+                decision = str(assessment.get("decision") or "verify").casefold()
+                if decision not in {"use", "verify", "abstain"}:
+                    decision = "verify"
+                applied = bool(assessment.get("applied"))
+                initial_outcome = "withheld" if applied and decision == "abstain" else "pending"
+                conn.execute(
+                    """INSERT INTO metacognitive_predictions(
+                       prediction_id,task_id,memory_id,task_type,recall_mode,monitor_mode,
+                       source_category,raw_probability,calibrated_probability,decision,
+                       applied,reason,calibration_scope,calibration_samples,features_json,
+                       outcome,created_at,resolved_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        str(uuid.uuid4()),
+                        task_id,
+                        memory_id,
+                        task_type_value,
+                        recall_mode_value,
+                        monitor_mode,
+                        normalize_text(str(assessment.get("source_category") or "AGENT_INFERENCE"))[:80],
+                        _clamp(float(assessment.get("raw_probability") or 0.0)),
+                        _clamp(float(assessment.get("calibrated_probability") or 0.0)),
+                        decision,
+                        int(applied),
+                        normalize_text(str(assessment.get("reason") or "No rationale recorded."))[:500],
+                        normalize_text(str(assessment.get("calibration_scope") or "prior"))[:40],
+                        max(0, int(assessment.get("calibration_samples") or 0)),
+                        json.dumps(assessment.get("features") or {}, sort_keys=True),
+                        initial_outcome,
+                        now,
+                        now if initial_outcome == "withheld" else None,
                     ),
                 )
         return task_id
@@ -1815,6 +1948,11 @@ class CortexStore:
                     """UPDATE usage_records SET used=?,attribution=?,outcome=?,resolved_at=?
                        WHERE task_id=? AND memory_id=?""",
                     (int(used), attribution, "used" if used else "ignored", now, task_id, memory_id),
+                )
+                conn.execute(
+                    """UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
+                       WHERE task_id=? AND memory_id=? AND outcome='pending'""",
+                    ("used" if used else "ignored", now, task_id, memory_id),
                 )
                 resolved += 1
             used_count = sum(
@@ -1840,6 +1978,14 @@ class CortexStore:
                 "UPDATE usage_records SET outcome=?,resolved_at=? WHERE task_id=? AND used=1",
                 (outcome, utc_now(), task_id),
             )
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""UPDATE metacognitive_predictions SET outcome=?,resolved_at=?
+                        WHERE task_id=? AND memory_id IN ({placeholders})
+                          AND outcome IN ('pending','used')""",
+                    (outcome, utc_now(), task_id, *ids),
+                )
             conn.execute(
                 """UPDATE recall_budget_observations SET outcome=?,resolved_at=?
                    WHERE task_id=? AND used_count>0""",
@@ -2165,6 +2311,9 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM tool_workflows) tool_workflows, "
                 "(SELECT COUNT(*) FROM recall_runs) recall_runs, "
                 "(SELECT COUNT(*) FROM recall_budget_observations WHERE outcome<>'pending') budget_observations, "
+                "(SELECT COUNT(*) FROM metacognitive_predictions) metacognitive_predictions, "
+                "(SELECT COUNT(*) FROM metacognitive_predictions "
+                " WHERE outcome IN ('helpful','validated','harmful','corrected')) metacognitive_labels, "
                 "(SELECT COUNT(*) FROM pruning_regret) pruning_regrets, "
                 "(SELECT COUNT(*) FROM consolidation_runs WHERE dry_run=0) consolidations, "
                 "(SELECT COUNT(*) FROM sleep_runs) sleep_runs, "
@@ -2221,6 +2370,12 @@ class CortexStore:
             access_rows = self._conn.execute(
                 """SELECT substr(created_at,1,10) day,event,COUNT(*) count
                    FROM access_log GROUP BY day,event ORDER BY day DESC LIMIT 500"""
+            ).fetchall()
+            memory_timeline_rows = self._conn.execute(
+                """SELECT substr(observed_at,1,10) day,kind,COUNT(*) count
+                   FROM memories
+                   WHERE observed_at IS NOT NULL AND observed_at<>''
+                   GROUP BY day,kind ORDER BY day,kind"""
             ).fetchall()
             memory_trend_rows = self._conn.execute(
                 """SELECT substr(created_at,1,10) day,COUNT(*) count
@@ -2345,13 +2500,185 @@ class CortexStore:
                           association_proposals,interference_proposals,edge_decay_proposals,
                           lifecycle_candidates,consolidation_candidates,dependency_candidates,
                           applied_changes,reflection_token_budget,reflection_estimated_tokens,
-                          reflection_billed_tokens,reflection_status,error,started_at,completed_at
+                          reflection_billed_tokens,reflection_status,report_json,error,started_at,completed_at
                    FROM sleep_runs ORDER BY started_at DESC LIMIT 100"""
             ).fetchall()
             sleep_proposal_rows = self._conn.execute(
-                """SELECT proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
-                          rationale,created_at
-                   FROM sleep_proposals ORDER BY created_at DESC LIMIT 250"""
+                """SELECT p.proposal_id,p.run_id,p.kind,p.src_id,p.dst_id,p.status,p.score,
+                          p.evidence_count,p.rationale,p.details_json,p.created_at,
+                          src.kind src_kind,src.state src_state,src.content src_content,
+                          dst.kind dst_kind,dst.state dst_state,dst.content dst_content
+                   FROM sleep_proposals p
+                   LEFT JOIN memories src ON src.id=p.src_id
+                   LEFT JOIN memories dst ON dst.id=p.dst_id
+                   ORDER BY p.created_at DESC LIMIT 1000"""
+            ).fetchall()
+            sleep_edge_change_rows = self._conn.execute(
+                """SELECT c.change_id,c.run_id,c.src_id,c.dst_id,c.relation,c.prior_exists,
+                          c.prior_weight,c.prior_evidence_count,c.next_weight,
+                          c.next_evidence_count,c.created_at,c.reversed_at,
+                          src.kind src_kind,src.content src_content,
+                          dst.kind dst_kind,dst.content dst_content
+                   FROM sleep_edge_changes c
+                   JOIN memories src ON src.id=c.src_id
+                   JOIN memories dst ON dst.id=c.dst_id
+                   ORDER BY c.change_id DESC LIMIT 1000"""
+            ).fetchall()
+            sleep_state_change_rows = self._conn.execute(
+                """SELECT c.change_id,c.run_id,c.memory_id,c.prior_state,c.next_state,
+                          c.created_at,c.reversed_at,m.kind memory_kind,m.content memory_content
+                   FROM sleep_state_changes c
+                   JOIN memories m ON m.id=c.memory_id
+                   ORDER BY c.change_id DESC LIMIT 1000"""
+            ).fetchall()
+            sleep_effect_rows = self._conn.execute(
+                """SELECT r.run_id,
+                          (SELECT COUNT(*) FROM recall_runs rr
+                           WHERE rr.created_at>=COALESCE(r.completed_at,r.started_at)
+                             AND rr.created_at<COALESCE(
+                               (SELECT MIN(n.started_at) FROM sleep_runs n WHERE n.started_at>r.started_at),
+                               '9999-12-31T23:59:59.999+00:00')) recall_runs_after,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome IN ('helpful','validated')
+                             AND COALESCE(b.resolved_at,b.created_at)>=COALESCE(r.completed_at,r.started_at)
+                             AND COALESCE(b.resolved_at,b.created_at)<COALESCE(
+                               (SELECT MIN(n.started_at) FROM sleep_runs n WHERE n.started_at>r.started_at),
+                               '9999-12-31T23:59:59.999+00:00')) helpful_outcomes_after,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome IN ('harmful','corrected')
+                             AND COALESCE(b.resolved_at,b.created_at)>=COALESCE(r.completed_at,r.started_at)
+                             AND COALESCE(b.resolved_at,b.created_at)<COALESCE(
+                               (SELECT MIN(n.started_at) FROM sleep_runs n WHERE n.started_at>r.started_at),
+                               '9999-12-31T23:59:59.999+00:00')) harmful_outcomes_after,
+                          (SELECT COUNT(*) FROM pruning_regret p
+                           WHERE p.created_at>=COALESCE(r.completed_at,r.started_at)
+                             AND p.created_at<COALESCE(
+                               (SELECT MIN(n.started_at) FROM sleep_runs n WHERE n.started_at>r.started_at),
+                               '9999-12-31T23:59:59.999+00:00')) pruning_regrets_after,
+                          (SELECT COUNT(*) FROM sleep_edge_changes c
+                           WHERE c.run_id=r.run_id AND c.reversed_at IS NULL) live_edge_changes,
+                          (SELECT COUNT(*) FROM sleep_state_changes c
+                           WHERE c.run_id=r.run_id AND c.reversed_at IS NULL) live_state_changes,
+                          (SELECT COUNT(*) FROM sleep_edge_changes c
+                           WHERE c.run_id=r.run_id AND c.reversed_at IS NOT NULL) reversed_edge_changes,
+                          (SELECT COUNT(*) FROM sleep_state_changes c
+                           WHERE c.run_id=r.run_id AND c.reversed_at IS NOT NULL) reversed_state_changes
+                   FROM sleep_runs r ORDER BY r.started_at DESC LIMIT 100"""
+            ).fetchall()
+            capacity_impact_rows = self._conn.execute(
+                """WITH RECURSIVE
+                   observed_days(day) AS (
+                     SELECT substr(created_at,1,10) FROM memories
+                     UNION SELECT substr(created_at,1,10) FROM recall_runs
+                     UNION SELECT substr(COALESCE(resolved_at,created_at),1,10)
+                           FROM recall_budget_observations WHERE outcome<>'pending'
+                   ),
+                   bounds(start_day,end_day) AS (
+                     SELECT MAX(COALESCE(MIN(day),date('now','-89 days')),date('now','-364 days')),
+                            date('now') FROM observed_days WHERE day<>''
+                   ),
+                   days(day) AS (
+                     SELECT start_day FROM bounds
+                     UNION ALL SELECT date(day,'+1 day') FROM days,bounds WHERE day<end_day
+                   )
+                   SELECT d.day,
+                          (SELECT COUNT(*) FROM memories m
+                           WHERE m.created_at<datetime(d.day,'+1 day')) stored_capacity,
+                          (SELECT COUNT(*) FROM memories m
+                           WHERE substr(m.created_at,1,10)=d.day) memories_added,
+                          (SELECT COUNT(*) FROM recall_runs r
+                           WHERE substr(r.created_at,1,10)=d.day) recall_runs,
+                          (SELECT COALESCE(SUM(r.abstained),0) FROM recall_runs r
+                           WHERE substr(r.created_at,1,10)=d.day) abstained,
+                          (SELECT AVG(r.estimated_tokens) FROM recall_runs r
+                           WHERE substr(r.created_at,1,10)=d.day) avg_context_tokens,
+                          (SELECT AVG(r.prepare_ms) FROM recall_runs r
+                           WHERE substr(r.created_at,1,10)=d.day) avg_prepare_ms,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome<>'pending'
+                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) resolved_outcomes,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome IN ('helpful','validated')
+                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) helpful_outcomes,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome IN ('harmful','corrected')
+                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) harmful_outcomes,
+                          (SELECT COUNT(*) FROM recall_budget_observations b
+                           WHERE b.outcome='ignored'
+                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) ignored_outcomes,
+                          (SELECT COUNT(*) FROM sleep_runs s
+                           WHERE substr(s.started_at,1,10)=d.day) sleep_runs
+                   FROM days d ORDER BY d.day"""
+            ).fetchall()
+            metacognition_summary_row = self._conn.execute(
+                """SELECT COUNT(*) prediction_count,
+                          SUM(CASE WHEN decision='use' THEN 1 ELSE 0 END) use_count,
+                          SUM(CASE WHEN decision='verify' THEN 1 ELSE 0 END) verify_count,
+                          SUM(CASE WHEN decision='abstain' THEN 1 ELSE 0 END) abstain_count,
+                          SUM(applied) applied_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated','harmful','corrected') THEN 1 ELSE 0 END) labeled_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_count,
+                          SUM(CASE WHEN outcome='ignored' THEN 1 ELSE 0 END) ignored_count,
+                          AVG(CASE
+                            WHEN outcome IN ('helpful','validated')
+                              THEN (1.0-calibrated_probability)*(1.0-calibrated_probability)
+                            WHEN outcome IN ('harmful','corrected')
+                              THEN calibrated_probability*calibrated_probability
+                          END) brier_score,
+                          AVG(calibrated_probability) avg_probability,
+                          MAX(created_at) latest_prediction_at,
+                          (SELECT monitor_mode FROM metacognitive_predictions
+                           ORDER BY created_at DESC LIMIT 1) latest_mode
+                   FROM metacognitive_predictions"""
+            ).fetchone()
+            metacognition_bin_rows = self._conn.execute(
+                """SELECT CASE WHEN calibrated_probability>=1.0 THEN 4
+                                 ELSE CAST(calibrated_probability*5 AS INTEGER) END bucket,
+                          COUNT(*) sample_count,
+                          AVG(calibrated_probability) avg_probability,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_count
+                   FROM metacognitive_predictions
+                   WHERE outcome IN ('helpful','validated','harmful','corrected')
+                   GROUP BY bucket ORDER BY bucket"""
+            ).fetchall()
+            metacognition_day_rows = self._conn.execute(
+                """SELECT substr(created_at,1,10) day,COUNT(*) prediction_count,
+                          SUM(CASE WHEN decision='use' THEN 1 ELSE 0 END) use_count,
+                          SUM(CASE WHEN decision='verify' THEN 1 ELSE 0 END) verify_count,
+                          SUM(CASE WHEN decision='abstain' THEN 1 ELSE 0 END) abstain_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated','harmful','corrected') THEN 1 ELSE 0 END) labeled_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_count,
+                          AVG(calibrated_probability) avg_probability,
+                          AVG(CASE
+                            WHEN outcome IN ('helpful','validated')
+                              THEN (1.0-calibrated_probability)*(1.0-calibrated_probability)
+                            WHEN outcome IN ('harmful','corrected')
+                              THEN calibrated_probability*calibrated_probability
+                          END) brier_score
+                   FROM metacognitive_predictions
+                   GROUP BY day ORDER BY day DESC LIMIT 365"""
+            ).fetchall()
+            metacognition_source_rows = self._conn.execute(
+                """SELECT source_category,COUNT(*) prediction_count,
+                          AVG(calibrated_probability) avg_probability,
+                          SUM(CASE WHEN outcome IN ('helpful','validated','harmful','corrected') THEN 1 ELSE 0 END) labeled_count,
+                          SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) positive_count,
+                          SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) negative_count
+                   FROM metacognitive_predictions
+                   GROUP BY source_category ORDER BY prediction_count DESC"""
+            ).fetchall()
+            metacognition_recent_rows = self._conn.execute(
+                """SELECT p.prediction_id,p.task_id,p.memory_id,p.task_type,p.recall_mode,
+                          p.monitor_mode,p.source_category,p.raw_probability,p.calibrated_probability,
+                          p.decision,p.applied,p.reason,p.calibration_scope,p.calibration_samples,
+                          p.features_json,p.outcome,p.created_at,p.resolved_at,
+                          m.kind memory_kind,m.state memory_state,m.content memory_content
+                   FROM metacognitive_predictions p
+                   JOIN memories m ON m.id=p.memory_id
+                   ORDER BY p.created_at DESC LIMIT 250"""
             ).fetchall()
         prepare_samples = sorted(float(row["prepare_ms"]) for row in recall_rows)
         token_samples = sorted(int(row["estimated_tokens"]) for row in recall_rows)
@@ -2376,6 +2703,45 @@ class CortexStore:
                         "tool_calls": 0,
                     },
                 )[field] = int(row["count"])
+        sleep_runs: list[dict[str, Any]] = []
+        for row in sleep_rows:
+            item = dict(row)
+            report = item.pop("report_json", "{}")
+            try:
+                parsed_report = json.loads(str(report or "{}"))
+            except json.JSONDecodeError:
+                parsed_report = {}
+            item["report"] = parsed_report if isinstance(parsed_report, dict) else {}
+            sleep_runs.append(item)
+        metacognition_bins = [dict(row) for row in metacognition_bin_rows]
+        labeled_count = sum(int(row["sample_count"] or 0) for row in metacognition_bin_rows)
+        expected_calibration_error = (
+            sum(
+                int(row["sample_count"] or 0)
+                * abs(
+                    float(row["avg_probability"] or 0.0)
+                    - int(row["positive_count"] or 0) / max(1, int(row["sample_count"] or 0))
+                )
+                for row in metacognition_bin_rows
+            )
+            / labeled_count
+            if labeled_count
+            else None
+        )
+        metacognition_summary = dict(metacognition_summary_row)
+        metacognition_summary["expected_calibration_error"] = (
+            round(expected_calibration_error, 6) if expected_calibration_error is not None else None
+        )
+        metacognition_recent: list[dict[str, Any]] = []
+        for row in metacognition_recent_rows:
+            item = dict(row)
+            features = item.pop("features_json", "{}")
+            try:
+                parsed_features = json.loads(str(features or "{}"))
+            except json.JSONDecodeError:
+                parsed_features = {}
+            item["features"] = parsed_features if isinstance(parsed_features, dict) else {}
+            metacognition_recent.append(item)
         return {
             "generated_at": utc_now(),
             "stats": self.stats(),
@@ -2386,6 +2752,7 @@ class CortexStore:
             "sources": [dict(row) for row in source_rows],
             "recent_access": [dict(row) for row in recent_access_rows],
             "access_by_day": [dict(row) for row in access_rows],
+            "memory_timeline_by_day_kind": [dict(row) for row in memory_timeline_rows],
             "activity_trends": [trend_days[day] for day in sorted(trend_days)],
             "usage_outcomes": {str(row["outcome"]): int(row["count"]) for row in usage_rows},
             "recall_runs": [dict(row) for row in recall_rows],
@@ -2404,8 +2771,26 @@ class CortexStore:
             "pruning_regrets": [dict(row) for row in regret_rows],
             "consolidation_runs": [dict(row) for row in consolidation_rows],
             "tool_workflows": [dict(row) for row in workflow_rows],
-            "sleep_runs": [dict(row) for row in sleep_rows],
+            "sleep_runs": sleep_runs,
             "sleep_proposals": [dict(row) for row in sleep_proposal_rows],
+            "sleep_edge_changes": [dict(row) for row in sleep_edge_change_rows],
+            "sleep_state_changes": [dict(row) for row in sleep_state_change_rows],
+            "sleep_effects": {str(row["run_id"]): dict(row) for row in sleep_effect_rows},
+            "capacity_impact_by_day": [dict(row) for row in capacity_impact_rows],
+            "metacognition": {
+                "mode": str(metacognition_summary.get("latest_mode") or "shadow"),
+                "summary": metacognition_summary,
+                "calibration_bins": metacognition_bins,
+                "by_day": [dict(row) for row in metacognition_day_rows],
+                "by_source": [dict(row) for row in metacognition_source_rows],
+                "recent_predictions": metacognition_recent,
+                "definitions": {
+                    "positive_outcomes": ["helpful", "validated"],
+                    "negative_outcomes": ["harmful", "corrected"],
+                    "brier_score": "Mean squared error between predicted reliability and labeled outcome; lower is better.",
+                    "expected_calibration_error": "Weighted gap between predicted reliability and observed helpfulness across five probability bands; lower is better.",
+                },
+            },
             "version_count": int(version_count),
             "contradiction_count": int(contradiction_count),
             "unsupported_inference_ids": [str(row["id"]) for row in unsupported_inference_rows],

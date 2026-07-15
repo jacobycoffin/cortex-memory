@@ -19,6 +19,12 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - scheduled Cortex Sleep uses deterministic local analysis and zero provider tokens by default;
 - optional remote Sleep reflection sends a bounded selection of sanitized memory text to the configured provider and is therefore an explicit privacy boundary.
 
+## Metacognitive monitoring data
+
+The Trust monitor stores one `metacognitive_predictions` row for each memory considered during recall. A row contains the memory identifier, broad task and source categories, retrieval and reliability signals, the use/verify/abstain decision, an inspectable reason, and any later helpful or harmful outcome. It does not duplicate the memory text or the user's raw query.
+
+These rows are sensitive behavioral metadata. They remain in the local Cortex database, follow the database's existing backup and retention policy, disappear when their referenced memory is hard-deleted, and are only exposed through the authenticated dashboard snapshot. Shadow mode records them without changing Kaya's prompt; enforcement is opt-in.
+
 ## Operator responsibilities
 
 - protect the Hermes home directory with host-level permissions and backups;

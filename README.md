@@ -149,8 +149,10 @@ Open `http://127.0.0.1:8765`. The dashboard keeps direct memory changes behind e
 - a draggable 2D physics map and orbitable 3D constellation;
 - timeline, source, use-through, tool-learning insights, and daily trends for memories, connections, lifecycle pruning, and tool calls;
 - a Cognition lab for recall modes, context tokens, latency, abstention, lifecycle repair, and workflows;
-- a Cortex Sleep view with an authenticated start control, live phase feedback, offline replay, maintenance proposals, and safety status;
-- plain-language health guidance, an inspectable memory index, and a one-decision-at-a-time reviewer for conflicts and unsupported inferences;
+- a Cortex Sleep control room with the live timer window, selectable run history, exact proposal evidence, applied/reversed edge and lifecycle journals, and explicitly non-causal post-run observations;
+- an Accuracy × capacity view that plots daily outcome-backed memory helpfulness against stored memory count and reports average recall context alongside it; it is a memory-quality proxy, not a claim of general answer accuracy;
+- a Trust monitor that logs a pre-outcome reliability estimate for every recalled memory, explains the proposed use/verify/abstain decision, and plots calibration only after enough explicit outcomes exist;
+- plain-language health guidance split into recall integrity, memory quality, learning-loop, and Sleep-maintenance layers, plus an inspectable memory index and one-decision-at-a-time reviewer;
 - a tablet/PWA navigation layout with visible tab names and a readable card-style memory index;
 - a clickable memory-type guide plus a dedicated Settings view for themes and account controls.
 
@@ -175,7 +177,8 @@ flowchart LR
     H --> A["Bounded graph activation"]
     A --> R["Utility and temporal ranking"]
     R --> B["Token-budgeted evidence"]
-    B --> L["Harness inference"]
+    B --> M["Source monitor · shadow by default"]
+    M --> L["Harness inference"]
     L --> U["Evidence-use attribution"]
     U --> S["Utility, links, workflow, lifecycle"]
 ```
@@ -193,6 +196,8 @@ systemctl --user list-timers cortex-sleep.timer
 
 Model reflection is a separate opt-in stage. A positive `--reflection-token-budget` is a ceiling for a normal provider call, not banked or free conversational tokens. Remote reflection can expose selected memory text to that provider, and validated output is stored only as a review proposal. Read the [design, research basis, and exact boundaries](docs/SLEEP.md).
 
+The dashboard keeps **proposed**, **applied**, and **reversed** maintenance records separate. Selecting a Sleep run shows the memory text and IDs behind each connection, downscale, conflict, lifecycle move, consolidation, or dependency repair. Follow-up recall and outcome counts are labeled as observations after the run; they are not attributed to Sleep without a controlled evaluation.
+
 The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created mode `0600` with `CORTEX_SLEEP_TOKEN_BUDGET=0`. To test idle reflection later, set `CORTEX_SLEEP_ENDPOINT`, `CORTEX_SLEEP_MODEL`, the token budget, and the API-key variable named by `CORTEX_SLEEP_API_KEY_ENV`; then run one manual shadow cycle before leaving it scheduled.
 
 ## Safety model
@@ -202,6 +207,7 @@ The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created 
 - scheduled Sleep defaults to deterministic shadow mode with a zero reflection-token budget;
 - active → cold → archived transitions remain reversible;
 - corrections preserve version history;
+- metacognitive use/verify/abstain decisions default to shadow observation and do not remove prompt evidence until enforcement is explicitly configured;
 - derived memories identify evidence and become dirty when it changes;
 - suspicious instruction-like memories are quarantined;
 - likely secrets are redacted before storage;
@@ -223,6 +229,7 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `retrieval_threshold` | `0.16` | Minimum non-pinned retrieval score |
 | `adaptive_recall` | `true` | Skip or shrink recall by task |
 | `adaptive_budget_learning` | `true` | Learn bounded task-sensitive budgets from resolved outcomes |
+| `metacognition_mode` | `shadow` | `off`, observe use/verify/abstain decisions, or experimental `enforce` |
 | `query_cache_ttl_seconds` | `45` | Reuse unchanged retrieval results briefly; `0` disables it |
 | `compact_context` | `true` | Use the lower-token evidence format |
 | `attribution_threshold` | `0.18` | Minimum evidence-use score for utility credit |
@@ -232,7 +239,7 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `cold_after_days` | `90` | Base low-value cooling interval |
 | `archive_after_days` | `180` | Base cold-memory archive interval |
 
-Keep mutation modes in `shadow` until you have reviewed your own recall and pruning-regret data.
+Keep mutation modes and metacognition in `shadow` until you have reviewed your own recall, calibration, and pruning-regret data. `enforce` may withhold low-reliability memories and mark borderline evidence for verification, so it should follow a representative outcome trial.
 
 ## Research and evidence
 

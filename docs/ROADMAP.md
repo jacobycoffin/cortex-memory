@@ -43,7 +43,7 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 | Multi-resolution memory | Raw evidence remains immutable and addressable. | Episodes, facts, procedures, and summaries are ablated separately. |
 | Evidence-backed summaries | Every statement names active source IDs. | Unsupported-claim rate and retrieval cost improve together. |
 | Contradiction and supersession detection | Detection is reviewable before state changes. | Current and historical accuracy improve on a time-labeled set. |
-| Confidence calibration | Confidence cannot rise from retrieval count alone. | Reliability curves and expected calibration error improve. |
+| Confidence calibration | Shadow instrumentation implemented; confidence cannot rise from retrieval count alone. | Reliability curves and expected calibration error improve before enforcement is considered. |
 | Association reinforcement and decay | Co-use strengthens links; unused links decay without deleting evidence. | Graph-on beats graph-off without reducing precision. |
 | Spaced-use reinforcement | Repeated events in one burst have diminishing weight. | Distributed successful use predicts future utility better than raw count. |
 | Interference detection | Similarity creates a review signal, not an automatic merge. | Competing-fact error rate falls. |
