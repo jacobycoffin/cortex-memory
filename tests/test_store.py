@@ -188,6 +188,8 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(len(snapshot["memories"]), 1)
         self.assertEqual(sum(int(row["count"]) for row in timeline), 2)
         self.assertEqual({row["kind"] for row in timeline}, {"episode", "semantic"})
+        self.assertEqual(snapshot["stats"]["memories"], 2)
+        self.assertEqual(snapshot["stats"]["kinds"], {"episode": 1, "semantic": 1})
 
     def test_dashboard_snapshot_includes_daily_activity_trends(self) -> None:
         first, _ = self.store.add_memory("A daily trend memory.", kind="episode")

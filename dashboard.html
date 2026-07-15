@@ -2233,7 +2233,7 @@
 
     function renderOverview() {
       const d = app.data, memories = d.memories || [];
-      const active = memories.filter(row => row.state === "active").length;
+      const active = Number(d.stats?.states?.active ?? memories.filter(row => row.state === "active").length);
       const retrieved = sum(memories,"retrieved_count"), used = sum(memories,"used_count");
       const structural=technicalIssueCount(d.audit||{}),status=structural?"Repair":"Ready",statusValue=structural?30:100;
       document.getElementById("hero-health").textContent = status;
@@ -2275,7 +2275,7 @@
     }
 
     function renderKindDonut() {
-      const counts=countBy(app.data.memories||[],"kind"), entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]), total=Math.max(1,entries.reduce((n,e)=>n+e[1],0));
+      const aggregateKinds=app.data?.stats?.kinds, counts=aggregateKinds&&typeof aggregateKinds==="object"?Object.fromEntries(Object.entries(aggregateKinds).map(([kind,count])=>[kind,Number(count)||0])):countBy(app.data.memories||[],"kind"), entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]), total=Math.max(1,entries.reduce((n,e)=>n+e[1],0));
       let cursor=0, stops=[];
       entries.forEach(([kind,count])=>{ const start=cursor, end=cursor+count/total*100; stops.push(`${kindColor(kind)} ${start}% ${end}%`); cursor=end; });
       document.getElementById("kind-donut").style.background=`conic-gradient(${stops.join(",")})`;
@@ -3220,7 +3220,7 @@
 
     function renderHealth() {
       if(!app.data)return;
-      const d=app.data,a=d.audit||{},memories=d.memories||[],agent=d.research?.agent_evaluation?.summary||{},experiment=d.research?.experiments||{},quarantined=memories.filter(memory=>memory.state==="quarantine").length,dirty=Number(d.stats.dirty_memories||0),contradictions=Number(d.contradiction_count||0),unsupported=Number(a.unsupported_inferences||0),duplicates=Number(a.duplicate_groups||0),pending=Number(d.stats.pending_usage||0),stuck=Number(a.stuck_pending_usage||0),structural=technicalIssueCount(a),decisionItems=dirty+contradictions+quarantined+unsupported+duplicates,decisionTasks=[contradictions,quarantined,dirty,unsupported,duplicates].filter(Boolean).length,maintenance=sleepHealthState(d),status=structural?"repair":"ready",hero=document.getElementById("health-hero");hero.replaceChildren();
+      const d=app.data,a=d.audit||{},memories=d.memories||[],agent=d.research?.agent_evaluation?.summary||{},experiment=d.research?.experiments||{},quarantined=Number(d.stats?.states?.quarantine ?? memories.filter(memory=>memory.state==="quarantine").length),dirty=Number(d.stats.dirty_memories||0),contradictions=Number(d.contradiction_count||0),unsupported=Number(a.unsupported_inferences||0),duplicates=Number(a.duplicate_groups||0),pending=Number(d.stats.pending_usage||0),stuck=Number(a.stuck_pending_usage||0),structural=technicalIssueCount(a),decisionItems=dirty+contradictions+quarantined+unsupported+duplicates,decisionTasks=[contradictions,quarantined,dirty,unsupported,duplicates].filter(Boolean).length,maintenance=sleepHealthState(d),status=structural?"repair":"ready",hero=document.getElementById("health-hero");hero.replaceChildren();
       const attention=decisionTasks+Number(maintenance.needsAttention)+Number(stuck>0),statusCopy=structural?["×","Recall may be incomplete",`${formatNum(structural)} index or database checks failed. Pause decisions based on recall until the red repair task is clear.`,"Repair first"]:attention?["✓","Safe to recall",`The storage and search path are intact. ${formatNum(attention)} non-blocking ${attention===1?"area could":"areas could"} use attention; each is separated below.`,"Operational"]:["✓","Healthy and observable","Recall is structurally safe, the review queue is clear, the learning loop is caught up, and maintenance is current.","Healthy"],symbol=el("div","health-symbol",statusCopy[0]),copy=el("div","");copy.append(el("h2","",statusCopy[1]),el("p","small-meta",statusCopy[2]));hero.append(symbol,copy,el("div",`health-score-large ${status}`,statusCopy[3]));
       metricCards("health-metrics",[["Recall integrity",structural?"Blocked":"Passed",structural?`${formatNum(structural)} checks can affect retrieval`:"Database, FTS, features, and scores agree",structural?"!":"✓"],["Memory quality",decisionItems,decisionItems?`${formatNum(decisionTasks)} review queues; normal recall still works`:"No conflicting, blocked, or unsupported items","↔"],["Learning evidence",formatNum(agent.explicit_labels||0),experiment.active?"Controlled experiment collecting randomized tasks":pending?`${formatNum(pending)} automatic outcomes still resolving`:"Explicit labels power accuracy and causal gates","◎"],["Sleep maintenance",maintenance.label,maintenance.copy,"◐"]],true);
       renderHealthActions({structural,dirty,contradictions,quarantined,unsupported,duplicates,pending,stuck,maintenance});
