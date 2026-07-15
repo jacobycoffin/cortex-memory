@@ -82,6 +82,7 @@ class CortexStoreTests(unittest.TestCase):
             reason_code="meaningful_dependency",
             reason_text="Both facts explain the same deployment path.",
             actor="test-operator",
+            decision_scope="policy_evidence",
         )
         with self.store._lock:
             edge = self.store._conn.execute(
@@ -133,12 +134,77 @@ class CortexStoreTests(unittest.TestCase):
             "cleanup-item", "trash", reason_code="transient", actor="test-operator"
         )
         self.assertEqual(self.store.get_memory(memory_id)["state"], "tombstoned")
+        training = self.store.policy_training_snapshot()["counts"]
+        self.assertEqual(training["decisions"], 0)
+        self.assertEqual(training["item_only_decisions"], 1)
+        self.assertEqual(self.store.review_inbox_snapshot()["learning_signals"], [])
         self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
         self.assertEqual(self.store.get_memory(memory_id)["state"], "active")
         versions = self.store.versions(memory_id)
         self.assertEqual(versions[-1]["state"], "active")
         self.assertIsNone(versions[-1]["system_to"])
         self.assertIsNotNone(next(row for row in versions if row["state"] == "tombstoned")["system_to"])
+
+    def test_review_can_apply_to_exact_duplicates_without_training_a_policy(self) -> None:
+        content = "Repeated file archive record should exist only once."
+        first_id, _ = self.store.add_memory(
+            content,
+            source_ref="vault/repeated-file.md",
+            scope={"project": "first"},
+        )
+        second_id, _ = self.store.add_memory(
+            content,
+            source_ref="vault/repeated-file.md",
+            scope={"project": "second"},
+        )
+        with self.store.transaction() as conn:
+            first_scope = conn.execute(
+                "SELECT scope_json FROM memories WHERE id=?", (first_id,)
+            ).fetchone()["scope_json"]
+            conn.execute("UPDATE memories SET scope_json=? WHERE id=?", (first_scope, second_id))
+            now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("duplicate-cleanup-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,'proposed',0.98,2,?,'{}',?)""",
+                (
+                    "duplicate-cleanup",
+                    "duplicate-cleanup-run",
+                    "lifecycle",
+                    first_id,
+                    "The same file-backed memory was saved more than once.",
+                    now,
+                ),
+            )
+
+        item = next(
+            row
+            for row in self.store.review_inbox_snapshot()["items"]
+            if row["proposal_id"] == "duplicate-cleanup"
+        )
+        self.assertEqual(item["exact_duplicate_count"], 1)
+        decision = self.store.decide_review_proposal(
+            "duplicate-cleanup",
+            "trash",
+            reason_code="duplicate",
+            actor="test-operator",
+            decision_scope="exact_duplicates",
+        )
+        self.assertEqual(set(decision["affected_memory_ids"]), {first_id, second_id})
+        self.assertEqual(self.store.get_memory(first_id)["state"], "tombstoned")
+        self.assertEqual(self.store.get_memory(second_id)["state"], "tombstoned")
+        training = self.store.policy_training_snapshot()["counts"]
+        self.assertEqual(training["decisions"], 0)
+        self.assertEqual(training["exact_duplicate_decisions"], 1)
+        self.assertEqual(self.store.policy_training_snapshot()["candidates"], [])
+        self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
+        self.assertEqual(self.store.get_memory(first_id)["state"], "active")
+        self.assertEqual(self.store.get_memory(second_id)["state"], "active")
 
     def test_operator_reviews_compile_test_promote_and_rollback_a_policy(self) -> None:
         memory_ids = []
@@ -160,6 +226,7 @@ class CortexStoreTests(unittest.TestCase):
                 reason_code="memory_helped",
                 actor="test-operator",
                 src_id=memory_id,
+                decision_scope="policy_evidence",
             )
 
         training = self.store.policy_training_snapshot()
@@ -189,6 +256,7 @@ class CortexStoreTests(unittest.TestCase):
                 reason_code="memory_helped",
                 actor="test-operator",
                 src_id=memory_id,
+                decision_scope="policy_evidence",
             )
 
         candidate = next(
@@ -943,6 +1011,51 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(hierarchy["supported_claims"][0]["id"], claim_id)
         self.assertIn("no summary is written automatically", hierarchy["claim_boundary"])
 
+    def test_schema_17_preserves_legacy_reviews_as_training_evidence(self) -> None:
+        db_path = Path(self.tmp.name) / "schema-16.db"
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            INSERT INTO meta(key,value) VALUES('schema_version','16');
+            CREATE TABLE operator_review_decisions (
+                review_id TEXT PRIMARY KEY,
+                item_type TEXT NOT NULL,
+                item_key TEXT NOT NULL,
+                proposal_id TEXT,
+                src_id TEXT,
+                dst_id TEXT,
+                action TEXT NOT NULL,
+                reason_code TEXT NOT NULL,
+                reason_text TEXT,
+                prior_json TEXT NOT NULL DEFAULT '{}',
+                effect_json TEXT NOT NULL DEFAULT '{}',
+                learning_signal_json TEXT NOT NULL DEFAULT '{}',
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reversed_at TEXT
+            );
+            INSERT INTO operator_review_decisions(
+                review_id,item_type,item_key,action,reason_code,actor,created_at
+            ) VALUES(
+                'legacy-review','inference','inference:legacy','archive','wrong',
+                'legacy-operator','2026-07-15T00:00:00+00:00'
+            );
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        migrated = CortexStore(db_path)
+        try:
+            row = migrated._conn.execute(
+                "SELECT decision_scope FROM operator_review_decisions WHERE review_id='legacy-review'"
+            ).fetchone()
+            self.assertEqual(row["decision_scope"], "policy_evidence")
+            self.assertEqual(migrated.stats()["schema_version"], 17)
+        finally:
+            migrated.close()
+
     def test_v1_database_migrates_without_losing_memory(self) -> None:
         self.store.close()
         db_path = Path(self.tmp.name) / "legacy.db"
@@ -1027,6 +1140,13 @@ class CortexStoreTests(unittest.TestCase):
             self.assertIn("policy_candidates", tables)
             self.assertIn("policy_versions", tables)
             self.assertIn("policy_events", tables)
+            review_columns = {
+                row["name"]
+                for row in migrated._conn.execute(
+                    "PRAGMA table_info(operator_review_decisions)"
+                ).fetchall()
+            }
+            self.assertIn("decision_scope", review_columns)
             context_terms = migrated._conn.execute(
                 "SELECT term_type,term_value FROM memory_context_terms WHERE memory_id='legacy-id'"
             ).fetchall()

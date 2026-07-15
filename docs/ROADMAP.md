@@ -98,6 +98,7 @@ Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and 
 - authenticated signed sessions and same-origin request verification;
 - explicit confirmation before an archive, confirmation, supersession, or contextual relationship;
 - preserved versions, lifecycle events, provenance, and maintenance-log audit records;
+- per-review reach that separates one-off actions, eligible exact-duplicate cleanup, and explicit Teach Kaya policy evidence;
 - request-size bounds and no hard-delete operation;
 - typed review evidence, explainable policy compilation, stored-evidence replay, shadow observation, explicit promotion, and active-version rollback;
 - `CORTEX_DASHBOARD_REVIEWS=1` as an explicit switch that leaves the dashboard read-only by default.

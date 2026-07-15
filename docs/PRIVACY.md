@@ -15,7 +15,7 @@ Cortex is local-first, but a memory database is sensitive. It can contain prefer
 - vault notes are read but never modified;
 - tool guidance keeps argument keys, not values;
 - no hard-delete API exists.
-- opt-in guided review changes only one inbox item per confirmed request; pruning, trash, connection, conflict, claim, and outcome decisions preserve lifecycle/version history plus an operator audit record;
+- opt-in guided review defaults to one inbox item per confirmed request; an explicit exact-duplicate reach may apply the same action to the displayed count of eligible copies, while Teach Kaya is separately required before a review becomes policy evidence;
 - scheduled Cortex Sleep uses deterministic local analysis and zero provider tokens by default;
 - optional remote Sleep reflection sends a bounded selection of sanitized memory text to the configured provider and is therefore an explicit privacy boundary.
 
@@ -33,7 +33,7 @@ Tool-guidance exposure rows store task/session identifiers, broad task type, the
 
 Memory decision traces are intentionally more sensitive. They keep the task goal, concise context metadata, retrieval query, candidate memory IDs and short content previews, component scores, selection reasons, answer-use attribution, outcome ratings, and storage actions. They remain in the local database and authenticated dashboard snapshot. `cortex-memory traces --jsonl` is a raw private export, not a sanitized benchmark report; review and protect it like the database itself.
 
-Operator review decisions may contain an optional free-text explanation in addition to the typed reason, affected memory IDs, before-state, and applied effect. They remain in the local database and authenticated dashboard. Connection approval stores the operator decision as link evidence. Trash is a reversible tombstone, not content erasure; use a separately reviewed database-retention process if permanent deletion is legally or operationally required.
+Operator review decisions may contain an optional free-text explanation in addition to the typed reason, decision reach, affected memory IDs, before-state, and applied effect. They remain in the local database and authenticated dashboard. One-off and exact-duplicate records remain auditable but are excluded from policy compilation; only explicit Teach Kaya decisions contribute policy evidence. Connection approval stores the operator decision as link evidence. Trash is a reversible tombstone, not content erasure; use a separately reviewed database-retention process if permanent deletion is legally or operationally required.
 
 Policy candidates and versions store selectors, bounded adjustments, counts, review IDs, context keys, replay summaries, shadow progress, actor names, and lifecycle timestamps. They do not duplicate memory text, but selectors and context keys can still reveal source categories, projects, systems, or source-reference prefixes. This is private behavioral metadata. It remains in the Cortex database and authenticated dashboard, is included in normal backups, and must not be published as a sanitized evaluation report. Promotion and rollback preserve their complete event history.
 

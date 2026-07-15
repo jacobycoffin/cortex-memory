@@ -442,6 +442,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         reason_code=str(payload.get("reason_code") or "unspecified"),
                         reason_text=str(payload.get("reason_text") or ""),
                         actor=actor,
+                        decision_scope=str(payload.get("decision_scope") or "item_only"),
                     )
                     self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return
@@ -455,6 +456,8 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     self._json(HTTPStatus.OK, {"success": True})
                     return
                 if parsed.path == "/api/review/conflict":
+                    if str(payload.get("decision_scope") or "item_only") == "exact_duplicates":
+                        raise ValueError("exact-duplicate reach is not available for a conflict review")
                     first_id = str(payload.get("first_id") or "")
                     second_id = str(payload.get("second_id") or "")
                     resolution = str(payload.get("resolution") or "")
@@ -466,9 +469,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 else:
                     memory_id = str(payload.get("memory_id") or "")
                     resolution = str(payload.get("resolution") or "")
-                    changed = store.review_inference(
+                    changed = store.review_inference_with_scope(
                         memory_id,
                         resolution,
+                        decision_scope=str(payload.get("decision_scope") or "item_only"),
                     )
             except ValueError as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
@@ -478,6 +482,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             reason_code = str(payload.get("reason_code") or "unspecified")
             reason_text = str(payload.get("reason_text") or "")
+            decision_scope = str(payload.get("decision_scope") or "item_only")
             if parsed.path == "/api/review/conflict":
                 store.record_operator_review(
                     item_type="conflict",
@@ -488,6 +493,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     actor=actor,
                     src_id=first_id,
                     dst_id=second_id,
+                    decision_scope=decision_scope,
                 )
             else:
                 store.record_operator_review(
@@ -498,8 +504,23 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     reason_text=reason_text,
                     actor=actor,
                     src_id=memory_id,
+                    effect={"memory_ids": list(changed)},
+                    decision_scope=decision_scope,
                 )
-            self._json(HTTPStatus.OK, {"success": True})
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "success": True,
+                    "result": {
+                        "decision_scope": decision_scope,
+                        "affected_memory_ids": (
+                            list(changed)
+                            if parsed.path != "/api/review/conflict"
+                            else [first_id, second_id]
+                        ),
+                    },
+                },
+            )
 
         def _policy_action(self, payload: dict[str, object], *, actor: str) -> None:
             action = str(payload.get("action") or "").casefold()
@@ -661,6 +682,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         return
                     result: object = {"changed": True, "task_id": task_id, "outcome": None}
                 else:
+                    decision_scope = str(payload.get("decision_scope") or "item_only")
+                    if decision_scope == "exact_duplicates":
+                        raise ValueError("exact-duplicate reach is not available for an answer review")
                     result = store.label_task_outcome(
                         task_id,
                         str(payload.get("outcome") or "").casefold(),
@@ -674,6 +698,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         reason_text=str(payload.get("reason_text") or ""),
                         actor=actor,
                         effect={"memory_ids": result.get("memory_ids", [])},
+                        decision_scope=decision_scope,
                     )
             except ValueError as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})

@@ -254,6 +254,11 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Active policy versions", html)
         self.assertIn("What each decision will do", html)
         self.assertIn("What Cortex is learning from you", html)
+        self.assertIn("How far should this decision reach?", html)
+        self.assertIn("This memory only", html)
+        self.assertIn("exact_duplicates", html)
+        self.assertIn("Teach Kaya too", html)
+        self.assertIn("No broader rule was trained", html)
         self.assertIn("function renderLearning", html)
         self.assertIn("function renderExperimentCenter", html)
         self.assertIn("function renderAgentAccuracyChart", html)
@@ -315,6 +320,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('parsed.path == "/api/policy/action"', server)
         self.assertIn("promote_policy_candidate", server)
         self.assertIn("rollback_policy_version", server)
+        self.assertIn('payload.get("decision_scope")', server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
 
 

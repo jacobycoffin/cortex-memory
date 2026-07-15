@@ -56,6 +56,7 @@ The suite currently covers:
 - schema 12/13 migration, cross-project isolation, required-context gates, context-independent candidate recall, storage preflight, context-specific usefulness and reversal, context-repair Sleep proposals, source-cited summary candidates, and combined quality reporting.
 - schema 15 Review Inbox coverage: decision-ready proposal snapshots, explained connection approval, typed operator-learning signals, reversible denial, and tombstone/restore version history.
 - schema 16 operator-policy coverage: review compilation, support and consistency gates, replay, shadow observations, scoped promotion, live retrieval adjustment, version audit, and rollback.
+- schema 17 decision-reach coverage: one-off exclusion from policy training, exact-duplicate discovery and reversible multi-memory action, explicit Teach Kaya compilation, counters, audit history, and migration defaults.
 
 ## Current compatibility check
 
@@ -78,7 +79,7 @@ Keep `pruning_mode: shadow`.
 11. Preview consolidation, apply it only on a backup test database, and undo the run.
 12. Run `cortex audit` and verify `ok: true`.
 13. Run `cortex sleep --mode shadow --reflection-token-budget 0`, verify no state/edge changes, and inspect the Sleep section in Cognition.
-14. Open **Train Kaya**, complete five consistent reviews of one pattern, and verify the proposed standard explains its selector and bounded core change.
+14. Open **Train Kaya** and verify every review defaults to **This memory/review only**. When an eligible duplicate exists, confirm its exact count is shown before selecting **This memory + exact duplicates**. Then mark five consistent matching reviews **Teach Kaya too** and verify only those five produce a proposed standard with an explained selector and bounded core change.
 15. Run its evidence replay, start shadow observation, add three new matching reviews, and confirm activation remains unavailable until the shadow gate passes.
 16. Approve the scoped version, verify it appears under Active policy versions, then roll it back and confirm the version becomes inactive without deleting its evidence.
 

@@ -26,6 +26,7 @@
 - added schema 14 evidence-bearing graph links, explainable-link migration, source-aware storage quality flags, and a dashboard hygiene queue;
 - added schema 15 typed operator-review decisions and a unified, reversible Review Inbox for cleanup, connection, conflict, claim, and real-answer training;
 - added schema 16 policy candidates, evidence replay, new-review shadow gates, explicit scoped/core promotion, active policy versions, and rollback;
+- added schema 17 per-review reach controls: item-only decisions stay out of policy training, eligible exact duplicates can be handled together without generalizing, and only explicit Teach Kaya choices feed the compiler;
 - added a guided Train Kaya dashboard path with five progress stages, next-action guidance, inspectable proposed standards, and active-policy monitoring;
 - wired promoted operator policies into bounded automatic-write admission, Sleep connection witnesses, retrieval ranking, and lifecycle retention without allowing code self-modification or bypassing existing safety gates;
 - stopped promoting raw tool executions and aggregate telemetry into recallable memory while preserving the dedicated tool execution, statistics, and workflow ledgers;

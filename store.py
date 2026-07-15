@@ -18,7 +18,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 POLICY_MIN_SUPPORT = 5
 POLICY_MIN_CONSISTENCY = 0.80
 POLICY_SHADOW_MIN_OBSERVATIONS = 3
@@ -778,6 +778,8 @@ class CortexStore:
                 prior_json TEXT NOT NULL DEFAULT '{}',
                 effect_json TEXT NOT NULL DEFAULT '{}',
                 learning_signal_json TEXT NOT NULL DEFAULT '{}',
+                decision_scope TEXT NOT NULL DEFAULT 'item_only'
+                  CHECK(decision_scope IN ('item_only','exact_duplicates','policy_evidence')),
                 actor TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 reversed_at TEXT
@@ -1458,6 +1460,20 @@ class CortexStore:
         if "quality_flags_json" not in write_columns:
             self._conn.execute(
                 "ALTER TABLE memory_write_decisions ADD COLUMN quality_flags_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        review_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(operator_review_decisions)")
+        }
+        if "decision_scope" not in review_columns:
+            self._conn.execute(
+                "ALTER TABLE operator_review_decisions "
+                "ADD COLUMN decision_scope TEXT NOT NULL DEFAULT 'item_only'"
+            )
+            # Decisions made before explicit reach controls were presented as
+            # training evidence. Preserve that meaning during migration while
+            # defaulting every new dashboard review to a one-off action.
+            self._conn.execute(
+                "UPDATE operator_review_decisions SET decision_scope='policy_evidence'"
             )
 
     @contextmanager
@@ -3027,83 +3043,143 @@ class CortexStore:
             )
         return True
 
-    def review_inference(self, memory_id: str, resolution: str) -> bool:
-        """Confirm or archive one unsupported inference from the Health reviewer."""
+    def review_inference(
+        self,
+        memory_id: str,
+        resolution: str,
+        *,
+        decision_scope: str = "item_only",
+    ) -> bool:
+        """Review an unsupported inference while preserving the legacy bool API."""
+
+        return bool(
+            self.review_inference_with_scope(
+                memory_id,
+                resolution,
+                decision_scope=decision_scope,
+            )
+        )
+
+    def review_inference_with_scope(
+        self,
+        memory_id: str,
+        resolution: str,
+        *,
+        decision_scope: str = "item_only",
+    ) -> list[str]:
+        """Review one inference and, when requested, its eligible exact duplicates."""
         if resolution not in {"confirm", "archive", "trash"}:
             raise ValueError("invalid inference resolution")
+        scope_value = _normalize_review_scope(decision_scope)
+        if scope_value == "policy_evidence":
+            scope_value = "item_only"
         now = utc_now()
         with self.transaction() as conn:
             memory = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
             if not memory or memory["source_category"] not in {"AGENT_INFERENCE", "REFLECTION"}:
-                return False
+                return []
             if memory["state"] not in {"active", "cold"}:
-                return False
+                return []
             supported = conn.execute(
                 "SELECT 1 FROM memory_dependencies WHERE memory_id=? AND active=1 LIMIT 1",
                 (memory_id,),
             ).fetchone()
             if supported:
-                return False
+                return []
 
-            if resolution == "confirm":
-                conn.execute(
-                    """UPDATE memories SET source_category='USER_EXPLICIT',
-                       confidence=MAX(confidence,0.85),trust=MAX(trust,0.85),
-                       confirmed_count=confirmed_count+1,protected=1,updated_at=? WHERE id=?""",
-                    (now, memory_id),
-                )
-                event = "confirmed"
-            else:
-                next_state = "tombstoned" if resolution == "trash" else "archived"
-                conn.execute(
-                    "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
-                    (now, memory_id),
-                )
-                conn.execute(
-                    """INSERT INTO memory_versions(memory_id,content,confidence,state,valid_from,valid_to,
-                       system_from,reason,source_ref) VALUES(?,?,?,?,?,?,?,?,?)""",
+            memories = {memory_id: memory}
+            if scope_value == "exact_duplicates":
+                duplicate_rows = conn.execute(
+                    """SELECT * FROM memories
+                       WHERE content_hash=? AND context_mode=? AND scope_json=? AND preconditions_json=?
+                         AND source_type=? AND source_category=? AND COALESCE(source_ref,'')=?
+                         AND id<>? AND state IN ('active','cold')
+                         AND NOT EXISTS(
+                           SELECT 1 FROM memory_dependencies d
+                           WHERE d.memory_id=memories.id AND d.active=1
+                         )
+                       ORDER BY created_at,id""",
                     (
-                        memory_id,
-                        memory["content"],
-                        memory["confidence"],
-                        next_state,
-                        memory["valid_from"],
-                        memory["valid_to"],
-                        now,
-                        f"dashboard inference review: {resolution}",
-                        memory["source_ref"],
+                        memory["content_hash"], memory["context_mode"], memory["scope_json"],
+                        memory["preconditions_json"], memory["source_type"],
+                        memory["source_category"], memory["source_ref"] or "", memory_id,
                     ),
-                )
-                conn.execute("UPDATE memories SET state=?, updated_at=? WHERE id=?", (next_state, now, memory_id))
-                conn.execute(
-                    """INSERT INTO lifecycle_events(
-                       memory_id,from_state,to_state,reason,retention_score,created_at
-                       ) VALUES(?,?,?,?,?,?)""",
-                    (
-                        memory_id,
-                        memory["state"],
-                        next_state,
-                        f"dashboard inference review: {resolution}",
-                        None,
-                        now,
-                    ),
-                )
-                self._mark_dependents_dirty_tx(conn, memory_id, "inference archived in dashboard review")
-                event = next_state
+                ).fetchall()
+                memories.update({str(row["id"]): row for row in duplicate_rows})
 
-            conn.execute(
-                "INSERT INTO access_log(memory_id,event,query,created_at) VALUES(?,?,?,?)",
-                (memory_id, event, "dashboard health review", now),
-            )
+            for target_id, target in memories.items():
+                if resolution == "confirm":
+                    conn.execute(
+                        """UPDATE memories SET source_category='USER_EXPLICIT',
+                           confidence=MAX(confidence,0.85),trust=MAX(trust,0.85),
+                           confirmed_count=confirmed_count+1,protected=1,updated_at=? WHERE id=?""",
+                        (now, target_id),
+                    )
+                    event = "confirmed"
+                else:
+                    next_state = "tombstoned" if resolution == "trash" else "archived"
+                    conn.execute(
+                        "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+                        (now, target_id),
+                    )
+                    conn.execute(
+                        """INSERT INTO memory_versions(memory_id,content,confidence,state,valid_from,valid_to,
+                           system_from,reason,source_ref) VALUES(?,?,?,?,?,?,?,?,?)""",
+                        (
+                            target_id,
+                            target["content"],
+                            target["confidence"],
+                            next_state,
+                            target["valid_from"],
+                            target["valid_to"],
+                            now,
+                            f"dashboard inference review: {resolution}",
+                            target["source_ref"],
+                        ),
+                    )
+                    conn.execute(
+                        "UPDATE memories SET state=?, updated_at=? WHERE id=?",
+                        (next_state, now, target_id),
+                    )
+                    conn.execute(
+                        """INSERT INTO lifecycle_events(
+                           memory_id,from_state,to_state,reason,retention_score,created_at
+                           ) VALUES(?,?,?,?,?,?)""",
+                        (
+                            target_id,
+                            target["state"],
+                            next_state,
+                            f"dashboard inference review: {resolution}",
+                            None,
+                            now,
+                        ),
+                    )
+                    self._mark_dependents_dirty_tx(
+                        conn, target_id, "inference archived in dashboard review"
+                    )
+                    event = next_state
+
+                conn.execute(
+                    "INSERT INTO access_log(memory_id,event,query,created_at) VALUES(?,?,?,?)",
+                    (target_id, event, "dashboard health review", now),
+                )
             conn.execute(
                 "INSERT INTO maintenance_log(action,details,dry_run,created_at) VALUES(?,?,0,?)",
                 (
                     "dashboard_inference_review",
-                    json.dumps({"memory_id": memory_id, "resolution": resolution}, sort_keys=True),
+                    json.dumps(
+                        {
+                            "memory_id": memory_id,
+                            "memory_ids": sorted(memories),
+                            "resolution": resolution,
+                            "decision_scope": scope_value,
+                        },
+                        sort_keys=True,
+                    ),
                     now,
                 ),
             )
-        return True
+        return sorted(memories)
 
     def add_dependency(
         self,
@@ -5599,7 +5675,8 @@ class CortexStore:
             """SELECT d.*,p.kind proposal_kind
                FROM operator_review_decisions d
                LEFT JOIN sleep_proposals p ON p.proposal_id=d.proposal_id
-               WHERE d.reversed_at IS NULL ORDER BY d.created_at"""
+               WHERE d.reversed_at IS NULL AND d.decision_scope='policy_evidence'
+               ORDER BY d.created_at"""
         ).fetchall()
         prepared: list[tuple[dict[str, Any], set[str]]] = []
         all_memory_ids: set[str] = set()
@@ -6181,11 +6258,14 @@ class CortexStore:
             event_rows = self._conn.execute(
                 "SELECT * FROM policy_events ORDER BY created_at DESC LIMIT 100"
             ).fetchall()
-            decision_count = int(
-                self._conn.execute(
-                    "SELECT COUNT(*) count FROM operator_review_decisions WHERE reversed_at IS NULL"
-                ).fetchone()["count"]
-            )
+            decision_counts = self._conn.execute(
+                """SELECT COUNT(*) total,
+                          SUM(CASE WHEN decision_scope='policy_evidence' THEN 1 ELSE 0 END) training,
+                          SUM(CASE WHEN decision_scope='item_only' THEN 1 ELSE 0 END) item_only,
+                          SUM(CASE WHEN decision_scope='exact_duplicates' THEN 1 ELSE 0 END) exact_duplicates
+                   FROM operator_review_decisions WHERE reversed_at IS NULL"""
+            ).fetchone()
+            decision_count = int(decision_counts["training"] or 0)
             contributions = self._operator_policy_contributions_tx(self._conn)
         candidates: list[dict[str, Any]] = []
         for row in candidate_rows:
@@ -6226,7 +6306,8 @@ class CortexStore:
                 monitored = int(
                     self._conn.execute(
                         """SELECT COUNT(*) count FROM operator_review_decisions
-                           WHERE reversed_at IS NULL AND created_at>?""",
+                           WHERE reversed_at IS NULL AND decision_scope='policy_evidence'
+                             AND created_at>?""",
                         (first_activation,),
                     ).fetchone()["count"]
                 )
@@ -6234,7 +6315,7 @@ class CortexStore:
             {
                 "key": "review",
                 "label": "Review real examples",
-                "description": "Decide what Kaya should keep, connect, or trust and always choose why.",
+                "description": "Choose Teach Kaya only when this decision should inform similar cases.",
                 "current": decision_count,
                 "target": POLICY_MIN_SUPPORT,
             },
@@ -6281,7 +6362,10 @@ class CortexStore:
         if decision_count < POLICY_MIN_SUPPORT:
             next_action = {
                 "title": "Review real Kaya examples",
-                "description": f"Complete {POLICY_MIN_SUPPORT - decision_count} more decisions to give the compiler its first useful pattern.",
+                "description": (
+                    f"Mark {POLICY_MIN_SUPPORT - decision_count} more matching decisions Teach Kaya "
+                    "to give the compiler its first useful pattern."
+                ),
                 "action": "review",
             }
         elif ready_for_replay:
@@ -6326,6 +6410,9 @@ class CortexStore:
             "next_action": next_action,
             "counts": {
                 "decisions": decision_count,
+                "all_decisions": int(decision_counts["total"] or 0),
+                "item_only_decisions": int(decision_counts["item_only"] or 0),
+                "exact_duplicate_decisions": int(decision_counts["exact_duplicates"] or 0),
                 "mapped_decisions": mapped_decisions,
                 "candidates": len(candidates),
                 "ready_for_replay": ready_for_replay,
@@ -6349,6 +6436,32 @@ class CortexStore:
                 "affect the admission, connection, retrieval, or retention core, and every active version can be rolled back."
             ),
         }
+
+    def exact_duplicate_ids(self, memory_id: str) -> list[str]:
+        """Return other recallable memories with the same normalized content hash."""
+
+        with self._lock:
+            memory = self._conn.execute(
+                """SELECT content_hash,context_mode,scope_json,preconditions_json,
+                          source_type,source_category,COALESCE(source_ref,'') source_ref
+                   FROM memories WHERE id=?""",
+                (memory_id,),
+            ).fetchone()
+            if not memory:
+                return []
+            rows = self._conn.execute(
+                """SELECT id FROM memories
+                   WHERE content_hash=? AND context_mode=? AND scope_json=? AND preconditions_json=?
+                     AND source_type=? AND source_category=? AND COALESCE(source_ref,'')=?
+                     AND id<>? AND state IN ('active','cold')
+                   ORDER BY created_at,id""",
+                (
+                    memory["content_hash"], memory["context_mode"], memory["scope_json"],
+                    memory["preconditions_json"], memory["source_type"],
+                    memory["source_category"], memory["source_ref"], memory_id,
+                ),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
 
     def review_inbox_snapshot(self, *, limit: int = 600) -> dict[str, Any]:
         """Return one decision-ready queue plus the operator-learning trail."""
@@ -6552,6 +6665,50 @@ class CortexStore:
                 }
             )
 
+        single_hashes = {
+            str(item["memories"][0].get("content_hash") or "")
+            for item in items
+            if len(item.get("memories") or []) == 1
+            and item["memories"][0].get("content_hash")
+        }
+        duplicate_totals: dict[tuple[str, ...], int] = {}
+        if single_hashes:
+            placeholders = ",".join("?" for _ in single_hashes)
+            with self._lock:
+                rows = self._conn.execute(
+                    f"""SELECT content_hash,context_mode,scope_json,preconditions_json,
+                               source_type,source_category,COALESCE(source_ref,'') source_ref,
+                               COUNT(*) count FROM memories
+                        WHERE state IN ('active','cold') AND content_hash IN ({placeholders})
+                        GROUP BY content_hash,context_mode,scope_json,preconditions_json,
+                                 source_type,source_category,COALESCE(source_ref,'')""",
+                    tuple(single_hashes),
+                ).fetchall()
+            duplicate_totals = {
+                (
+                    str(row["content_hash"]), str(row["context_mode"]), str(row["scope_json"]),
+                    str(row["preconditions_json"]), str(row["source_type"]),
+                    str(row["source_category"]), str(row["source_ref"]),
+                ): int(row["count"])
+                for row in rows
+            }
+        for item in items:
+            memories = item.get("memories") or []
+            duplicate_key = (
+                str(memories[0].get("content_hash") or ""),
+                str(memories[0].get("context_mode") or "standalone"),
+                str(memories[0].get("scope_json") or "{}"),
+                str(memories[0].get("preconditions_json") or "{}"),
+                str(memories[0].get("source_type") or "conversation"),
+                str(memories[0].get("source_category") or "AGENT_INFERENCE"),
+                str(memories[0].get("source_ref") or ""),
+            ) if len(memories) == 1 else ()
+            item["exact_duplicate_count"] = (
+                max(0, duplicate_totals.get(duplicate_key, 1) - 1)
+                if len(memories) == 1
+                else 0
+            )
+
         category_order = {"conflicts": 0, "cleanup": 1, "connections": 2, "claims": 3, "accuracy": 4}
         items.sort(
             key=lambda item: (
@@ -6575,7 +6732,7 @@ class CortexStore:
                 except json.JSONDecodeError:
                     item[field.removesuffix("_json")] = {}
             history.append(item)
-            if not item.get("reversed_at"):
+            if not item.get("reversed_at") and item.get("decision_scope") == "policy_evidence":
                 key = f"{item['item_type']}:{item['action']}:{item['reason_code']}"
                 learning_counts[key] = learning_counts.get(key, 0) + 1
         return {
@@ -6591,7 +6748,7 @@ class CortexStore:
                 "trash": "Tombstones the memory and removes it from normal recall; content and provenance remain restorable.",
                 "archive": "Removes the memory from normal recall while preserving its full history.",
                 "connection": "Approval creates an explained link backed by this operator decision; denial stores why it was rejected.",
-                "learning": "Each reason becomes typed operator evidence. Cortex reports repeated patterns but does not rewrite global policy from one click.",
+                "learning": "Only decisions marked Teach Kaya become policy evidence. One-off and exact-duplicate actions stay out of proposed standards.",
             },
         }
 
@@ -6609,19 +6766,22 @@ class CortexStore:
         dst_id: str | None = None,
         prior: dict[str, Any] | None = None,
         effect: dict[str, Any] | None = None,
+        decision_scope: str = "item_only",
     ) -> str:
         review_id = str(uuid.uuid4())
+        scope_value = _normalize_review_scope(decision_scope)
         signal = {
             "item_type": normalize_text(item_type)[:80],
             "action": normalize_text(action)[:80],
             "reason_code": normalize_text(reason_code)[:80] or "unspecified",
+            "decision_scope": scope_value,
         }
         with self.transaction() as conn:
             conn.execute(
                 """INSERT INTO operator_review_decisions(
                    review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
-                   reason_text,prior_json,effect_json,learning_signal_json,actor,created_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   reason_text,prior_json,effect_json,learning_signal_json,decision_scope,actor,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     review_id,
                     normalize_text(item_type)[:80],
@@ -6635,6 +6795,7 @@ class CortexStore:
                     json.dumps(prior or {}, sort_keys=True),
                     json.dumps(effect or {}, sort_keys=True),
                     json.dumps(signal, sort_keys=True),
+                    scope_value,
                     normalize_text(actor)[:80] or "dashboard-operator",
                     utc_now(),
                 ),
@@ -6650,11 +6811,13 @@ class CortexStore:
         reason_code: str,
         reason_text: str = "",
         actor: str = "dashboard-operator",
+        decision_scope: str = "item_only",
     ) -> dict[str, Any]:
         """Apply or deny one Sleep proposal and preserve enough state to undo it."""
 
         action_value = normalize_text(action).casefold()
         reason_value = normalize_text(reason_code)[:80] or "unspecified"
+        scope_value = _normalize_review_scope(decision_scope)
         review_id = str(uuid.uuid4())
         now = utc_now()
         with self.transaction() as conn:
@@ -6675,6 +6838,26 @@ class CortexStore:
                     f"SELECT * FROM memories WHERE id IN ({','.join('?' for _ in ids)})", ids
                 ).fetchall()
             } if ids else {}
+            scope_target_ids = list(ids)
+            if scope_value == "exact_duplicates":
+                if len(ids) != 1 or ids[0] not in memories:
+                    raise ValueError("exact-duplicate reach is available only for a single-memory review")
+                primary = memories[ids[0]]
+                duplicate_rows = conn.execute(
+                    """SELECT * FROM memories
+                       WHERE content_hash=? AND context_mode=? AND scope_json=? AND preconditions_json=?
+                         AND source_type=? AND source_category=? AND COALESCE(source_ref,'')=?
+                         AND id<>? AND state IN ('active','cold')
+                       ORDER BY created_at,id""",
+                    (
+                        primary["content_hash"], primary["context_mode"], primary["scope_json"],
+                        primary["preconditions_json"], primary["source_type"],
+                        primary["source_category"], primary["source_ref"] or "", ids[0],
+                    ),
+                ).fetchall()
+                for row in duplicate_rows:
+                    memories[str(row["id"])] = dict(row)
+                scope_target_ids.extend(str(row["id"]) for row in duplicate_rows)
             prior: dict[str, Any] = {
                 "proposal_status": str(proposal["status"]),
                 "memories": {
@@ -6783,13 +6966,20 @@ class CortexStore:
                 allowed = {"keep", "archive", "trash", "quarantine"}
                 if action_value not in allowed:
                     raise ValueError("memory proposals support keep, archive, trash, or quarantine")
-                memory_id = str(proposal["src_id"])
                 if action_value == "keep":
-                    conn.execute("UPDATE memories SET protected=1,updated_at=? WHERE id=?", (now, memory_id))
-                    effect["protected"] = memory_id
+                    conn.executemany(
+                        "UPDATE memories SET protected=1,updated_at=? WHERE id=?",
+                        [(now, memory_id) for memory_id in scope_target_ids],
+                    )
+                    effect["protected"] = scope_target_ids
                     next_status = "operator_denied"
                 else:
-                    change_state(memory_id, "tombstoned" if action_value == "trash" else action_value, f"operator review: {reason_value}")
+                    for memory_id in scope_target_ids:
+                        change_state(
+                            memory_id,
+                            "tombstoned" if action_value == "trash" else action_value,
+                            f"operator review: {reason_value}",
+                        )
                     next_status = "operator_approved"
             elif kind == "interference_review":
                 if action_value not in {"keep_first", "keep_second", "both_valid", "trash_both"}:
@@ -6829,30 +7019,50 @@ class CortexStore:
             else:
                 if action_value not in {"keep", "archive", "trash"}:
                     raise ValueError("unsupported proposal decision")
-                memory_id = str(proposal["src_id"] or "")
                 if action_value == "keep":
                     next_status = "operator_denied"
                 else:
-                    change_state(memory_id, "archived" if action_value == "archive" else "tombstoned", f"operator review: {reason_value}")
+                    for memory_id in scope_target_ids:
+                        change_state(
+                            memory_id,
+                            "archived" if action_value == "archive" else "tombstoned",
+                            f"operator review: {reason_value}",
+                        )
                     next_status = "operator_approved"
 
             conn.execute("UPDATE sleep_proposals SET status=? WHERE proposal_id=?", (next_status, proposal_id))
-            signal = {"proposal_kind": kind, "action": action_value, "reason_code": reason_value}
+            signal = {
+                "proposal_kind": kind,
+                "action": action_value,
+                "reason_code": reason_value,
+                "decision_scope": scope_value,
+            }
             conn.execute(
                 """INSERT INTO operator_review_decisions(
                    review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
-                   reason_text,prior_json,effect_json,learning_signal_json,actor,created_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   reason_text,prior_json,effect_json,learning_signal_json,decision_scope,actor,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     review_id, "proposal", f"proposal:{proposal_id}", proposal_id,
                     proposal["src_id"], proposal["dst_id"], action_value, reason_value,
                     normalize_text(reason_text)[:1000] or None,
                     json.dumps(prior, sort_keys=True), json.dumps(effect, sort_keys=True),
-                    json.dumps(signal, sort_keys=True), normalize_text(actor)[:80] or "dashboard-operator", now,
+                    json.dumps(signal, sort_keys=True), scope_value,
+                    normalize_text(actor)[:80] or "dashboard-operator", now,
                 ),
             )
             self._compile_policy_candidates_tx(conn)
-        return {"review_id": review_id, "proposal_id": proposal_id, "action": action_value}
+        affected_ids = sorted(
+            set(effect.get("state_changes", {}))
+            | set(effect.get("protected", []) if isinstance(effect.get("protected"), list) else [])
+        )
+        return {
+            "review_id": review_id,
+            "proposal_id": proposal_id,
+            "action": action_value,
+            "decision_scope": scope_value,
+            "affected_memory_ids": affected_ids,
+        }
 
     def undo_review_decision(self, review_id: str, *, actor: str = "dashboard-operator") -> bool:
         """Reverse an operator proposal decision using its preserved before-state."""
@@ -8200,6 +8410,13 @@ def _policy_contribution(
         "reason": reason,
         "signal_key": signal_key,
     }
+
+
+def _normalize_review_scope(value: str | None) -> str:
+    scope = normalize_text(str(value or "item_only")).casefold()
+    if scope not in {"item_only", "exact_duplicates", "policy_evidence"}:
+        raise ValueError("decision scope must be item_only, exact_duplicates, or policy_evidence")
+    return scope
 
 
 def _policy_candidate_copy(
