@@ -2,6 +2,9 @@
 
 ## 0.3.0-dev.1 — Unreleased
 
+- added schema 19 explainable connection training: connection reviews are grouped by memory-kind and source pattern, present readable A/B decision briefs with independent-witness and shared-signal evidence, and replace ambiguous approval reasons with typed relationship choices;
+- made every approved connection return an edge receipt and appear as a highlighted, explained edge on every memory-map renderer, with a direct route back to the connection queue;
+- made promoted stricter connection policies remove matching weak pending proposals from the inbox while preserving an audited `policy_proposal_effects` ledger; rollback restores proposals that remain eligible;
 - added the schema 18 Memory Refinery: explicit `record_role` (canonical, reference, event, claim) with method/version provenance, one derived `memory_presentations` row per memory, and audited `memory_refinery_proposals`;
 - added a versioned deterministic role classifier and presentation generator (no model calls): document extractions default to reference evidence, structural signals (code, tables, configuration, diagrams, command sequences, logs, raw JSON) file records as reference, episodes become events, unsupported inferences stay claims, and readability flags are preserved for review instead of silently discarding records;
 - reorganized the Index into Readable memories (default), Reference evidence, Needs clarity, and All records, with full-aggregate counts, readable cards (title, statement, applicability, source, retention reason, use evidence), collapsed **View raw evidence**, and a plain-language detail drawer (What Kaya remembers / When this applies / Why it is retained / Source and evidence / Raw record / History and connections);

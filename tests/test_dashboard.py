@@ -68,6 +68,7 @@ class DashboardInterfaceTests(unittest.TestCase):
             "graph-mode-3d",
             "graph-cluster",
             "graph-selection-links",
+            "graph-return-review",
             "timeline-svg",
             "timeline-trail",
             "view-insights",
@@ -76,6 +77,12 @@ class DashboardInterfaceTests(unittest.TestCase):
             "review-filters",
             "review-queue-list",
             "review-focus",
+            "connection-review-guide",
+            "connection-review-count",
+            "connection-patterns",
+            "connection-auto-map",
+            "connection-map-receipt",
+            "connection-map-receipt-open",
             "review-learning-signals",
             "review-history-list",
             "training-progress-value",
@@ -254,6 +261,16 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("/api/review/proposal", html)
         self.assertIn("/api/review/undo", html)
         self.assertIn("function renderReviewInbox", html)
+        self.assertIn("function renderConnectionBrief", html)
+        self.assertIn("function renderConnectionReviewGuide", html)
+        self.assertIn("function showConnectionOnMap", html)
+        self.assertIn("Same durable subject", html)
+        self.assertIn("Memory A supports B", html)
+        self.assertIn("Teach this connection pattern", html)
+        self.assertIn("Show each approved connection on the memory map", html)
+        self.assertIn("edgeMatchesHighlight", html)
+        self.assertIn('typedPairs.has(pairKey(edge))', html)
+        self.assertIn("Give this replay-supported pair a meaningful type", html)
         self.assertIn("function renderPolicyTraining", html)
         self.assertIn("function runPolicyAction", html)
         self.assertIn("/api/policy/action", html)

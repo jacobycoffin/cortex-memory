@@ -32,7 +32,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
@@ -864,6 +864,19 @@ class CortexStore:
             );
             CREATE INDEX IF NOT EXISTS idx_policy_events_created
               ON policy_events(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS policy_proposal_effects (
+                version_id TEXT NOT NULL REFERENCES policy_versions(version_id) ON DELETE CASCADE,
+                proposal_id TEXT NOT NULL REFERENCES sleep_proposals(proposal_id) ON DELETE CASCADE,
+                prior_status TEXT NOT NULL,
+                next_status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reversed_at TEXT,
+                PRIMARY KEY(version_id,proposal_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_policy_proposal_effects_active
+              ON policy_proposal_effects(version_id,next_status,reversed_at);
 
             CREATE TABLE IF NOT EXISTS sleep_edge_changes (
                 change_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -5967,12 +5980,7 @@ class CortexStore:
             memories = [memory_cache[memory_id] for memory_id in sorted(memory_ids) if memory_id in memory_cache]
 
             if proposal_kind in {"association", "association_reinforcement"} and len(memories) >= 2:
-                kinds = sorted(str(memory.get("kind") or "semantic") for memory in memories[:2])
-                selector = {
-                    "proposal_kind": "association",
-                    "src_kind": kinds[0],
-                    "dst_kind": kinds[1],
-                }
+                selector = connection_policy_selector(memories[0], memories[1])
                 contributions.append(
                     _policy_contribution(
                         review_id=str(item["review_id"]),
@@ -6342,6 +6350,71 @@ class CortexStore:
             )
         return shadow
 
+    def _apply_connection_policy_backlog_tx(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        version_id: str,
+        selector: dict[str, Any],
+        change: dict[str, Any],
+        now: str,
+    ) -> dict[str, Any]:
+        """Withdraw pending weak proposals newly covered by an approved connection policy."""
+
+        delta = max(0, int(change.get("min_independent_witnesses_delta") or 0))
+        if not delta:
+            return {"filtered": 0, "required_witness_delta": 0}
+        filtered_ids: list[str] = []
+        proposals = conn.execute(
+            """SELECT * FROM sleep_proposals
+               WHERE status='proposed' AND kind IN ('association','association_reinforcement')
+               ORDER BY created_at"""
+        ).fetchall()
+        for proposal in proposals:
+            memories = conn.execute(
+                "SELECT * FROM memories WHERE id IN (?,?)",
+                (proposal["src_id"], proposal["dst_id"]),
+            ).fetchall()
+            if len(memories) != 2:
+                continue
+            features = connection_policy_selector(dict(memories[0]), dict(memories[1]))
+            if not _policy_selector_matches(selector, features):
+                continue
+            details = _trace_json_object(proposal["details_json"])
+            witnesses = int(details.get("distinct_witnesses") or 0)
+            if not witnesses:
+                witnesses = int(
+                    conn.execute(
+                        """SELECT COUNT(DISTINCT witness_key) count
+                           FROM sleep_association_evidence WHERE src_id=? AND dst_id=?""",
+                        tuple(sorted((str(proposal["src_id"]), str(proposal["dst_id"])))),
+                    ).fetchone()["count"]
+                )
+            prior_required = max(2, int(details.get("required_witnesses") or 2))
+            if witnesses >= prior_required + delta:
+                continue
+            conn.execute(
+                "UPDATE sleep_proposals SET status='policy_filtered' WHERE proposal_id=? AND status='proposed'",
+                (proposal["proposal_id"],),
+            )
+            conn.execute(
+                """INSERT INTO policy_proposal_effects(
+                   version_id,proposal_id,prior_status,next_status,reason,created_at
+                   ) VALUES(?,?,'proposed','policy_filtered',?,?)""",
+                (
+                    version_id,
+                    proposal["proposal_id"],
+                    f"approved connection policy requires {prior_required + delta} independent witnesses",
+                    now,
+                ),
+            )
+            filtered_ids.append(str(proposal["proposal_id"]))
+        return {
+            "filtered": len(filtered_ids),
+            "required_witness_delta": delta,
+            "proposal_ids": filtered_ids,
+        }
+
     def promote_policy_candidate(
         self,
         candidate_id: str,
@@ -6354,6 +6427,7 @@ class CortexStore:
             raise ValueError("activation_scope must be scoped or core")
         now = utc_now()
         version_id = str(uuid.uuid4())
+        backlog_effect: dict[str, Any] = {"filtered": 0}
         with self.transaction() as conn:
             candidate = conn.execute(
                 "SELECT * FROM policy_candidates WHERE candidate_id=?", (candidate_id,)
@@ -6375,6 +6449,8 @@ class CortexStore:
                 "replay": _trace_json_object(candidate["replay_json"]),
                 "shadow": _trace_json_object(candidate["shadow_json"]),
             }
+            selector = _trace_json_object(candidate["selector_json"])
+            change = _trace_json_object(candidate["change_json"])
             conn.execute(
                 """INSERT INTO policy_versions(
                    version_id,candidate_id,domain,activation_scope,selector_json,change_json,
@@ -6396,6 +6472,19 @@ class CortexStore:
                 "UPDATE policy_candidates SET stage='promoted',decided_at=?,updated_at=? WHERE candidate_id=?",
                 (now, now, candidate_id),
             )
+            if str(candidate["domain"]) == "connection":
+                backlog_effect = self._apply_connection_policy_backlog_tx(
+                    conn,
+                    version_id=version_id,
+                    selector=selector,
+                    change=change,
+                    now=now,
+                )
+                evidence["pending_backlog_effect"] = backlog_effect
+                conn.execute(
+                    "UPDATE policy_versions SET evidence_json=? WHERE version_id=?",
+                    (_trace_json(evidence), version_id),
+                )
             conn.execute(
                 """INSERT INTO policy_events(event_id,candidate_id,version_id,event_type,details_json,actor,created_at)
                    VALUES(?,?,?,'promoted',?,?,?)""",
@@ -6403,14 +6492,19 @@ class CortexStore:
                     str(uuid.uuid4()),
                     candidate_id,
                     version_id,
-                    _trace_json({"activation_scope": scope}),
+                    _trace_json({"activation_scope": scope, "pending_backlog_effect": backlog_effect}),
                     normalize_text(actor)[:80],
                     now,
                 ),
             )
         self._active_policy_cache = None
         self._bump_local_retrieval_revision()
-        return {"version_id": version_id, "candidate_id": candidate_id, "activation_scope": scope}
+        return {
+            "version_id": version_id,
+            "candidate_id": candidate_id,
+            "activation_scope": scope,
+            "pending_backlog_effect": backlog_effect,
+        }
 
     def reject_policy_candidate(
         self, candidate_id: str, *, reason: str = "operator rejected", actor: str = "dashboard-operator"
@@ -6447,6 +6541,23 @@ class CortexStore:
             ).fetchone()
             if not version:
                 return False
+            proposal_effects = conn.execute(
+                """SELECT * FROM policy_proposal_effects
+                   WHERE version_id=? AND reversed_at IS NULL""",
+                (version_id,),
+            ).fetchall()
+            restored_proposals = 0
+            for effect in proposal_effects:
+                result = conn.execute(
+                    """UPDATE sleep_proposals SET status=?
+                       WHERE proposal_id=? AND status=?""",
+                    (effect["prior_status"], effect["proposal_id"], effect["next_status"]),
+                )
+                restored_proposals += int(result.rowcount > 0)
+            conn.execute(
+                "UPDATE policy_proposal_effects SET reversed_at=? WHERE version_id=? AND reversed_at IS NULL",
+                (now, version_id),
+            )
             conn.execute(
                 """UPDATE policy_versions SET status='rolled_back',deactivated_at=?,deactivated_by=?,
                      rollback_reason=? WHERE version_id=?""",
@@ -6463,7 +6574,12 @@ class CortexStore:
                     str(uuid.uuid4()),
                     version["candidate_id"],
                     version_id,
-                    _trace_json({"reason": normalize_text(reason)[:500]}),
+                    _trace_json(
+                        {
+                            "reason": normalize_text(reason)[:500],
+                            "restored_pending_proposals": restored_proposals,
+                        }
+                    ),
                     normalize_text(actor)[:80],
                     now,
                 ),
@@ -7654,7 +7770,10 @@ class CortexStore:
             if proposal_ids:
                 placeholders = ",".join("?" for _ in proposal_ids)
                 for row in self._conn.execute(
-                    f"SELECT * FROM memories WHERE id IN ({placeholders})", tuple(proposal_ids)
+                    f"""SELECT m.*,p.display_title,p.display_summary,p.applies_when,p.retention_reason
+                        FROM memories m LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                        WHERE m.id IN ({placeholders})""",
+                    tuple(proposal_ids),
                 ).fetchall():
                     memory_rows[str(row["id"])] = _decode_memory_metadata(row)
             contradiction_rows = self._conn.execute(
@@ -7690,8 +7809,28 @@ class CortexStore:
                 """SELECT * FROM operator_review_decisions
                    ORDER BY created_at DESC LIMIT 100"""
             ).fetchall()
+            connection_training_rows = self._conn.execute(
+                """SELECT d.action,d.reason_code,
+                          src.kind src_kind,src.source_category src_source_category,
+                          dst.kind dst_kind,dst.source_category dst_source_category
+                   FROM operator_review_decisions d
+                   JOIN sleep_proposals p ON p.proposal_id=d.proposal_id
+                   JOIN memories src ON src.id=d.src_id
+                   JOIN memories dst ON dst.id=d.dst_id
+                   WHERE d.reversed_at IS NULL AND d.decision_scope='policy_evidence'
+                     AND p.kind IN ('association','association_reinforcement')"""
+            ).fetchall()
 
         items: list[dict[str, Any]] = []
+        connection_training: dict[str, dict[str, int]] = {}
+        for row in connection_training_rows:
+            selector = connection_policy_selector(
+                {"kind": row["src_kind"], "source_category": row["src_source_category"]},
+                {"kind": row["dst_kind"], "source_category": row["dst_source_category"]},
+            )
+            key = _trace_json(selector)
+            counts = connection_training.setdefault(key, {"approved": 0, "denied": 0})
+            counts["approved" if str(row["action"]) == "approve" else "denied"] += 1
         connection_kinds = {"association", "association_reinforcement", "edge_downscale"}
         cleanup_kinds = {"consolidation", "lifecycle", "dependency_repair"}
         for row in proposal_rows:
@@ -7738,6 +7877,61 @@ class CortexStore:
                         (left, right),
                     ).fetchall()
                 witnesses = [dict(witness) for witness in witness_rows]
+            connection_review: dict[str, Any] | None = None
+            if kind in {"association", "association_reinforcement"} and src and dst:
+                selector = connection_policy_selector(src, dst)
+                selector_key = _trace_json(selector)
+                trained = connection_training.get(selector_key, {"approved": 0, "denied": 0})
+                witness_kinds: dict[str, int] = {}
+                for witness in witnesses:
+                    evidence_kind = str(witness.get("evidence_kind") or "unknown")
+                    witness_kinds[evidence_kind] = witness_kinds.get(evidence_kind, 0) + 1
+                first_id, second_id = str(src["id"]), str(dst["id"])
+                with self._lock:
+                    existing_edge_row = self._conn.execute(
+                        """SELECT e.src_id,e.dst_id,e.relation,e.weight,e.evidence_count,
+                                  e.last_reinforced_at,
+                                  COALESCE((SELECT ev.summary FROM edge_evidence ev
+                                    WHERE ev.src_id=e.src_id AND ev.dst_id=e.dst_id
+                                      AND ev.relation=e.relation
+                                    ORDER BY ev.created_at DESC LIMIT 1),'') explanation,
+                                  COALESCE((SELECT ev.evidence_type FROM edge_evidence ev
+                                    WHERE ev.src_id=e.src_id AND ev.dst_id=e.dst_id
+                                      AND ev.relation=e.relation
+                                    ORDER BY ev.created_at DESC LIMIT 1),'legacy_unattributed') evidence_type,
+                                  (SELECT COUNT(*) FROM edge_evidence ev
+                                    WHERE ev.src_id=e.src_id AND ev.dst_id=e.dst_id
+                                      AND ev.relation=e.relation) evidence_records
+                           FROM edges e
+                           WHERE (e.src_id=? AND e.dst_id=?) OR (e.src_id=? AND e.dst_id=?)
+                           ORDER BY (e.relation='sleep_replay'),e.weight DESC,e.evidence_count DESC
+                           LIMIT 1""",
+                        (first_id, second_id, second_id, first_id),
+                    ).fetchone()
+                existing_edge = _decode_edge(existing_edge_row) if existing_edge_row else None
+                connection_review = {
+                    "pattern_key": hashlib.sha256(selector_key.encode("utf-8")).hexdigest()[:16],
+                    "pattern_label": connection_pattern_label(selector),
+                    "selector": selector,
+                    "training": {
+                        "approved": int(trained.get("approved", 0)),
+                        "denied": int(trained.get("denied", 0)),
+                        "total": int(trained.get("approved", 0)) + int(trained.get("denied", 0)),
+                        "target": POLICY_MIN_SUPPORT,
+                    },
+                    "evidence_summary": {
+                        "distinct_witnesses": int(details.get("distinct_witnesses") or len({w.get("witness_key") for w in witnesses})),
+                        "required_witnesses": int(details.get("required_witnesses") or 2),
+                        "helpful_co_use": int(witness_kinds.get("helpful_co_use", 0)),
+                        "episode_replay": int(witness_kinds.get("episode_replay", 0)),
+                    },
+                    "shared_signals": _connection_review_signals(src, dst),
+                    "existing_edge": existing_edge,
+                    "decision_rule": (
+                        "Approve only when you can name a stable relationship that would make recalling "
+                        "the second memory useful after the first. Co-occurrence by itself is not enough."
+                    ),
+                }
             items.append(
                 {
                     "item_key": f"proposal:{proposal['proposal_id']}",
@@ -7754,6 +7948,7 @@ class CortexStore:
                     "details": details if isinstance(details, dict) else {},
                     "memories": [memory for memory in (src, dst) if memory],
                     "evidence": witnesses,
+                    "connection_review": connection_review,
                 }
             )
 
@@ -7927,6 +8122,22 @@ class CortexStore:
         for item in items:
             category = str(item["category"])
             counts[category] = counts.get(category, 0) + 1
+        connection_groups: dict[str, dict[str, Any]] = {}
+        for item in items:
+            review = item.get("connection_review")
+            if not isinstance(review, dict):
+                continue
+            pattern_key = str(review.get("pattern_key") or "")
+            group = connection_groups.setdefault(
+                pattern_key,
+                {
+                    "pattern_key": pattern_key,
+                    "pattern_label": str(review.get("pattern_label") or "Matching connections"),
+                    "pending": 0,
+                    "training": dict(review.get("training") or {}),
+                },
+            )
+            group["pending"] = int(group["pending"]) + 1
 
         history: list[dict[str, Any]] = []
         learning_counts: dict[str, int] = {}
@@ -7950,6 +8161,13 @@ class CortexStore:
                 {"signal": key, "count": count}
                 for key, count in sorted(learning_counts.items(), key=lambda pair: (-pair[1], pair[0]))
             ],
+            "connection_groups": sorted(
+                connection_groups.values(),
+                key=lambda group: (
+                    -int(group.get("pending") or 0),
+                    str(group.get("pattern_label") or ""),
+                ),
+            ),
             "standards": {
                 "trash": "Tombstones the memory and removes it from normal recall; content and provenance remain restorable.",
                 "archive": "Removes the memory from normal recall while preserving its full history.",
@@ -8110,34 +8328,91 @@ class CortexStore:
                 if action_value == "approve":
                     if len(ids) != 2:
                         raise ValueError("connection proposal is missing one memory")
-                    src_id, dst_id = sorted(ids)
+                    memory_a, memory_b = str(proposal["src_id"]), str(proposal["dst_id"])
+                    existing_connection = conn.execute(
+                        """SELECT * FROM edges
+                           WHERE (src_id=? AND dst_id=?) OR (src_id=? AND dst_id=?)
+                           ORDER BY (relation='sleep_replay'),weight DESC,evidence_count DESC LIMIT 1""",
+                        (memory_a, memory_b, memory_b, memory_a),
+                    ).fetchone()
+                    relation = "operator_link"
+                    src_id, dst_id = sorted((memory_a, memory_b))
+                    explanation = "You approved this pair as a durable connection Kaya should be able to follow."
+                    if (
+                        kind == "association_reinforcement"
+                        and existing_connection
+                        and reason_value == "reinforce_existing"
+                    ):
+                        src_id = str(existing_connection["src_id"])
+                        dst_id = str(existing_connection["dst_id"])
+                        relation = str(existing_connection["relation"])
+                        explanation = (
+                            f"You confirmed that the existing {relation.replace('_', ' ')} connection "
+                            "is still useful and deserves stronger influence."
+                        )
+                    elif reason_value in {"a_supports_b", "meaningful_dependency"}:
+                        src_id, dst_id, relation = memory_a, memory_b, "supports"
+                        explanation = "You approved this because Memory A supports or explains Memory B."
+                    elif reason_value == "b_supports_a":
+                        src_id, dst_id, relation = memory_b, memory_a, "supports"
+                        explanation = "You approved this because Memory B supports or explains Memory A."
+                    elif reason_value in {"same_subject", "same_context"}:
+                        relation = "same_subject" if reason_value == "same_subject" else "same_context"
+                        explanation = (
+                            "You approved this because both memories describe the same durable subject."
+                            if reason_value == "same_subject"
+                            else "You approved this because both memories are useful in the same durable context."
+                        )
+                    elif reason_value == "useful_together":
+                        relation = "useful_together"
+                        explanation = "You approved this because recalling either memory should make the other useful."
+                    operator_note = normalize_text(reason_text)[:300]
+                    if operator_note:
+                        explanation = f"{explanation} Your note: {operator_note}"
                     edge = conn.execute(
-                        "SELECT * FROM edges WHERE src_id=? AND dst_id=? AND relation='sleep_replay'",
-                        (src_id, dst_id),
+                        "SELECT * FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                        (src_id, dst_id, relation),
                     ).fetchone()
                     prior["edge"] = dict(edge) if edge else None
                     weight = min(1.0, max(0.25, float(proposal["score"] or 0.0)))
                     conn.execute(
                         """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
-                           VALUES(?,?,'sleep_replay',?,1,?,?)
+                           VALUES(?,?,?,?,1,?,?)
                            ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
                              weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
                              evidence_count=edges.evidence_count+1,
                              last_reinforced_at=excluded.last_reinforced_at""",
-                        (src_id, dst_id, weight, now, now),
+                        (src_id, dst_id, relation, weight, now, now),
                     )
                     self._record_edge_evidence_tx(
-                        conn, src_id, dst_id, "sleep_replay",
+                        conn, src_id, dst_id, relation,
                         evidence_type="operator_review", evidence_key=review_id,
-                        summary=(
-                            "An operator approved this proposed connection after reviewing both full memories, "
-                            f"the proposal rationale, and {int(proposal['evidence_count'] or 0)} evidence records."
-                        ),
+                        summary=explanation,
                         source_ref=f"review:{review_id}",
-                        metadata={"proposal_id": proposal_id, "reason_code": reason_value},
+                        metadata={
+                            "proposal_id": proposal_id,
+                            "reason_code": reason_value,
+                            "proposal_evidence_count": int(proposal["evidence_count"] or 0),
+                            "memory_a": memory_a,
+                            "memory_b": memory_b,
+                        },
                         created_at=now,
                     )
-                    effect["edge"] = {"src_id": src_id, "dst_id": dst_id, "relation": "sleep_replay"}
+                    current_edge = conn.execute(
+                        "SELECT weight,evidence_count FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                        (src_id, dst_id, relation),
+                    ).fetchone()
+                    effect["edge"] = {
+                        "src_id": src_id,
+                        "dst_id": dst_id,
+                        "relation": relation,
+                        "explanation": explanation,
+                        "memory_a": memory_a,
+                        "memory_b": memory_b,
+                        "created": edge is None,
+                        "weight": float(current_edge["weight"] if current_edge else weight),
+                        "evidence_count": int(current_edge["evidence_count"] if current_edge else 1),
+                    }
                     next_status = "operator_approved"
                 else:
                     next_status = "operator_denied"
@@ -8269,6 +8544,7 @@ class CortexStore:
             "action": action_value,
             "decision_scope": scope_value,
             "affected_memory_ids": affected_ids,
+            "edge": effect.get("edge") if isinstance(effect, dict) else None,
         }
 
     def undo_review_decision(self, review_id: str, *, actor: str = "dashboard-operator") -> bool:
@@ -9481,6 +9757,10 @@ def _default_edge_explanation(relation: str, *, evidence_count: int) -> str:
         "sleep_replay": f"Offline replay found the pair together in independent evidence ({count} recorded witness{'es' if count != 1 else ''}).",
         "consolidates": "A reversible consolidation review identified the memories as near-duplicates.",
         "supports": "One memory was recorded as supporting evidence for the other.",
+        "same_subject": "A reviewed connection says both memories describe the same durable subject.",
+        "same_context": "A reviewed connection says both memories are useful in the same durable context.",
+        "useful_together": "A reviewed connection says recalling either memory should make the other useful.",
+        "operator_link": "An operator approved this as a durable relationship after reviewing both memories.",
         "dependency": "The derived memory depends on the connected evidence memory.",
     }
     return explanations.get(
@@ -9618,6 +9898,78 @@ def _trace_json_object(value: Any) -> dict[str, Any]:
     return dict(parsed) if isinstance(parsed, dict) else {}
 
 
+def connection_policy_selector(
+    left: dict[str, Any], right: dict[str, Any]
+) -> dict[str, str]:
+    """Return the scoped, order-independent pattern used for connection training."""
+
+    endpoints = sorted(
+        (
+            normalize_text(str(memory.get("kind") or "semantic")).casefold(),
+            normalize_text(str(memory.get("source_category") or "AGENT_INFERENCE")).upper(),
+        )
+        for memory in (left, right)
+    )
+    return {
+        "proposal_kind": "association",
+        "src_kind": endpoints[0][0],
+        "src_source_category": endpoints[0][1],
+        "dst_kind": endpoints[1][0],
+        "dst_source_category": endpoints[1][1],
+    }
+
+
+def connection_pattern_label(selector: dict[str, Any]) -> str:
+    def endpoint(prefix: str) -> str:
+        source = normalize_text(str(selector.get(f"{prefix}_source_category") or "matching"))
+        kind = normalize_text(str(selector.get(f"{prefix}_kind") or "memory"))
+        return f"{source.replace('_', ' ').title()} {kind.replace('_', ' ')}"
+
+    return f"{endpoint('src')} ↔ {endpoint('dst')}"
+
+
+def _connection_review_signals(
+    left: dict[str, Any], right: dict[str, Any]
+) -> list[dict[str, str]]:
+    """Describe inspectable overlap without claiming that overlap proves a link."""
+
+    signals: list[dict[str, str]] = []
+    left_entities = {normalize_text(str(value)) for value in left.get("entities", []) if value}
+    right_entities = {normalize_text(str(value)) for value in right.get("entities", []) if value}
+    shared_entities = sorted(value for value in left_entities & right_entities if value)
+    if shared_entities:
+        signals.append({"label": "Shared entities", "value": ", ".join(shared_entities[:6])})
+    left_systems = {normalize_text(str(value)) for value in left.get("applicable_systems", []) if value}
+    right_systems = {normalize_text(str(value)) for value in right.get("applicable_systems", []) if value}
+    shared_systems = sorted(value for value in left_systems & right_systems if value)
+    if shared_systems:
+        signals.append({"label": "Shared systems", "value": ", ".join(shared_systems[:6])})
+    left_scope = dict(left.get("scope") or {})
+    right_scope = dict(right.get("scope") or {})
+    shared_scope = [
+        f"{key.replace('_', ' ')}={left_scope[key]}"
+        for key in sorted(set(left_scope) & set(right_scope))
+        if normalize_text(str(left_scope.get(key)))
+        and normalize_text(str(left_scope.get(key))).casefold()
+        == normalize_text(str(right_scope.get(key))).casefold()
+    ]
+    if shared_scope:
+        signals.append({"label": "Same scope", "value": ", ".join(shared_scope[:6])})
+    if left.get("subject") and normalize_text(str(left.get("subject"))).casefold() == normalize_text(
+        str(right.get("subject"))
+    ).casefold():
+        signals.append({"label": "Same structured subject", "value": normalize_text(str(left["subject"]))})
+    shared_terms = sorted(
+        term
+        for term in set(query_tokens(str(left.get("content") or "")))
+        & set(query_tokens(str(right.get("content") or "")))
+        if len(term) >= 4 and not term.isdigit()
+    )
+    if shared_terms:
+        signals.append({"label": "Shared wording", "value": ", ".join(shared_terms[:8])})
+    return signals
+
+
 def _policy_context_key(memory: dict[str, Any], *, fallback: str) -> str:
     scope = _trace_json_object(memory.get("scope_json"))
     project = normalize_text(str(scope.get("project") or scope.get("active_project") or ""))
@@ -9704,12 +10056,12 @@ def _policy_candidate_copy(
             {"score_adjustment": -0.08},
         )
     if domain == "connection":
-        left = str(selector.get("src_kind") or "memory")
-        right = str(selector.get("dst_kind") or "memory")
+        pattern = connection_pattern_label(selector)
         return (
-            f"Require another independent witness for {left} ↔ {right} links",
+            f"Require another independent witness for {pattern} links",
             "Repeated denials say co-occurrence alone is producing links that do not make conceptual sense. "
-            "Future Sleep proposals in this pattern must clear a higher evidence threshold.",
+            "Future Sleep proposals in this pattern must clear a higher evidence threshold, and promotion "
+            "withdraws still-pending weak proposals that no longer meet it.",
             {"min_independent_witnesses_delta": 1},
         )
     quality_flag = str(selector.get("quality_flag") or "low-quality")

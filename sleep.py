@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 from .retrieval import MemoryRetriever
 from .security import normalize_text
 from .semantics import feature_similarity
-from .store import CortexStore, utc_now
+from .store import CortexStore, connection_policy_selector, utc_now
 
 
 _CONTEXTLESS_REFERENCE = re.compile(
@@ -558,15 +558,10 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
         evidence_count = int(row["evidence_count"])
         src_memory = store.get_memory(src_id) or {}
         dst_memory = store.get_memory(dst_id) or {}
-        kinds = sorted(
-            [
-                str(src_memory.get("kind") or "semantic"),
-                str(dst_memory.get("kind") or "semantic"),
-            ]
-        )
+        selector = connection_policy_selector(src_memory, dst_memory)
         connection_policy = store.active_policy_adjustment(
             "connection",
-            {"proposal_kind": "association", "src_kind": kinds[0], "dst_kind": kinds[1]},
+            selector,
         )
         required_witnesses = config.min_association_witnesses + int(
             connection_policy.get("min_independent_witnesses_delta") or 0

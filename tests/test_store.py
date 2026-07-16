@@ -75,18 +75,23 @@ class CortexStoreTests(unittest.TestCase):
         item = next(row for row in inbox["items"] if row["item_key"] == "proposal:review-link")
         self.assertEqual(item["category"], "connections")
         self.assertEqual(len(item["memories"]), 2)
+        self.assertIn("pattern_key", item["connection_review"])
+        self.assertEqual(item["connection_review"]["training"]["target"], 5)
+        self.assertEqual(inbox["connection_groups"][0]["pending"], 1)
 
         decision = self.store.decide_review_proposal(
             "review-link",
             "approve",
-            reason_code="meaningful_dependency",
+            reason_code="a_supports_b",
             reason_text="Both facts explain the same deployment path.",
             actor="test-operator",
             decision_scope="policy_evidence",
         )
+        self.assertEqual(decision["edge"]["relation"], "supports")
+        self.assertIn("Memory A supports", decision["edge"]["explanation"])
         with self.store._lock:
             edge = self.store._conn.execute(
-                "SELECT * FROM edges WHERE src_id=? AND dst_id=? AND relation='sleep_replay'",
+                "SELECT * FROM edges WHERE src_id=? AND dst_id=? AND relation='supports'",
                 (left, right),
             ).fetchone()
             evidence = self.store._conn.execute(
@@ -95,14 +100,14 @@ class CortexStoreTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNotNone(edge)
         self.assertEqual(evidence["evidence_type"], "operator_review")
-        self.assertIn("operator", evidence["summary"].casefold())
+        self.assertIn("memory a supports", evidence["summary"].casefold())
         learning = self.store.review_inbox_snapshot()["learning_signals"]
-        self.assertTrue(any(row["signal"].endswith("meaningful_dependency") for row in learning))
+        self.assertTrue(any(row["signal"].endswith("a_supports_b") for row in learning))
 
         self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
         with self.store._lock:
             edge = self.store._conn.execute(
-                "SELECT 1 FROM edges WHERE src_id=? AND dst_id=? AND relation='sleep_replay'",
+                "SELECT 1 FROM edges WHERE src_id=? AND dst_id=? AND relation='supports'",
                 (left, right),
             ).fetchone()
             status = self.store._conn.execute(
@@ -110,6 +115,169 @@ class CortexStoreTests(unittest.TestCase):
             ).fetchone()["status"]
         self.assertIsNone(edge)
         self.assertEqual(status, "proposed")
+
+    def test_connection_policy_filters_weak_pending_pairs_and_rollback_restores_them(self) -> None:
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        proposals: list[str] = []
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("connection-training-run", "shadow", "completed", now, now),
+            )
+        for index in range(10):
+            first_id, _ = self.store.add_memory(
+                f"Project Atlas deployment fact A{index}.",
+                kind="semantic",
+                source_type="document",
+                source_category="DOCUMENT",
+                source_ref=f"atlas-a-{index}",
+            )
+            second_id, _ = self.store.add_memory(
+                f"Project Atlas deployment fact B{index}.",
+                kind="semantic",
+                source_type="document",
+                source_category="DOCUMENT",
+                source_ref=f"atlas-b-{index}",
+            )
+            proposal_id = f"connection-training-{index}"
+            proposals.append(proposal_id)
+            with self.store.transaction() as conn:
+                conn.execute(
+                    """INSERT INTO sleep_proposals(
+                       proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
+                       rationale,details_json,created_at
+                       ) VALUES(?,?,?,?,?,'proposed',0.3,2,?,? ,?)""",
+                    (
+                        proposal_id,
+                        "connection-training-run",
+                        "association",
+                        first_id,
+                        second_id,
+                        "Two replay witnesses co-occurred.",
+                        '{"distinct_witnesses":2,"required_witnesses":2}',
+                        now,
+                    ),
+                )
+
+        for proposal_id in proposals[:5]:
+            self.store.decide_review_proposal(
+                proposal_id,
+                "deny",
+                reason_code="co_occurrence_only",
+                actor="test-operator",
+                decision_scope="policy_evidence",
+            )
+        candidate = next(
+            row
+            for row in self.store.policy_training_snapshot()["candidates"]
+            if row["domain"] == "connection" and row["direction"] == "stricter"
+        )
+        self.assertEqual(candidate["stage"], "replay_ready")
+        self.assertTrue(
+            self.store.evaluate_policy_candidate(candidate["candidate_id"], actor="test-operator")[
+                "passed"
+            ]
+        )
+        self.store.start_policy_shadow(candidate["candidate_id"], actor="test-operator")
+        for proposal_id in proposals[5:8]:
+            self.store.decide_review_proposal(
+                proposal_id,
+                "deny",
+                reason_code="co_occurrence_only",
+                actor="test-operator",
+                decision_scope="policy_evidence",
+            )
+        candidate = next(
+            row
+            for row in self.store.policy_training_snapshot()["candidates"]
+            if row["candidate_id"] == candidate["candidate_id"]
+        )
+        self.assertEqual(candidate["stage"], "ready")
+        version = self.store.promote_policy_candidate(
+            candidate["candidate_id"], activation_scope="scoped", actor="test-operator"
+        )
+        self.assertEqual(version["pending_backlog_effect"]["filtered"], 2)
+        with self.store._lock:
+            statuses = {
+                row["proposal_id"]: row["status"]
+                for row in self.store._conn.execute(
+                    "SELECT proposal_id,status FROM sleep_proposals WHERE proposal_id IN (?,?)",
+                    tuple(proposals[8:]),
+                ).fetchall()
+            }
+        self.assertEqual(set(statuses.values()), {"policy_filtered"})
+        self.assertTrue(
+            self.store.rollback_policy_version(
+                version["version_id"], reason="test rollback", actor="test-operator"
+            )
+        )
+        with self.store._lock:
+            restored = self.store._conn.execute(
+                "SELECT COUNT(*) count FROM sleep_proposals WHERE proposal_id IN (?,?) AND status='proposed'",
+                tuple(proposals[8:]),
+            ).fetchone()["count"]
+        self.assertEqual(restored, 2)
+
+    def test_reinforcement_can_give_a_replay_edge_a_meaningful_type(self) -> None:
+        first_id, _ = self.store.add_memory("Atlas release evidence supports the deployment record.")
+        second_id, _ = self.store.add_memory("The Atlas deployment record requires release evidence.")
+        self.assertTrue(
+            self.store.add_edge(
+                first_id,
+                second_id,
+                "sleep_replay",
+                evidence_type="episode_replay",
+                explanation="The pair appeared in independent replay evidence.",
+            )
+        )
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("reinforcement-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,?,'proposed',0.6,3,?,'{}',?)""",
+                (
+                    "typed-reinforcement",
+                    "reinforcement-run",
+                    "association_reinforcement",
+                    first_id,
+                    second_id,
+                    "The pair gained another independent witness.",
+                    now,
+                ),
+            )
+        decision = self.store.decide_review_proposal(
+            "typed-reinforcement",
+            "approve",
+            reason_code="a_supports_b",
+            actor="test-operator",
+            decision_scope="policy_evidence",
+        )
+        self.assertEqual(decision["edge"]["relation"], "supports")
+        with self.store._lock:
+            relations = {
+                row["relation"]
+                for row in self.store._conn.execute(
+                    "SELECT relation FROM edges WHERE (src_id=? AND dst_id=?) OR (src_id=? AND dst_id=?)",
+                    (first_id, second_id, second_id, first_id),
+                ).fetchall()
+            }
+        self.assertEqual(relations, {"sleep_replay", "supports"})
+        self.assertTrue(self.store.undo_review_decision(decision["review_id"], actor="test-operator"))
+        with self.store._lock:
+            relations = {
+                row["relation"]
+                for row in self.store._conn.execute(
+                    "SELECT relation FROM edges WHERE (src_id=? AND dst_id=?) OR (src_id=? AND dst_id=?)",
+                    (first_id, second_id, second_id, first_id),
+                ).fetchall()
+            }
+        self.assertEqual(relations, {"sleep_replay"})
 
     def test_review_inbox_trash_is_a_reversible_tombstone(self) -> None:
         memory_id, _ = self.store.add_memory("Temporary code execution heartbeat completed.")
@@ -1140,6 +1308,7 @@ class CortexStoreTests(unittest.TestCase):
             self.assertIn("policy_candidates", tables)
             self.assertIn("policy_versions", tables)
             self.assertIn("policy_events", tables)
+            self.assertIn("policy_proposal_effects", tables)
             review_columns = {
                 row["name"]
                 for row in migrated._conn.execute(
