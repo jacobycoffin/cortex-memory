@@ -133,6 +133,8 @@ hermes memory setup
 
 Choose `cortex`, then restart the Hermes process so it initializes the provider. Cortex's injected system block makes it the primary durable store, gives `cortex_memory` precedence over Hermes's generic memory tool, and tells Hermes to use it for lasting facts, preferences, decisions, corrections, and verified procedures. Existing `MEMORY.md` and `USER.md` files remain available as curated bootstrap context; Cortex does not delete or rewrite them, and still mirrors an explicit legacy built-in write as a safety net because current Hermes keeps that surface active alongside external providers.
 
+For a Cortex-primary Hermes deployment, also set `memory.nudge_interval: 0`. This disables Hermes's periodic legacy background-memory writer; Cortex's `sync_turn` still performs bounded durable-candidate capture and episode recording after every primary turn. The existing built-in files remain readable bootstrap context, and foreground durable writes are routed to `cortex_memory` by the injected contract.
+
 If the `hermes` launcher is not on your VPS `PATH`, run the real environment directly:
 
 ```bash

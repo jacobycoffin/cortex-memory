@@ -75,7 +75,7 @@ with CortexHarnessAdapter("./state/cortex.db") as cortex:
 
 The wrapper adaptively skips greetings and self-contained tasks, so “primary” does not mean blindly injecting memory into every turn. `force_recall=True` is available when a harness already knows the task must use durable history.
 
-Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and mirrors a successful legacy built-in write into Cortex. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search.
+Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and mirrors a successful legacy built-in write into Cortex. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search. Set Hermes's `memory.nudge_interval` to `0` in a Cortex-primary deployment so the periodic legacy background reviewer does not keep filling `MEMORY.md`; Cortex's provider `sync_turn` remains responsible for bounded automatic capture and episode recording.
 
 The harness decides how it detects durable facts, which evidence the answer used, and when an outcome is known. Cortex deliberately does not infer success merely because a memory was retrieved.
 
