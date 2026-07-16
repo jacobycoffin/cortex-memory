@@ -17,11 +17,12 @@ from .client import CortexMemory, RecallBatch
 from .cognition import plan_recall
 
 
-HARNESS_CONTRACT_VERSION = "cortex-primary-v1"
+HARNESS_CONTRACT_VERSION = "cortex-primary-v2"
 
 CORTEX_BOOTSTRAP_POINTER = (
     "Cortex is the primary durable memory store. Run bounded Cortex recall before memory-bearing tasks; "
-    "write durable facts, preferences, decisions, corrections, and verified procedures to Cortex. Keep "
+    "send newly noticed facts, preferences, decisions, and procedures to Cortex as reviewable proposals; "
+    "only operator-approved proposals become durable recallable memories. Keep "
     "harness-native memory limited to this bootstrap pointer and temporary session scratch; do not duplicate "
     "the durable corpus there."
 )
@@ -43,8 +44,10 @@ def cortex_primary_system_prompt(
         f"Cortex is the long-term memory store of record for this agent.{inventory}\n"
         "- Before answering a memory-bearing request, use automatically injected Cortex evidence first. If the "
         f"needed prior fact is not present, search with `{tool_name}` before assuming it is unknown.\n"
-        f"- Save durable user facts, preferences, decisions, corrections, and verified procedures with `{tool_name}`. "
-        "Do not copy them into the harness's small built-in memory.\n"
+        f"- Send possible durable user facts, preferences, decisions, corrections, and verified procedures to "
+        f"`{tool_name}`. Agent-created writes are proposals: they are not recallable until a person approves them. "
+        "Do not claim that a proposal was saved as an active memory, and do not copy it into the harness's small "
+        "built-in memory.\n"
         f"- If the harness also exposes a generic `memory` tool, `{tool_name}` takes precedence for every durable "
         "write and correction. Do not call the generic tool's add or replace action for information that belongs "
         "in Cortex; it is legacy compatibility, not a second store of record.\n"
@@ -70,17 +73,26 @@ def harness_contract_manifest(*, tool_name: str = "cortex_memory") -> dict[str, 
         "lifecycle": [
             {"phase": "before_turn", "operation": "bounded_recall", "required": True},
             {"phase": "prompt", "operation": "inject_as_fallible_evidence", "required": True},
-            {"phase": "during_turn", "operation": "explicit_durable_write_or_correction", "required": False},
+            {"phase": "during_turn", "operation": "stage_memory_creation_proposal", "required": False},
             {"phase": "after_turn", "operation": "resolve_used_ids_and_outcome", "required": True},
             {"phase": "after_turn", "operation": "record_episode", "required": False},
         ],
         "write_policy": {
-            "cortex": ["durable_fact", "preference", "decision", "correction", "verified_procedure"],
+            "propose_for_review": [
+                "agent_noticed_fact",
+                "user_stated_preference",
+                "decision",
+                "correction",
+                "possible_verified_procedure",
+            ],
+            "trusted_commit": ["operator_approval", "controlled_verified_import"],
             "native": ["bootstrap_pointer", "temporary_session_scratch"],
             "never_memory": ["secret", "raw_tool_telemetry", "transient_execution_status", "authorization"],
         },
         "enforcement": {
             "recall": "invoke_before_model_inference",
+            "agent_generated_write": "stage_non_recallable_proposal",
+            "trusted_commit": "require_operator_or_controlled_import_provenance",
             "native_durable_write_tool": "disable_or_intercept_when_supported",
             "fallback_when_native_tool_cannot_be_disabled": "system_prompt_precedence_and_mirror_to_cortex",
             "model_instruction_alone_is_sufficient": False,
@@ -175,9 +187,29 @@ class CortexHarnessAdapter:
         return HarnessTurn(query=query, context=batch.context(), reason=plan.reason, batch=batch)
 
     def remember(self, content: str, **metadata: Any) -> tuple[str, bool]:
-        """Write durable information to the primary store."""
+        """Commit trusted information after operator approval or controlled import.
+
+        Agent-generated discoveries must use :meth:`propose` instead. Keeping the
+        trusted primitive explicit prevents a harness from silently turning its
+        own summary into recallable user truth.
+        """
 
         return self.memory.remember(content, **metadata)
+
+    def propose(self, content: str, **metadata: Any) -> dict[str, Any]:
+        """Stage an agent-generated candidate for human review.
+
+        The proposal is stored outside normal recall. Repeated submissions are
+        coalesced by the store so a recurring observation increases evidence
+        without filling the review inbox with identical cards.
+        """
+
+        sanitized_metadata = dict(metadata)
+        sanitized_metadata.setdefault("source_type", "harness_proposal")
+        sanitized_metadata.setdefault("source_category", "AGENT_PROPOSED")
+        sanitized_metadata.setdefault("extraction_method", "harness_adapter_proposal_v1")
+        sanitized_metadata.setdefault("storage_policy", "review_required")
+        return self.memory.propose(content, **sanitized_metadata)
 
     def record_episode(
         self,

@@ -28,11 +28,11 @@ from .refinery import (
     deterministic_split_preview,
     needs_clarity,
 )
-from .security import normalize_text
+from .security import normalize_text, sanitize_memory
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 23
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
@@ -515,6 +515,132 @@ class CortexStore:
               ON memory_write_decisions(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memory_write_decisions_memory
               ON memory_write_decisions(memory_id,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_creation_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                proposal_key TEXT NOT NULL,
+                candidate_hash TEXT NOT NULL,
+                content TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'semantic',
+                source_type TEXT NOT NULL DEFAULT 'conversation',
+                source_category TEXT NOT NULL DEFAULT 'AGENT_INFERENCE',
+                source_ref TEXT,
+                session_id TEXT,
+                context_mode TEXT NOT NULL DEFAULT 'standalone',
+                candidate_json TEXT NOT NULL DEFAULT '{}',
+                assessment_json TEXT NOT NULL DEFAULT '{}',
+                storage_policy TEXT NOT NULL DEFAULT 'automatic',
+                quarantine_reason TEXT,
+                redacted INTEGER NOT NULL DEFAULT 0,
+                recurrence_count INTEGER NOT NULL DEFAULT 1,
+                status TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(status IN ('pending','remembered','evidence_only','rejected','needs_context')),
+                decision_action TEXT,
+                decision_note TEXT,
+                result_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                review_id TEXT,
+                actor TEXT,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                decided_at TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_creation_pending_key
+              ON memory_creation_proposals(proposal_key)
+              WHERE status IN ('pending','needs_context');
+            CREATE INDEX IF NOT EXISTS idx_memory_creation_status
+              ON memory_creation_proposals(status,last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_creation_candidate
+              ON memory_creation_proposals(candidate_hash,last_seen_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_recall_sets (
+                recall_set_id TEXT PRIMARY KEY,
+                label TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'trained'
+                  CHECK(kind IN ('legacy','trained')),
+                status TEXT NOT NULL DEFAULT 'inactive'
+                  CHECK(status IN ('active','inactive')),
+                parent_recall_set_id TEXT REFERENCES memory_recall_sets(recall_set_id),
+                actor TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                activated_at TEXT,
+                deactivated_at TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_recall_sets_one_active
+              ON memory_recall_sets(status) WHERE status='active';
+            CREATE INDEX IF NOT EXISTS idx_memory_recall_sets_created
+              ON memory_recall_sets(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_recall_memberships (
+                recall_set_id TEXT NOT NULL REFERENCES memory_recall_sets(recall_set_id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                eligibility TEXT NOT NULL DEFAULT 'primary'
+                  CHECK(eligibility IN ('primary','evidence_only')),
+                origin TEXT NOT NULL DEFAULT 'trusted_write',
+                review_id TEXT,
+                actor TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                revoked_at TEXT,
+                PRIMARY KEY(recall_set_id,memory_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_recall_memberships_active
+              ON memory_recall_memberships(recall_set_id,eligibility,memory_id)
+              WHERE revoked_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_memory_recall_memberships_memory
+              ON memory_recall_memberships(memory_id,recall_set_id);
+
+            CREATE TABLE IF NOT EXISTS memory_recall_set_events (
+                event_id TEXT PRIMARY KEY,
+                event_type TEXT NOT NULL,
+                recall_set_id TEXT NOT NULL REFERENCES memory_recall_sets(recall_set_id) ON DELETE CASCADE,
+                prior_recall_set_id TEXT,
+                memory_id TEXT,
+                eligibility TEXT,
+                actor TEXT NOT NULL DEFAULT '',
+                reason TEXT NOT NULL DEFAULT '',
+                details_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_recall_set_events_created
+              ON memory_recall_set_events(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_neighborhoods (
+                neighborhood_id TEXT PRIMARY KEY,
+                slug TEXT NOT NULL UNIQUE,
+                label TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'topic',
+                parent_neighborhood_id TEXT REFERENCES memory_neighborhoods(neighborhood_id),
+                description TEXT NOT NULL DEFAULT '',
+                safety_class TEXT NOT NULL DEFAULT 'normal'
+                  CHECK(safety_class IN ('normal','secret_reference_only')),
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_neighborhood_memberships (
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                neighborhood_id TEXT NOT NULL REFERENCES memory_neighborhoods(neighborhood_id) ON DELETE CASCADE,
+                confidence REAL NOT NULL DEFAULT 1.0,
+                origin TEXT NOT NULL DEFAULT 'deterministic',
+                explanation TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                reviewed_at TEXT,
+                PRIMARY KEY(memory_id,neighborhood_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_neighborhood_memberships_neighborhood
+              ON memory_neighborhood_memberships(neighborhood_id,memory_id);
+
+            CREATE TRIGGER IF NOT EXISTS cortex_recall_membership_on_memory_insert
+            AFTER INSERT ON memories BEGIN
+              INSERT OR IGNORE INTO memory_recall_memberships(
+                recall_set_id,memory_id,eligibility,origin,actor,reason,created_at
+              )
+              SELECT recall_set_id,NEW.id,
+                     CASE WHEN kind='trained' AND (
+                       NEW.source_type='vault_markdown' OR NEW.record_role='reference'
+                     ) THEN 'evidence_only' ELSE 'primary' END,
+                     'trusted_write','system','memory created while this recall set was active',NEW.created_at
+              FROM memory_recall_sets WHERE status='active' LIMIT 1;
+            END;
 
             CREATE TABLE IF NOT EXISTS memory_context_outcomes (
                 task_id TEXT NOT NULL,
@@ -1156,6 +1282,8 @@ class CortexStore:
         self._backfill_memory_context_terms()
         self._rebuild_feature_stats()
         self._backfill_refinery()
+        self._backfill_recall_sets()
+        self._backfill_memory_neighborhoods()
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_claim ON memories(subject, predicate, state, valid_from, valid_to)"
         )
@@ -1263,6 +1391,24 @@ class CortexStore:
             AFTER UPDATE ON main.memory_context_outcomes BEGIN SELECT cortex_bump_revision(); END;
             CREATE TEMP TRIGGER cortex_local_revision_context_outcome_delete
             AFTER DELETE ON main.memory_context_outcomes BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_set_insert
+            AFTER INSERT ON main.memory_recall_sets BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_set_update
+            AFTER UPDATE ON main.memory_recall_sets BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_set_delete
+            AFTER DELETE ON main.memory_recall_sets BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_membership_insert
+            AFTER INSERT ON main.memory_recall_memberships BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_membership_update
+            AFTER UPDATE ON main.memory_recall_memberships BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_recall_membership_delete
+            AFTER DELETE ON main.memory_recall_memberships BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_neighborhood_membership_insert
+            AFTER INSERT ON main.memory_neighborhood_memberships BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_neighborhood_membership_update
+            AFTER UPDATE ON main.memory_neighborhood_memberships BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_neighborhood_membership_delete
+            AFTER DELETE ON main.memory_neighborhood_memberships BEGIN SELECT cortex_bump_revision(); END;
             """
         )
 
@@ -1720,6 +1866,216 @@ class CortexStore:
             (REFINERY_BACKFILL_KEY, REFINERY_BACKFILL_VERSION),
         )
 
+    def _backfill_recall_sets(self) -> None:
+        """Create a behavior-preserving baseline recall set on upgrade.
+
+        Every existing record enters the baseline as ``primary`` so merely
+        opening an older database does not change any retrieval result.  The
+        stricter boundary begins only after an operator explicitly activates a
+        trained set from the dashboard.
+        """
+
+        active = self._conn.execute(
+            "SELECT recall_set_id FROM memory_recall_sets WHERE status='active' LIMIT 1"
+        ).fetchone()
+        created_baseline = False
+        if not active:
+            now = utc_now()
+            baseline_id = str(uuid.uuid4())
+            self._conn.execute(
+                """INSERT INTO memory_recall_sets(
+                     recall_set_id,label,kind,status,actor,reason,created_at,activated_at
+                   ) VALUES(?,?,'legacy','active','schema-migration',?,?,?)""",
+                (
+                    baseline_id,
+                    "Legacy recall set",
+                    "Behavior-preserving baseline created during schema upgrade.",
+                    now,
+                    now,
+                ),
+            )
+            self._conn.execute(
+                """INSERT INTO memory_recall_set_events(
+                     event_id,event_type,recall_set_id,actor,reason,details_json,created_at
+                   ) VALUES(?,'created',?,'schema-migration',?,'{}',?)""",
+                (
+                    str(uuid.uuid4()),
+                    baseline_id,
+                    "Created behavior-preserving baseline recall set.",
+                    now,
+                ),
+            )
+            active_id = baseline_id
+            created_baseline = True
+        else:
+            active_id = str(active["recall_set_id"])
+        if not created_baseline:
+            return
+        now = utc_now()
+        self._conn.execute(
+            """INSERT OR IGNORE INTO memory_recall_memberships(
+                 recall_set_id,memory_id,eligibility,origin,actor,reason,created_at
+               )
+               SELECT ?,id,'primary','legacy_migration','schema-migration',
+                      'Preserve pre-recall-set retrieval behavior.',?
+               FROM memories""",
+            (active_id, now),
+        )
+
+    @staticmethod
+    def _neighborhood_slug(value: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", normalize_text(value).casefold()).strip("-")
+        return slug[:80] or "other"
+
+    @staticmethod
+    def _ensure_neighborhood_tx(
+        conn: sqlite3.Connection,
+        *,
+        slug: str,
+        label: str,
+        category: str,
+        parent_slug: str | None = None,
+        description: str = "",
+        safety_class: str = "normal",
+    ) -> str:
+        neighborhood_id = f"neighborhood:{slug}"
+        parent_id = f"neighborhood:{parent_slug}" if parent_slug else None
+        conn.execute(
+            """INSERT OR IGNORE INTO memory_neighborhoods(
+                 neighborhood_id,slug,label,category,parent_neighborhood_id,
+                 description,safety_class,created_at
+               ) VALUES(?,?,?,?,?,?,?,?)""",
+            (
+                neighborhood_id,
+                slug,
+                normalize_text(label)[:120],
+                normalize_text(category)[:80] or "topic",
+                parent_id,
+                normalize_text(description)[:500],
+                safety_class,
+                utc_now(),
+            ),
+        )
+        return neighborhood_id
+
+    def _assign_memory_neighborhoods_tx(
+        self, conn: sqlite3.Connection, memory: dict[str, Any]
+    ) -> None:
+        """Assign overlapping, explainable neighborhoods without creating graph edges."""
+
+        now = utc_now()
+        memberships: dict[str, tuple[float, str]] = {}
+
+        def assign(slug: str, confidence: float, explanation: str) -> None:
+            memberships[slug] = max(
+                memberships.get(slug, (0.0, explanation)),
+                (confidence, explanation),
+                key=lambda item: item[0],
+            )
+
+        kind = str(memory.get("kind") or "semantic").casefold()
+        kind_slugs = {
+            "preference": "preferences",
+            "procedure": "procedures",
+            "decision": "decisions",
+            "prospective": "plans",
+            "operational": "operations",
+            "identity": "people",
+        }
+        if kind in kind_slugs:
+            assign(kind_slugs[kind], 0.96, f"The record type is {kind}.")
+        source_type = str(memory.get("source_type") or "").casefold()
+        if source_type.startswith("tool_"):
+            assign("tools", 0.98, "This record came from a tool workflow.")
+        if source_type == "vault_markdown" or str(memory.get("record_role")) == "reference":
+            assign("references", 0.95, "This record is preserved source evidence.")
+
+        content = normalize_text(str(memory.get("content") or ""))
+        if re.search(
+            r"\b(?:passwords?|credentials?|logins?|secret manager|1password|bitwarden|vault item)\b",
+            content,
+            re.I,
+        ):
+            assign(
+                "credentials",
+                0.99,
+                "This is a credential-location reference. Secret values are not allowed in Cortex.",
+            )
+            assign("tools", 0.84, "Credential references are used through authorized tools.")
+
+        scope = _trace_json_object(memory.get("scope_json"))
+        project = normalize_text(str(scope.get("project") or scope.get("active_project") or ""))
+        if project:
+            slug = f"project-{self._neighborhood_slug(project)}"
+            self._ensure_neighborhood_tx(
+                conn,
+                slug=slug,
+                label=f"Project: {project}",
+                category="project",
+                parent_slug="projects",
+                description="Records scoped to the same project.",
+            )
+            assign(slug, 0.99, f"The memory is explicitly scoped to project {project}.")
+        systems = _trace_json_array(memory.get("applicable_systems_json"))
+        systems = list(dict.fromkeys([*systems, *_explicit_service_mentions(content)]))
+        for raw_system in systems[:8]:
+            system = normalize_text(str(raw_system))[:120]
+            if not system:
+                continue
+            slug = f"service-{self._neighborhood_slug(system)}"
+            self._ensure_neighborhood_tx(
+                conn,
+                slug=slug,
+                label=f"Service: {system}",
+                category="service",
+                parent_slug="services",
+                description="Records that apply to the same service or system.",
+            )
+            assign(slug, 0.99, f"The memory explicitly names {system} as an applicable system.")
+
+        for slug, (confidence, explanation) in memberships.items():
+            conn.execute(
+                """INSERT OR IGNORE INTO memory_neighborhood_memberships(
+                     memory_id,neighborhood_id,confidence,origin,explanation,created_at
+                   ) VALUES(?,?,?,'deterministic',?,?)""",
+                (str(memory["id"]), f"neighborhood:{slug}", confidence, explanation, now),
+            )
+
+    def _backfill_memory_neighborhoods(self) -> None:
+        base = (
+            ("knowledge", "Knowledge", "root", None, "Durable approved knowledge.", "normal"),
+            ("tools", "Tool use", "root", None, "Tools, workflows, and authorized integrations.", "normal"),
+            (
+                "credentials",
+                "Credential references",
+                "security",
+                "tools",
+                "Locations and authorized retrieval paths only; never secret values.",
+                "secret_reference_only",
+            ),
+            ("projects", "Projects", "root", None, "Project-scoped knowledge.", "normal"),
+            ("services", "Services", "root", None, "Service- and system-scoped knowledge.", "normal"),
+            ("preferences", "Preferences", "knowledge", "knowledge", "Stable operator preferences.", "normal"),
+            ("procedures", "Procedures", "knowledge", "knowledge", "Verified reusable procedures.", "normal"),
+            ("decisions", "Decisions", "knowledge", "knowledge", "Durable choices and rationale.", "normal"),
+            ("plans", "Plans", "knowledge", "knowledge", "Open prospective commitments.", "normal"),
+            ("operations", "Operations", "knowledge", "tools", "Operational facts and constraints.", "normal"),
+            ("people", "People", "knowledge", "knowledge", "Identity and relationship facts.", "normal"),
+            ("references", "Reference evidence", "evidence", None, "Lookup-only source evidence.", "normal"),
+        )
+        for slug, label, category, parent, description, safety_class in base:
+            self._ensure_neighborhood_tx(
+                self._conn,
+                slug=slug,
+                label=label,
+                category=category,
+                parent_slug=parent,
+                description=description,
+                safety_class=safety_class,
+            )
+        for row in self._conn.execute("SELECT * FROM memories").fetchall():
+            self._assign_memory_neighborhoods_tx(self._conn, dict(row))
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
@@ -1943,6 +2299,467 @@ class CortexStore:
                 memory_id=None,
             )
 
+    def propose_memory_creation(
+        self,
+        content: str,
+        *,
+        kind: str = "semantic",
+        source_type: str = "conversation",
+        source_category: str = "AGENT_INFERENCE",
+        source_ref: str | None = None,
+        session_id: str | None = None,
+        context_mode: str = "standalone",
+        scope: dict[str, Any] | None = None,
+        entities: Sequence[str] | None = None,
+        preconditions: dict[str, Any] | None = None,
+        source_context: str | None = None,
+        applicable_systems: Sequence[str] | None = None,
+        applicable_versions: Sequence[str] | None = None,
+        observed_at: str | None = None,
+        confidence: float = 0.65,
+        currentness_confidence: float = 0.75,
+        importance: float = 0.5,
+        uniqueness: float = 1.0,
+        volatility: float = 0.4,
+        trust: float = 0.7,
+        valid_from: str | None = None,
+        valid_to: str | None = None,
+        subject: str | None = None,
+        predicate: str | None = None,
+        object_value: str | None = None,
+        supersedes_id: str | None = None,
+        evidence_ids: Sequence[str] | None = None,
+        extraction_method: str = "unknown",
+        quarantine_reason: str | None = None,
+        storage_policy: str = "automatic",
+        assessment: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Stage a non-recallable candidate for human review.
+
+        Equivalent pending candidates coalesce into one review item.  This
+        table is deliberately separate from ``memories`` and the FTS index, so
+        staging a proposal can never make it available to recall.
+        """
+
+        sanitized = sanitize_memory(str(content or ""))
+        clean = normalize_text(sanitized.text)[:8000]
+        if not clean:
+            raise ValueError("memory creation proposal content cannot be empty")
+        kind_value = normalize_text(kind or "semantic").casefold()[:80] or "semantic"
+        source_type_value = normalize_text(source_type or "conversation").casefold()[:120]
+        source_category_value = normalize_text(source_category or "AGENT_INFERENCE").upper()[:120]
+        source_ref_sanitized = sanitize_memory(str(source_ref or ""))
+        source_ref_value = normalize_text(source_ref_sanitized.text)[:500] or None
+        session_value = normalize_text(session_id or "")[:200] or None
+        mode = _normalize_context_mode(context_mode)
+        scope_value = _sanitize_creation_context_map(scope)
+        entity_values = _sanitize_creation_context_list(entities)
+        precondition_values = _sanitize_creation_context_map(preconditions)
+        systems = _sanitize_creation_context_list(applicable_systems)
+        versions = _sanitize_creation_context_list(applicable_versions)
+        source_context_sanitized = sanitize_memory(str(source_context or ""))
+        source_context_value = normalize_text(source_context_sanitized.text)[:1000] or None
+        extraction_value = normalize_text(extraction_method or "unknown").casefold()[:120]
+        policy_value = normalize_text(storage_policy or "automatic").casefold()[:80] or "automatic"
+        supplied_quarantine = normalize_text(quarantine_reason or "")[:500]
+        quarantine_reasons = list(
+            dict.fromkeys(
+                value
+                for value in (
+                    supplied_quarantine,
+                    sanitized.quarantine_reason,
+                    source_context_sanitized.quarantine_reason,
+                    (
+                        "secret value removed; save only a reference to an approved secret manager"
+                        if sanitized.redacted
+                        or source_ref_sanitized.redacted
+                        or source_context_sanitized.redacted
+                        else None
+                    ),
+                )
+                if value
+            )
+        )
+        quarantine_value = ", ".join(quarantine_reasons)[:500] or None
+        redacted = bool(
+            sanitized.redacted or source_ref_sanitized.redacted or source_context_sanitized.redacted
+        )
+        digest = content_hash(clean)
+        candidate = {
+            "kind": kind_value,
+            "context_mode": mode,
+            "scope": scope_value,
+            "entities": entity_values,
+            "preconditions": precondition_values,
+            "source_context": source_context_value,
+            "applicable_systems": systems,
+            "applicable_versions": versions,
+            "observed_at": normalize_text(observed_at or "")[:80] or None,
+            "confidence": _clamp(confidence),
+            "currentness_confidence": _clamp(currentness_confidence),
+            "importance": _clamp(importance),
+            "uniqueness": _clamp(uniqueness),
+            "volatility": _clamp(volatility),
+            "trust": _clamp(trust),
+            "valid_from": normalize_text(valid_from or "")[:80] or None,
+            "valid_to": normalize_text(valid_to or "")[:80] or None,
+            "subject": sanitize_memory(str(subject or "")).text[:500] or None,
+            "predicate": sanitize_memory(str(predicate or "")).text[:500] or None,
+            "object_value": sanitize_memory(str(object_value or "")).text[:1000] or None,
+            "supersedes_id": normalize_text(supersedes_id or "")[:100] or None,
+            "evidence_ids": _normalize_context_list(evidence_ids)[:50],
+            "extraction_method": extraction_value,
+        }
+        if assessment is None:
+            assessment_value = self.assess_storage_candidate(
+                clean,
+                kind=kind_value,
+                context_mode=mode,
+                scope=scope_value,
+                entities=entity_values,
+                preconditions=precondition_values,
+                source_context=source_context_value,
+                applicable_systems=systems,
+                applicable_versions=versions,
+                source_type=source_type_value,
+                source_category=source_category_value,
+                extraction_method=extraction_value,
+                confidence=float(candidate["confidence"]),
+                importance=float(candidate["importance"]),
+                uniqueness=float(candidate["uniqueness"]),
+                volatility=float(candidate["volatility"]),
+                subject=candidate["subject"],
+                predicate=candidate["predicate"],
+                object_value=candidate["object_value"],
+                valid_from=candidate["valid_from"],
+                valid_to=candidate["valid_to"],
+                automatic=policy_value == "automatic",
+            )
+        else:
+            assessment_value = _bounded_creation_assessment(assessment)
+        assessment_value = {
+            **assessment_value,
+            "candidate_hash": digest,
+            "kind": kind_value,
+            "source_type": source_type_value,
+            "context_mode": mode,
+        }
+        proposal_material = {
+            "candidate_hash": digest,
+            "kind": kind_value,
+            "source_type": source_type_value,
+            "source_category": source_category_value,
+            "source_ref": source_ref_value or "",
+            "context_mode": mode,
+            "scope": scope_value,
+            "preconditions": precondition_values,
+            "applicable_systems": systems,
+            "applicable_versions": versions,
+        }
+        proposal_key = hashlib.sha256(_trace_json(proposal_material).encode("utf-8")).hexdigest()
+        now = utc_now()
+        with self.transaction() as conn:
+            existing = conn.execute(
+                """SELECT proposal_id FROM memory_creation_proposals
+                   WHERE proposal_key=? AND status IN ('pending','needs_context')""",
+                (proposal_key,),
+            ).fetchone()
+            if existing:
+                proposal_id = str(existing["proposal_id"])
+                conn.execute(
+                    """UPDATE memory_creation_proposals
+                       SET recurrence_count=recurrence_count+1,last_seen_at=?,session_id=COALESCE(?,session_id),
+                           assessment_json=?,quarantine_reason=COALESCE(quarantine_reason,?),
+                           redacted=MAX(redacted,?)
+                       WHERE proposal_id=?""",
+                    (
+                        now,
+                        session_value,
+                        _trace_json(assessment_value),
+                        quarantine_value,
+                        int(redacted),
+                        proposal_id,
+                    ),
+                )
+                created = False
+            else:
+                proposal_id = str(uuid.uuid4())
+                conn.execute(
+                    """INSERT INTO memory_creation_proposals(
+                         proposal_id,proposal_key,candidate_hash,content,kind,source_type,source_category,
+                         source_ref,session_id,context_mode,candidate_json,assessment_json,storage_policy,
+                         quarantine_reason,redacted,first_seen_at,last_seen_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        proposal_id,
+                        proposal_key,
+                        digest,
+                        clean,
+                        kind_value,
+                        source_type_value,
+                        source_category_value,
+                        source_ref_value,
+                        session_value,
+                        mode,
+                        _trace_json(candidate),
+                        _trace_json(assessment_value),
+                        policy_value,
+                        quarantine_value,
+                        int(redacted),
+                        now,
+                        now,
+                    ),
+                )
+                created = True
+        proposal = self.get_memory_creation_proposal(proposal_id)
+        if not proposal:  # pragma: no cover - committed row must be readable
+            raise RuntimeError("memory creation proposal was not persisted")
+        return {**proposal, "created": created}
+
+    def get_memory_creation_proposal(self, proposal_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memory_creation_proposals WHERE proposal_id=?",
+                (normalize_text(proposal_id),),
+            ).fetchone()
+        return _decode_creation_proposal(row) if row else None
+
+    def list_memory_creation_proposals(
+        self, *, status: str | None = "pending", limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        bounded = max(1, min(1000, int(limit)))
+        start = max(0, int(offset))
+        values: tuple[Any, ...]
+        if status is None or normalize_text(status).casefold() == "all":
+            sql = "SELECT * FROM memory_creation_proposals ORDER BY last_seen_at DESC LIMIT ? OFFSET ?"
+            values = (bounded, start)
+        else:
+            status_value = normalize_text(status).casefold()
+            if status_value not in {"pending", "remembered", "evidence_only", "rejected", "needs_context"}:
+                raise ValueError("invalid memory creation proposal status")
+            sql = (
+                "SELECT * FROM memory_creation_proposals WHERE status=? "
+                "ORDER BY last_seen_at DESC LIMIT ? OFFSET ?"
+            )
+            values = (status_value, bounded, start)
+        with self._lock:
+            rows = self._conn.execute(sql, values).fetchall()
+        return [_decode_creation_proposal(row) for row in rows]
+
+    def review_memory_creation(
+        self,
+        proposal_id: str,
+        action: str,
+        *,
+        edited_content: str | None = None,
+        reason_text: str = "",
+        actor: str = "dashboard-operator",
+        decision_scope: str = "item_only",
+    ) -> dict[str, Any]:
+        """Decide one staged candidate and apply its explicit recall boundary."""
+
+        aliases = {
+            "edited_remember": "remember_edited",
+            "reference": "evidence_only",
+        }
+        action_value = aliases.get(normalize_text(action).casefold().replace(" ", "_"), normalize_text(action).casefold().replace(" ", "_"))
+        if action_value not in {
+            "remember",
+            "remember_edited",
+            "evidence_only",
+            "reject",
+            "needs_context",
+        }:
+            raise ValueError(
+                "creation action must be remember, remember_edited, evidence_only, reject, or needs_context"
+            )
+        scope_value = _normalize_review_scope(decision_scope)
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        note_value = normalize_text(reason_text)[:1000]
+        review_id = str(uuid.uuid4())
+        memory_id: str | None = None
+        memory_created = False
+        memory_promoted = False
+        remembered_content: str | None = None
+
+        # Keep the re-entrant store lock across the trusted write and audit
+        # finalization.  This prevents two reviewers from committing one
+        # proposal while allowing add_memory() to use its normal transaction.
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM memory_creation_proposals
+                   WHERE proposal_id=? AND status IN ('pending','needs_context')""",
+                (normalize_text(proposal_id),),
+            ).fetchone()
+            if not row:
+                raise ValueError("this memory creation proposal is no longer waiting for review")
+            proposal = _decode_creation_proposal(row)
+            candidate = dict(proposal.get("candidate") or {})
+            if action_value in {"remember", "remember_edited", "evidence_only"}:
+                remembered_content = str(proposal["content"])
+                approval_quarantine = normalize_text(str(proposal.get("quarantine_reason") or ""))
+                if action_value == "remember_edited":
+                    sanitized_edit = sanitize_memory(str(edited_content or ""))
+                    remembered_content = normalize_text(sanitized_edit.text)[:8000]
+                    if not remembered_content:
+                        raise ValueError("edited memory content is required")
+                    approval_quarantine = normalize_text(
+                        sanitized_edit.quarantine_reason
+                        or (
+                            "secret value removed; save only a reference to an approved secret manager"
+                            if sanitized_edit.redacted
+                            else ""
+                        )
+                    )[:500]
+                requested_eligibility = (
+                    "evidence_only" if action_value == "evidence_only" else "primary"
+                )
+                duplicate_id = str((proposal.get("assessment") or {}).get("duplicate_memory_id") or "")
+                duplicate = self.get_memory(duplicate_id) if duplicate_id else None
+                if (
+                    duplicate
+                    and action_value != "remember_edited"
+                    and content_hash(remembered_content) == str(duplicate.get("content_hash") or "")
+                    and not self.is_memory_recall_eligible(
+                        duplicate_id,
+                        evidence_lookup=requested_eligibility == "evidence_only",
+                    )
+                ):
+                    promotion = self.promote_memory_to_active_recall_set(
+                        duplicate_id,
+                        eligibility=requested_eligibility,
+                        actor=actor_value,
+                        reason="Creation review approved an exact preserved legacy memory.",
+                        review_id=review_id,
+                    )
+                    memory_id = duplicate_id
+                    memory_promoted = bool(promotion["changed"])
+                else:
+                    # This is the sole call that may create indexed storage.
+                    # Recall-set membership makes the result ordinary memory or
+                    # lookup-only evidence atomically.
+                    memory_id, memory_created = self.add_memory(
+                        remembered_content,
+                        kind=str(proposal.get("kind") or "semantic"),
+                        source_type=str(proposal.get("source_type") or "conversation"),
+                        source_category="OPERATOR_APPROVED",
+                        source_ref=proposal.get("source_ref"),
+                        session_id=proposal.get("session_id"),
+                        context_mode=str(proposal.get("context_mode") or "standalone"),
+                        scope=dict(candidate.get("scope") or {}),
+                        entities=list(candidate.get("entities") or []),
+                        preconditions=dict(candidate.get("preconditions") or {}),
+                        source_context=candidate.get("source_context"),
+                        applicable_systems=list(candidate.get("applicable_systems") or []),
+                        applicable_versions=list(candidate.get("applicable_versions") or []),
+                        observed_at=candidate.get("observed_at"),
+                        confidence=float(candidate.get("confidence") or 0.65),
+                        currentness_confidence=float(candidate.get("currentness_confidence") or 0.75),
+                        importance=float(candidate.get("importance") or 0.5),
+                        uniqueness=float(candidate.get("uniqueness") or 1.0),
+                        volatility=float(candidate.get("volatility") or 0.4),
+                        trust=float(candidate.get("trust") or 0.7),
+                        quarantine_reason=approval_quarantine or None,
+                        valid_from=candidate.get("valid_from"),
+                        valid_to=candidate.get("valid_to"),
+                        subject=candidate.get("subject"),
+                        predicate=candidate.get("predicate"),
+                        object_value=candidate.get("object_value"),
+                        supersedes_id=candidate.get("supersedes_id"),
+                        evidence_ids=list(candidate.get("evidence_ids") or []),
+                        extraction_method=str(candidate.get("extraction_method") or "unknown"),
+                        storage_policy="operator_approved",
+                        record_role="reference" if action_value == "evidence_only" else "canonical",
+                        recall_eligibility=requested_eligibility,
+                    )
+            status_value = {
+                "remember": "remembered",
+                "remember_edited": "remembered",
+                "evidence_only": "evidence_only",
+                "reject": "rejected",
+                "needs_context": "needs_context",
+            }[action_value]
+            now = utc_now()
+            effect = {
+                "proposal_id": proposal["proposal_id"],
+                "memory_id": memory_id,
+                "memory_created": memory_created,
+                "memory_promoted": memory_promoted,
+                "edited": action_value == "remember_edited",
+                "candidate_hash": proposal["candidate_hash"],
+                "kind": proposal["kind"],
+                "source_type": proposal["source_type"],
+                "source_category": proposal["source_category"],
+                "quality_flags": list((proposal.get("assessment") or {}).get("quality_flags") or []),
+            }
+            signal = {
+                "item_type": "creation",
+                "action": action_value,
+                "reason_code": action_value,
+                "decision_scope": scope_value,
+                "kind": proposal["kind"],
+                "source_type": proposal["source_type"],
+                "source_category": proposal["source_category"],
+                "quality_flags": effect["quality_flags"],
+            }
+            with self.transaction() as conn:
+                updated = conn.execute(
+                    """UPDATE memory_creation_proposals
+                       SET status=?,decision_action=?,decision_note=?,result_memory_id=?,review_id=?,
+                           actor=?,decided_at=?
+                       WHERE proposal_id=? AND status IN ('pending','needs_context')""",
+                    (
+                        status_value,
+                        action_value,
+                        note_value or None,
+                        memory_id,
+                        review_id,
+                        actor_value,
+                        now,
+                        proposal["proposal_id"],
+                    ),
+                )
+                if not updated.rowcount:  # pragma: no cover - protected by store lock
+                    raise RuntimeError("memory creation proposal changed during review")
+                conn.execute(
+                    """INSERT INTO operator_review_decisions(
+                       review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
+                       reason_text,prior_json,effect_json,learning_signal_json,decision_scope,actor,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        review_id,
+                        "creation",
+                        f"creation:{proposal['proposal_id']}",
+                        None,
+                        memory_id,
+                        None,
+                        action_value,
+                        action_value,
+                        note_value or None,
+                        _trace_json({"status": proposal["status"], "content": proposal["content"]}),
+                        _trace_json(effect),
+                        _trace_json(signal),
+                        scope_value,
+                        actor_value,
+                        now,
+                    ),
+                )
+                self._compile_policy_candidates_tx(conn)
+        return {
+            "review_id": review_id,
+            "proposal_id": str(proposal["proposal_id"]),
+            "action": action_value,
+            "status": status_value,
+            "memory_id": memory_id,
+            "memory_created": memory_created,
+            "memory_promoted": memory_promoted,
+        }
+
+    def decide_memory_creation(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        """Compatibility alias for dashboard/API callers."""
+
+        return self.review_memory_creation(*args, **kwargs)
+
     @staticmethod
     def _record_memory_write_decision_tx(
         conn: sqlite3.Connection,
@@ -2016,10 +2833,22 @@ class CortexStore:
         evidence_ids: Sequence[str] | None = None,
         storage_policy: str = "trusted",
         record_role: str | None = None,
+        recall_eligibility: str | None = None,
     ) -> tuple[str, bool]:
-        content = normalize_text(content)
+        sanitized_content = sanitize_memory(str(content or ""))
+        content = normalize_text(sanitized_content.text)
         if not content:
             raise ValueError("memory content cannot be empty")
+        quarantine_parts = [
+            normalize_text(quarantine_reason or ""),
+            normalize_text(sanitized_content.quarantine_reason or ""),
+            (
+                "secret value removed; save only a reference to an approved secret manager"
+                if sanitized_content.redacted
+                else ""
+            ),
+        ]
+        quarantine_reason = ", ".join(dict.fromkeys(part for part in quarantine_parts if part)) or None
         digest = content_hash(content)
         now = utc_now()
         state = "quarantine" if quarantine_reason else state
@@ -2077,12 +2906,29 @@ class CortexStore:
             self.record_ignored_memory_candidate(assessment, session_id=session_id)
             raise ValueError(str(assessment["reason"]))
         with self.transaction() as conn:
+            active_recall_set = self._active_recall_set_tx(conn)
+            if recall_eligibility is None:
+                eligibility_value = (
+                    "evidence_only"
+                    if str(active_recall_set["kind"]) == "trained"
+                    and (record_role == "reference" or source_type == "vault_markdown")
+                    else "primary"
+                )
+            else:
+                eligibility_value = normalize_text(recall_eligibility).casefold()
+                if eligibility_value not in {"primary", "evidence_only"}:
+                    raise ValueError("recall eligibility must be primary or evidence_only")
             existing = conn.execute(
-                """SELECT id,kind,entities_json FROM memories
-                   WHERE content_hash=? AND context_mode=? AND scope_json=? AND preconditions_json=?
+                """SELECT m.id,m.kind,m.entities_json FROM memories m
+                   JOIN memory_recall_memberships rm
+                     ON rm.memory_id=m.id AND rm.recall_set_id=?
+                    AND rm.revoked_at IS NULL AND rm.eligibility=?
+                   WHERE m.content_hash=? AND m.context_mode=? AND m.scope_json=? AND m.preconditions_json=?
                      AND applicable_systems_json=? AND applicable_versions_json=?
-                   ORDER BY created_at LIMIT 1""",
+                   ORDER BY m.created_at LIMIT 1""",
                 (
+                    active_recall_set["recall_set_id"],
+                    eligibility_value,
                     digest,
                     context_mode_value,
                     scope_json,
@@ -2168,6 +3014,9 @@ class CortexStore:
                         has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
                         explicit_role=record_role,
                     )
+                    refreshed = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                    if refreshed:
+                        self._assign_memory_neighborhoods_tx(conn, dict(refreshed))
                 return memory_id, False
 
             memory_id = str(uuid.uuid4())
@@ -2286,6 +3135,25 @@ class CortexStore:
                 has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
                 explicit_role=record_role,
                 storage_policy=storage_policy,
+            )
+            refreshed = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if refreshed:
+                self._assign_memory_neighborhoods_tx(conn, dict(refreshed))
+            conn.execute(
+                """UPDATE memory_recall_memberships
+                   SET eligibility=?,origin=?,reason=?
+                   WHERE recall_set_id=? AND memory_id=?""",
+                (
+                    eligibility_value,
+                    "operator_approval" if storage_policy == "operator_approved" else "trusted_write",
+                    (
+                        "Approved for explicit lookup evidence only."
+                        if eligibility_value == "evidence_only"
+                        else "Approved for ordinary recall in the active set."
+                    ),
+                    active_recall_set["recall_set_id"],
+                    memory_id,
+                ),
             )
             return memory_id, True
 
@@ -2749,16 +3617,431 @@ class CortexStore:
             rows = self._conn.execute(sql, tuple(params)).fetchall()
         return [_decode_memory_metadata(row) for row in rows]
 
-    def fts_search(self, query: str, *, limit: int = 40, include_archived: bool = False) -> list[dict[str, Any]]:
+    @staticmethod
+    def _active_recall_set_tx(conn: sqlite3.Connection) -> sqlite3.Row:
+        row = conn.execute(
+            "SELECT * FROM memory_recall_sets WHERE status='active' LIMIT 1"
+        ).fetchone()
+        if not row:  # pragma: no cover - schema backfill guarantees one
+            raise RuntimeError("Cortex has no active recall set")
+        return row
+
+    def active_recall_set_id(self) -> str:
+        with self._lock:
+            return str(self._active_recall_set_tx(self._conn)["recall_set_id"])
+
+    def is_memory_recall_eligible(
+        self,
+        memory_id: str,
+        *,
+        evidence_lookup: bool = False,
+        include_archived: bool = False,
+    ) -> bool:
+        states = ("active", "cold", "archived") if include_archived else ("active", "cold")
+        state_placeholders = ",".join("?" for _ in states)
+        eligibilities = ("primary", "evidence_only") if evidence_lookup else ("primary",)
+        eligibility_placeholders = ",".join("?" for _ in eligibilities)
+        with self._lock:
+            row = self._conn.execute(
+                f"""SELECT 1 FROM memories m
+                    JOIN memory_recall_memberships rm ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    JOIN memory_recall_sets rs ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                    WHERE m.id=? AND m.state IN ({state_placeholders})
+                      AND rm.eligibility IN ({eligibility_placeholders}) LIMIT 1""",
+                (memory_id, *states, *eligibilities),
+            ).fetchone()
+        return bool(row)
+
+    def recall_set_snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT rs.*,
+                          SUM(CASE WHEN rm.revoked_at IS NULL THEN 1 ELSE 0 END) member_count,
+                          SUM(CASE WHEN rm.revoked_at IS NULL AND rm.eligibility='primary'
+                                    AND m.state IN ('active','cold') THEN 1 ELSE 0 END) primary_count,
+                          SUM(CASE WHEN rm.revoked_at IS NULL AND rm.eligibility='evidence_only'
+                                    AND m.state IN ('active','cold') THEN 1 ELSE 0 END) evidence_only_count
+                   FROM memory_recall_sets rs
+                   LEFT JOIN memory_recall_memberships rm ON rm.recall_set_id=rs.recall_set_id
+                   LEFT JOIN memories m ON m.id=rm.memory_id
+                   GROUP BY rs.recall_set_id ORDER BY rs.created_at"""
+            ).fetchall()
+            pending = self._conn.execute(
+                """SELECT COUNT(*) count FROM memory_creation_proposals
+                   WHERE status IN ('pending','needs_context')"""
+            ).fetchone()
+        decoded: list[dict[str, Any]] = []
+        for raw in rows:
+            item = dict(raw)
+            item["member_count"] = int(item.get("member_count") or 0)
+            item["primary_count"] = int(item.get("primary_count") or 0)
+            item["evidence_only_count"] = int(item.get("evidence_only_count") or 0)
+            item["eligible_count"] = item["primary_count"]
+            decoded.append(item)
+        active = next(item for item in decoded if item["status"] == "active")
+        legacy = next((item for item in reversed(decoded) if item["kind"] == "legacy"), {})
+        trained = next((item for item in reversed(decoded) if item["kind"] == "trained"), {})
+        return {
+            "active_set": str(active["kind"]),
+            "active": active,
+            "sets": {"legacy": legacy, "trained": trained},
+            "recall_sets": decoded,
+            "eligible_count": int(active["primary_count"]),
+            "evidence_only_count": int(active["evidence_only_count"]),
+            "pending_creation_count": int(pending["count"] or 0),
+        }
+
+    def preview_trained_recall_set(self) -> dict[str, Any]:
+        with self._lock:
+            active = self._active_recall_set_tx(self._conn)
+            current = self._conn.execute(
+                """SELECT
+                     SUM(CASE WHEN rm.eligibility='primary' AND m.state IN ('active','cold') THEN 1 ELSE 0 END) primary_count,
+                     SUM(CASE WHEN rm.eligibility='evidence_only' AND m.state IN ('active','cold') THEN 1 ELSE 0 END) evidence_count
+                   FROM memory_recall_memberships rm JOIN memories m ON m.id=rm.memory_id
+                   WHERE rm.recall_set_id=? AND rm.revoked_at IS NULL""",
+                (active["recall_set_id"],),
+            ).fetchone()
+            carried = self._conn.execute(
+                """SELECT COUNT(*) count FROM memories m
+                   WHERE m.state IN ('active','cold')
+                     AND m.record_role<>'reference' AND m.source_type<>'vault_markdown'
+                     AND (
+                       m.source_category='OPERATOR_APPROVED'
+                       OR EXISTS(
+                         SELECT 1 FROM memory_creation_proposals p
+                         WHERE p.result_memory_id=m.id AND p.status='remembered'
+                       )
+                     )"""
+            ).fetchone()
+            references = self._conn.execute(
+                """SELECT COUNT(*) count FROM memories
+                   WHERE state IN ('active','cold')
+                     AND (record_role='reference' OR source_type='vault_markdown')"""
+            ).fetchone()
+            pending = self._conn.execute(
+                """SELECT COUNT(*) count FROM memory_creation_proposals
+                   WHERE status IN ('pending','needs_context')"""
+            ).fetchone()
+        current_primary = int(current["primary_count"] or 0)
+        current_evidence = int(current["evidence_count"] or 0)
+        approved = int(carried["count"] or 0)
+        reference_count = int(references["count"] or 0)
+        trained_total = approved + reference_count
+        held_back = max(0, current_primary + current_evidence - trained_total)
+        preview_material = {
+            "active": str(active["recall_set_id"]),
+            "primary": current_primary,
+            "evidence": current_evidence,
+            "approved": approved,
+            "references": reference_count,
+            "pending": int(pending["count"] or 0),
+        }
+        preview_id = hashlib.sha256(_trace_json(preview_material).encode("utf-8")).hexdigest()[:20]
+        return {
+            "preview_id": preview_id,
+            "summary": (
+                "No memory content will be deleted. Legacy personal memories leave ordinary recall; "
+                "operator-approved memories carry forward and references remain lookup-only."
+            ),
+            "legacy_eligible_count": current_primary + current_evidence,
+            "trained_eligible_count": trained_total,
+            "excluded_count": held_back,
+            "held_back_count": held_back,
+            "legacy_primary_excluded": max(
+                0,
+                current_primary
+                - reference_count
+                - approved,
+            ),
+            "references_kept_as_evidence": reference_count,
+            "approved_memories_carried": approved,
+            "pending_creation_count": int(pending["count"] or 0),
+            "counts": {
+                "legacy_eligible": current_primary + current_evidence,
+                "trained_eligible": trained_total,
+                "excluded": held_back,
+                "pending_creation": int(pending["count"] or 0),
+            },
+        }
+
+    def start_trained_recall_set(
+        self,
+        *,
+        label: str = "Trained set 1",
+        actor: str = "dashboard-operator",
+        reason: str = "Operator activated a reversible clean start.",
+    ) -> dict[str, Any]:
+        now = utc_now()
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        reason_value = normalize_text(reason)[:500]
+        with self.transaction() as conn:
+            prior = self._active_recall_set_tx(conn)
+            if str(prior["kind"]) == "trained":
+                return self.recall_set_snapshot()
+            recall_set_id = str(uuid.uuid4())
+            conn.execute(
+                "UPDATE memory_recall_sets SET status='inactive',deactivated_at=? WHERE status='active'",
+                (now,),
+            )
+            conn.execute(
+                """INSERT INTO memory_recall_sets(
+                     recall_set_id,label,kind,status,parent_recall_set_id,actor,reason,
+                     created_at,activated_at
+                   ) VALUES(?,?,'trained','active',?,?,?,?,?)""",
+                (
+                    recall_set_id,
+                    normalize_text(label)[:120] or "Trained set 1",
+                    prior["recall_set_id"],
+                    actor_value,
+                    reason_value,
+                    now,
+                    now,
+                ),
+            )
+            # Operator-approved creations and trusted operator imports are the
+            # personal seed. References are deliberately handled below so they
+            # cannot enter ordinary recall through this branch.
+            conn.execute(
+                """INSERT OR IGNORE INTO memory_recall_memberships(
+                     recall_set_id,memory_id,eligibility,origin,review_id,actor,reason,created_at
+                   )
+                   SELECT ?,m.id,'primary','operator_approval',(
+                            SELECT p.review_id FROM memory_creation_proposals p
+                            WHERE p.result_memory_id=m.id AND p.status='remembered'
+                            ORDER BY p.decided_at DESC LIMIT 1
+                          ),?,?,?
+                   FROM memories m
+                   WHERE m.state IN ('active','cold')
+                     AND m.record_role<>'reference' AND m.source_type<>'vault_markdown'
+                     AND (
+                       m.source_category='OPERATOR_APPROVED'
+                       OR EXISTS(
+                         SELECT 1 FROM memory_creation_proposals p
+                         WHERE p.result_memory_id=m.id AND p.status='remembered'
+                       )
+                     )""",
+                (recall_set_id, actor_value, "Carried into the trained set from Creation review.", now),
+            )
+            # Raw documents remain available only when lookup is explicit.
+            conn.execute(
+                """INSERT OR IGNORE INTO memory_recall_memberships(
+                     recall_set_id,memory_id,eligibility,origin,actor,reason,created_at
+                   )
+                   SELECT ?,id,'evidence_only','reference_carryover',?,?,?
+                   FROM memories WHERE state IN ('active','cold')
+                     AND (record_role='reference' OR source_type='vault_markdown')""",
+                (
+                    recall_set_id,
+                    actor_value,
+                    "Preserved as explicit lookup evidence, not ordinary personal recall.",
+                    now,
+                ),
+            )
+            conn.execute(
+                """INSERT INTO memory_recall_set_events(
+                     event_id,event_type,recall_set_id,prior_recall_set_id,actor,reason,details_json,created_at
+                   ) VALUES(?,'activated',?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    recall_set_id,
+                    prior["recall_set_id"],
+                    actor_value,
+                    reason_value,
+                    _trace_json({"reversible": True, "content_changed": False}),
+                    now,
+                ),
+            )
+        return self.recall_set_snapshot()
+
+    def activate_recall_set(
+        self,
+        recall_set_id: str,
+        *,
+        actor: str = "dashboard-operator",
+        reason: str = "Operator switched the active recall set.",
+    ) -> dict[str, Any]:
+        target_id = normalize_text(recall_set_id)
+        now = utc_now()
+        with self.transaction() as conn:
+            prior = self._active_recall_set_tx(conn)
+            target = conn.execute(
+                "SELECT * FROM memory_recall_sets WHERE recall_set_id=?", (target_id,)
+            ).fetchone()
+            if not target:
+                raise ValueError("recall set not found")
+            if str(prior["recall_set_id"]) == target_id:
+                return self.recall_set_snapshot()
+            conn.execute(
+                "UPDATE memory_recall_sets SET status='inactive',deactivated_at=? WHERE status='active'",
+                (now,),
+            )
+            conn.execute(
+                """UPDATE memory_recall_sets SET status='active',activated_at=?,deactivated_at=NULL
+                   WHERE recall_set_id=?""",
+                (now, target_id),
+            )
+            conn.execute(
+                """INSERT INTO memory_recall_set_events(
+                     event_id,event_type,recall_set_id,prior_recall_set_id,actor,reason,details_json,created_at
+                   ) VALUES(?,'switched',?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    target_id,
+                    prior["recall_set_id"],
+                    normalize_text(actor)[:80] or "dashboard-operator",
+                    normalize_text(reason)[:500],
+                    _trace_json({"reversible": True, "content_changed": False}),
+                    now,
+                ),
+            )
+        return self.recall_set_snapshot()
+
+    def promote_memory_to_active_recall_set(
+        self,
+        memory_id: str,
+        *,
+        eligibility: str = "primary",
+        actor: str = "dashboard-operator",
+        reason: str = "Operator promoted this preserved memory into the active recall set.",
+        review_id: str | None = None,
+    ) -> dict[str, Any]:
+        eligibility_value = normalize_text(eligibility).casefold()
+        if eligibility_value not in {"primary", "evidence_only"}:
+            raise ValueError("recall eligibility must be primary or evidence_only")
+        now = utc_now()
+        with self.transaction() as conn:
+            memory = conn.execute("SELECT id FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if not memory:
+                raise ValueError("memory not found")
+            active = self._active_recall_set_tx(conn)
+            existing = conn.execute(
+                """SELECT eligibility,revoked_at FROM memory_recall_memberships
+                   WHERE recall_set_id=? AND memory_id=?""",
+                (active["recall_set_id"], memory_id),
+            ).fetchone()
+            changed = not existing or str(existing["eligibility"]) != eligibility_value or bool(existing["revoked_at"])
+            conn.execute(
+                """INSERT INTO memory_recall_memberships(
+                     recall_set_id,memory_id,eligibility,origin,review_id,actor,reason,created_at,revoked_at
+                   ) VALUES(?,?,?,'operator_promotion',?,?,?,?,NULL)
+                   ON CONFLICT(recall_set_id,memory_id) DO UPDATE SET
+                     eligibility=excluded.eligibility,origin=excluded.origin,review_id=excluded.review_id,
+                     actor=excluded.actor,reason=excluded.reason,revoked_at=NULL""",
+                (
+                    active["recall_set_id"],
+                    memory_id,
+                    eligibility_value,
+                    review_id,
+                    normalize_text(actor)[:80] or "dashboard-operator",
+                    normalize_text(reason)[:500],
+                    now,
+                ),
+            )
+            if changed:
+                conn.execute(
+                    """INSERT INTO memory_recall_set_events(
+                         event_id,event_type,recall_set_id,memory_id,eligibility,actor,reason,
+                         details_json,created_at
+                       ) VALUES(?,'promoted',?,?,?,?,?,'{}',?)""",
+                    (
+                        str(uuid.uuid4()),
+                        active["recall_set_id"],
+                        memory_id,
+                        eligibility_value,
+                        normalize_text(actor)[:80] or "dashboard-operator",
+                        normalize_text(reason)[:500],
+                        now,
+                    ),
+                )
+        return {
+            "changed": changed,
+            "memory_id": memory_id,
+            "eligibility": eligibility_value,
+            "active_recall_set_id": str(active["recall_set_id"]),
+        }
+
+    def neighborhood_search(
+        self,
+        query: str,
+        *,
+        limit: int = 40,
+        include_archived: bool = False,
+        evidence_lookup: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Expand only through explicitly named semantic neighborhoods."""
+
+        tokens = set(query_tokens(query))
+        selected: set[str] = set()
+        if re.search(r"\b(?:passwords?|credentials?|logins?|secret manager|1password|bitwarden)\b", query, re.I):
+            selected.add("credentials")
+        if re.search(r"\b(?:tools?|commands?|integrations?|workflows?)\b", query, re.I):
+            selected.add("tools")
+        with self._lock:
+            neighborhoods = self._conn.execute(
+                "SELECT neighborhood_id,slug,label,category FROM memory_neighborhoods"
+            ).fetchall()
+            for row in neighborhoods:
+                label_tokens = set(query_tokens(str(row["label"])))
+                if (
+                    str(row["category"]) in {"project", "service"}
+                    and label_tokens
+                    and any(token in tokens for token in label_tokens if len(token) >= 4)
+                ):
+                    selected.add(str(row["slug"]))
+            if not selected:
+                return []
+            neighborhood_ids = [f"neighborhood:{slug}" for slug in sorted(selected)]
+            states = ("active", "cold", "archived") if include_archived else ("active", "cold")
+            eligibilities = ("primary", "evidence_only") if evidence_lookup else ("primary",)
+            neighborhood_placeholders = ",".join("?" for _ in neighborhood_ids)
+            state_placeholders = ",".join("?" for _ in states)
+            eligibility_placeholders = ",".join("?" for _ in eligibilities)
+            rows = self._conn.execute(
+                f"""SELECT m.*,MAX(nm.confidence) neighborhood_candidate_score,
+                           GROUP_CONCAT(n.label, ', ') neighborhood_labels
+                    FROM memory_neighborhood_memberships nm
+                    JOIN memory_neighborhoods n ON n.neighborhood_id=nm.neighborhood_id
+                    JOIN memories m ON m.id=nm.memory_id
+                    JOIN memory_recall_memberships rm
+                      ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    JOIN memory_recall_sets rs
+                      ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                    WHERE nm.neighborhood_id IN ({neighborhood_placeholders})
+                      AND m.state IN ({state_placeholders})
+                      AND rm.eligibility IN ({eligibility_placeholders})
+                    GROUP BY m.id
+                    ORDER BY neighborhood_candidate_score DESC,m.importance DESC,m.updated_at DESC
+                    LIMIT ?""",
+                (*neighborhood_ids, *states, *eligibilities, max(1, int(limit))),
+            ).fetchall()
+        return [_decode_memory_metadata(row) for row in rows]
+
+    def fts_search(
+        self,
+        query: str,
+        *,
+        limit: int = 40,
+        include_archived: bool = False,
+        evidence_lookup: bool = False,
+    ) -> list[dict[str, Any]]:
         tokens = query_tokens(query)
         states = ("active", "cold", "archived") if include_archived else ("active", "cold")
+        eligibilities = ("primary", "evidence_only") if evidence_lookup else ("primary",)
+        eligibility_placeholders = ",".join("?" for _ in eligibilities)
         if not tokens:
             placeholders = ",".join("?" for _ in states)
             with self._lock:
                 rows = self._conn.execute(
-                    f"SELECT m.*, 8.0 AS fts_rank FROM memories m WHERE state IN ({placeholders}) "
-                    "ORDER BY pinned DESC, updated_at DESC LIMIT ?",
-                    (*states, limit),
+                    f"""SELECT m.*, 8.0 AS fts_rank FROM memories m
+                        JOIN memory_recall_memberships rm
+                          ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                        JOIN memory_recall_sets rs
+                          ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                        WHERE m.state IN ({placeholders})
+                          AND rm.eligibility IN ({eligibility_placeholders})
+                        ORDER BY m.pinned DESC,m.updated_at DESC LIMIT ?""",
+                    (*states, *eligibilities, limit),
                 ).fetchall()
             return [_decode_memory_metadata(r) for r in rows]
         match = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in tokens)
@@ -2767,9 +4050,14 @@ class CortexStore:
             rows = self._conn.execute(
                 f"""SELECT m.*, bm25(memory_fts) AS fts_rank
                     FROM memory_fts JOIN memories m ON m.id=memory_fts.memory_id
+                    JOIN memory_recall_memberships rm
+                      ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    JOIN memory_recall_sets rs
+                      ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
                     WHERE memory_fts MATCH ? AND m.state IN ({placeholders})
+                      AND rm.eligibility IN ({eligibility_placeholders})
                     ORDER BY bm25(memory_fts) LIMIT ?""",
-                (match, *states, limit),
+                (match, *states, *eligibilities, limit),
             ).fetchall()
         return [_decode_memory_metadata(r) for r in rows]
 
@@ -2813,6 +4101,7 @@ class CortexStore:
         for feature, weight in features:
             params.extend((feature, weight))
         params.extend(states)
+        params.append("primary")
         params.append(max(1, limit))
         with self._lock:
             rows = self._conn.execute(
@@ -2830,7 +4119,12 @@ class CortexStore:
                     SELECT m.*,s.feature_score,s.feature_matches,8.0 AS fts_rank
                     FROM scored s
                     JOIN memories m ON m.id=s.memory_id
+                    JOIN memory_recall_memberships rm
+                      ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    JOIN memory_recall_sets rs
+                      ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
                     WHERE m.state IN ({state_placeholders})
+                      AND rm.eligibility=?
                     ORDER BY s.feature_score DESC,s.feature_matches DESC,m.pinned DESC
                     LIMIT ?""",
                 tuple(params),
@@ -2847,6 +4141,7 @@ class CortexStore:
         applicable_systems: Sequence[str] = (),
         applicable_versions: Sequence[str] = (),
         include_archived: bool = False,
+        evidence_lookup: bool = False,
         limit: int = 40,
     ) -> list[dict[str, Any]]:
         """Find scoped candidates without requiring a text-similarity hit."""
@@ -2868,6 +4163,8 @@ class CortexStore:
             return []
         states = ("active", "cold", "archived") if include_archived else ("active", "cold")
         state_placeholders = ",".join("?" for _ in states)
+        eligibilities = ("primary", "evidence_only") if evidence_lookup else ("primary",)
+        eligibility_placeholders = ",".join("?" for _ in eligibilities)
         term_clauses = " OR ".join(
             "(t.term_type=? AND t.term_key=? AND t.term_value=?)" for _ in terms
         )
@@ -2878,14 +4175,19 @@ class CortexStore:
                            SUM(CASE WHEN t.term_type IN ('scope','precondition') THEN 2.0 ELSE 1.0 END)
                              context_candidate_score
                     FROM memory_context_terms t JOIN memories m ON m.id=t.memory_id
+                    JOIN memory_recall_memberships rm
+                      ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    JOIN memory_recall_sets rs
+                      ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
                     WHERE m.context_mode='context_dependent'
                       AND m.state IN ({state_placeholders})
+                      AND rm.eligibility IN ({eligibility_placeholders})
                       AND ({term_clauses})
                     GROUP BY m.id
                     ORDER BY context_candidate_score DESC,m.metadata_completeness DESC,
                              m.importance DESC,m.updated_at DESC
                     LIMIT ?""",
-                (*states, *term_params, max(1, int(limit))),
+                (*states, *eligibilities, *term_params, max(1, int(limit))),
             ).fetchall()
         return [_decode_memory_metadata(row) for row in rows]
 
@@ -2910,9 +4212,16 @@ class CortexStore:
                     break
                 placeholders = ",".join("?" for _ in frontier)
                 rows = self._conn.execute(
-                    f"""SELECT src_id,dst_id FROM edges
-                        WHERE src_id IN ({placeholders}) OR dst_id IN ({placeholders})
-                        ORDER BY weight DESC,evidence_count DESC LIMIT ?""",
+                    f"""SELECT e.src_id,e.dst_id FROM edges e
+                        JOIN memory_recall_memberships sm
+                          ON sm.memory_id=e.src_id AND sm.revoked_at IS NULL AND sm.eligibility='primary'
+                        JOIN memory_recall_memberships dm
+                          ON dm.memory_id=e.dst_id AND dm.recall_set_id=sm.recall_set_id
+                         AND dm.revoked_at IS NULL AND dm.eligibility='primary'
+                        JOIN memory_recall_sets rs
+                          ON rs.recall_set_id=sm.recall_set_id AND rs.status='active'
+                        WHERE e.src_id IN ({placeholders}) OR e.dst_id IN ({placeholders})
+                        ORDER BY e.weight DESC,e.evidence_count DESC LIMIT ?""",
                     (*frontier, *frontier, max_nodes * 3),
                 ).fetchall()
                 expanded = {str(row["src_id"]) for row in rows} | {str(row["dst_id"]) for row in rows}
@@ -2924,8 +4233,15 @@ class CortexStore:
                 return {}
             placeholders = ",".join("?" for _ in nodes)
             edge_rows = self._conn.execute(
-                f"""SELECT src_id,dst_id,weight,evidence_count FROM edges
-                    WHERE src_id IN ({placeholders}) AND dst_id IN ({placeholders})
+                f"""SELECT e.src_id,e.dst_id,e.weight,e.evidence_count FROM edges e
+                    JOIN memory_recall_memberships sm
+                      ON sm.memory_id=e.src_id AND sm.revoked_at IS NULL AND sm.eligibility='primary'
+                    JOIN memory_recall_memberships dm
+                      ON dm.memory_id=e.dst_id AND dm.recall_set_id=sm.recall_set_id
+                     AND dm.revoked_at IS NULL AND dm.eligibility='primary'
+                    JOIN memory_recall_sets rs
+                      ON rs.recall_set_id=sm.recall_set_id AND rs.status='active'
+                    WHERE e.src_id IN ({placeholders}) AND e.dst_id IN ({placeholders})
                     LIMIT ?""",
                 (*nodes, *nodes, max_nodes * 12),
             ).fetchall()
@@ -5923,6 +7239,8 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM memory_traces) memory_traces, "
                 "(SELECT COUNT(*) FROM memory_trace_events) memory_trace_events, "
                 "(SELECT COUNT(*) FROM memory_write_decisions) memory_write_decisions, "
+                "(SELECT COUNT(*) FROM memory_creation_proposals) memory_creation_proposals, "
+                "(SELECT COUNT(*) FROM memory_creation_proposals WHERE status IN ('pending','needs_context')) pending_memory_creation_proposals, "
                 "(SELECT COUNT(*) FROM memory_context_outcomes) memory_context_outcomes, "
                 "(SELECT COUNT(*) FROM memory_context_terms) memory_context_terms, "
                 "(SELECT COUNT(*) FROM recall_budget_observations WHERE outcome<>'pending') budget_observations, "
@@ -5947,7 +7265,13 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM document_sources WHERE status='active') documents, "
                 "(SELECT COUNT(*) FROM document_chunks WHERE active=1) document_chunks, "
                 "(SELECT COUNT(*) FROM memory_presentations) memory_presentations, "
-                "(SELECT COUNT(*) FROM memory_refinery_proposals) refinery_proposals"
+                "(SELECT COUNT(*) FROM memory_refinery_proposals) refinery_proposals, "
+                "(SELECT COUNT(*) FROM memory_recall_sets) recall_sets, "
+                "(SELECT COUNT(*) FROM memory_recall_memberships WHERE revoked_at IS NULL) recall_memberships, "
+                "(SELECT COUNT(*) FROM memory_recall_memberships rm "
+                " JOIN memory_recall_sets rs ON rs.recall_set_id=rm.recall_set_id "
+                " WHERE rs.status='active' AND rm.revoked_at IS NULL "
+                " AND rm.eligibility='primary') active_recallable_memories"
             ).fetchone()
         return {
             **dict(counts),
@@ -5965,9 +7289,16 @@ class CortexStore:
         """Translate reversible operator decisions into bounded policy evidence."""
 
         rows = conn.execute(
-            """SELECT d.*,p.kind proposal_kind
+            """SELECT d.*,p.kind proposal_kind,
+                      c.kind creation_kind,c.source_type creation_source_type,
+                      c.source_category creation_source_category,
+                      c.candidate_json creation_candidate_json,
+                      c.assessment_json creation_assessment_json,
+                      c.session_id creation_session_id,c.source_ref creation_source_ref
                FROM operator_review_decisions d
                LEFT JOIN sleep_proposals p ON p.proposal_id=d.proposal_id
+               LEFT JOIN memory_creation_proposals c
+                 ON d.item_key=('creation:' || c.proposal_id)
                WHERE d.reversed_at IS NULL AND d.decision_scope='policy_evidence'
                ORDER BY d.created_at"""
         ).fetchall()
@@ -6000,6 +7331,43 @@ class CortexStore:
             item_type = str(item.get("item_type") or "").casefold()
             proposal_kind = str(item.get("proposal_kind") or "").casefold()
             memories = [memory_cache[memory_id] for memory_id in sorted(memory_ids) if memory_id in memory_cache]
+
+            if item_type == "creation" and action == "reject" and item.get("creation_kind"):
+                assessment = _trace_json_object(item.get("creation_assessment_json"))
+                raw_quality_flags = assessment.get("quality_flags")
+                quality_flags = (
+                    list(raw_quality_flags) if isinstance(raw_quality_flags, list) else []
+                )
+                quality_flag = str(quality_flags[0]) if quality_flags else "operator_rejected_candidate"
+                candidate = _trace_json_object(item.get("creation_candidate_json"))
+                context_memory = {
+                    "kind": item.get("creation_kind"),
+                    "source_type": item.get("creation_source_type"),
+                    "source_ref": item.get("creation_source_ref"),
+                    "session_id": item.get("creation_session_id"),
+                    "scope_json": _trace_json(candidate.get("scope") or {}),
+                    "applicable_systems_json": _trace_json(
+                        candidate.get("applicable_systems") or []
+                    ),
+                }
+                contributions.append(
+                    _policy_contribution(
+                        review_id=str(item["review_id"]),
+                        created_at=str(item["created_at"]),
+                        domain="admission",
+                        lever="automatic_write_gate",
+                        selector={
+                            "kind": str(item.get("creation_kind") or "semantic"),
+                            "source_type": str(item.get("creation_source_type") or "conversation"),
+                            "quality_flag": quality_flag,
+                        },
+                        direction="ignore",
+                        context_key=_policy_context_key(
+                            context_memory, fallback=str(item["review_id"])
+                        ),
+                        reason=reason,
+                    )
+                )
 
             if proposal_kind in {"association", "association_reinforcement"} and len(memories) >= 2:
                 selector = connection_policy_selector(memories[0], memories[1])
@@ -7775,6 +9143,12 @@ class CortexStore:
 
         bounded = max(1, min(int(limit), 1000))
         with self._lock:
+            creation_rows = self._conn.execute(
+                """SELECT * FROM memory_creation_proposals
+                   WHERE status IN ('pending','needs_context')
+                   ORDER BY last_seen_at DESC LIMIT ?""",
+                (bounded,),
+            ).fetchall()
             proposal_rows = self._conn.execute(
                 """SELECT proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
                           rationale,details_json,created_at
@@ -7804,12 +9178,23 @@ class CortexStore:
                    FROM edges e
                    JOIN memories src ON src.id=e.src_id
                    JOIN memories dst ON dst.id=e.dst_id
+                   JOIN memory_recall_memberships sm
+                     ON sm.memory_id=src.id AND sm.revoked_at IS NULL AND sm.eligibility='primary'
+                   JOIN memory_recall_memberships dm
+                     ON dm.memory_id=dst.id AND dm.recall_set_id=sm.recall_set_id
+                    AND dm.revoked_at IS NULL AND dm.eligibility='primary'
+                   JOIN memory_recall_sets rs
+                     ON rs.recall_set_id=sm.recall_set_id AND rs.status='active'
                    WHERE e.relation='contradicts'
                      AND src.state IN ('active','cold') AND dst.state IN ('active','cold')
                    ORDER BY e.last_reinforced_at DESC LIMIT 500"""
             ).fetchall()
             unsupported_rows = self._conn.execute(
                 """SELECT m.* FROM memories m
+                   JOIN memory_recall_memberships rm
+                     ON rm.memory_id=m.id AND rm.revoked_at IS NULL AND rm.eligibility='primary'
+                   JOIN memory_recall_sets rs
+                     ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
                    WHERE m.source_category IN ('AGENT_INFERENCE','REFLECTION')
                      AND m.state IN ('active','cold')
                      AND NOT EXISTS(
@@ -7824,6 +9209,12 @@ class CortexStore:
                           p.readability_flags_json
                     FROM memories m LEFT JOIN memory_presentations p ON p.memory_id=m.id
                     WHERE {clarity_sql}
+                      AND EXISTS(
+                        SELECT 1 FROM memory_recall_memberships rm
+                        JOIN memory_recall_sets rs ON rs.recall_set_id=rm.recall_set_id
+                        WHERE rm.memory_id=m.id AND rm.revoked_at IS NULL
+                          AND rm.eligibility='primary' AND rs.status='active'
+                      )
                     ORDER BY m.updated_at DESC LIMIT 300""",
                 clarity_params,
             ).fetchall()
@@ -7844,6 +9235,52 @@ class CortexStore:
             ).fetchall()
 
         items: list[dict[str, Any]] = []
+        for row in creation_rows:
+            proposal = _decode_creation_proposal(row)
+            assessment = dict(proposal.get("assessment") or {})
+            recurrence_count = int(proposal.get("recurrence_count") or 1)
+            items.append(
+                {
+                    "item_key": f"creation:{proposal['proposal_id']}",
+                    "item_type": "creation",
+                    "category": "creation",
+                    "proposal_kind": "memory_creation",
+                    "title": (
+                        "Add the missing context before Kaya remembers this"
+                        if proposal["status"] == "needs_context"
+                        else "Should Kaya remember this?"
+                    ),
+                    "question": str(
+                        assessment.get("reason")
+                        or "This candidate is staged outside recall until you decide."
+                    ),
+                    "score": float(assessment.get("reusable_score") or 0.0),
+                    "evidence_count": recurrence_count,
+                    "created_at": proposal.get("last_seen_at"),
+                    "proposal_id": proposal["proposal_id"],
+                    "memories": [],
+                    "evidence": [],
+                    "creation": {
+                        "proposal_id": proposal["proposal_id"],
+                        "content": proposal["content"],
+                        "kind": proposal["kind"],
+                        "source_type": proposal["source_type"],
+                        "source_category": proposal["source_category"],
+                        "source_ref": proposal.get("source_ref"),
+                        "session_id": proposal.get("session_id"),
+                        "context_mode": proposal["context_mode"],
+                        "candidate": dict(proposal.get("candidate") or {}),
+                        "assessment": assessment,
+                        "recurrence_count": recurrence_count,
+                        "redacted": bool(proposal.get("redacted")),
+                        "quarantine_reason": proposal.get("quarantine_reason"),
+                        "status": proposal["status"],
+                        "first_seen_at": proposal.get("first_seen_at"),
+                        "last_seen_at": proposal.get("last_seen_at"),
+                        "proposed_neighborhoods": _creation_neighborhood_preview(proposal),
+                    },
+                }
+            )
         connection_training: dict[str, dict[str, int]] = {}
         for row in connection_training_rows:
             selector = connection_policy_selector(
@@ -7866,6 +9303,10 @@ class CortexStore:
             if src and str(src.get("state")) not in {"active", "cold"}:
                 continue
             if dst and str(dst.get("state")) not in {"active", "cold"}:
+                continue
+            if src and not self.is_memory_recall_eligible(str(src["id"])):
+                continue
+            if dst and not self.is_memory_recall_eligible(str(dst["id"])):
                 continue
             kind = str(proposal["kind"])
             category = (
@@ -8132,7 +9573,15 @@ class CortexStore:
                 else 0
             )
 
-        category_order = {"conflicts": 0, "cleanup": 1, "clarity": 2, "connections": 3, "claims": 4, "accuracy": 5}
+        category_order = {
+            "creation": 0,
+            "conflicts": 1,
+            "cleanup": 2,
+            "clarity": 3,
+            "connections": 4,
+            "claims": 5,
+            "accuracy": 6,
+        }
         items.sort(
             key=lambda item: (
                 category_order.get(str(item.get("category")), 9),
@@ -8191,6 +9640,7 @@ class CortexStore:
                 ),
             ),
             "standards": {
+                "creation": "Candidates remain outside recall until you explicitly remember them. Rejecting or asking for context creates audit evidence but no memory.",
                 "trash": "Tombstones the memory and removes it from normal recall; content and provenance remain restorable.",
                 "archive": "Removes the memory from normal recall while preserving its full history.",
                 "connection": "Approval creates an explained link backed by this operator decision; denial stores why it was rejected.",
@@ -8692,12 +10142,85 @@ class CortexStore:
             decision = conn.execute(
                 "SELECT * FROM operator_review_decisions WHERE review_id=? AND reversed_at IS NULL", (review_id,)
             ).fetchone()
-            if not decision or not decision["proposal_id"]:
+            if not decision:
                 return False
             try:
                 prior = json.loads(str(decision["prior_json"] or "{}"))
                 effect = json.loads(str(decision["effect_json"] or "{}"))
             except json.JSONDecodeError:
+                return False
+            if str(decision["item_type"]) == "creation":
+                item_key = str(decision["item_key"] or "")
+                proposal_id = item_key.removeprefix("creation:")
+                proposal = conn.execute(
+                    "SELECT * FROM memory_creation_proposals WHERE proposal_id=?", (proposal_id,)
+                ).fetchone()
+                if not proposal:
+                    return False
+                memory_id = str(effect.get("memory_id") or "")
+                if memory_id and bool(effect.get("memory_promoted")):
+                    conn.execute(
+                        """UPDATE memory_recall_memberships SET revoked_at=?
+                           WHERE memory_id=? AND review_id=? AND revoked_at IS NULL""",
+                        (now, memory_id, review_id),
+                    )
+                if memory_id and bool(effect.get("memory_created")):
+                    memory = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                    if memory and str(memory["state"]) in {"active", "cold"}:
+                        conn.execute(
+                            "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+                            (now, memory_id),
+                        )
+                        conn.execute(
+                            "UPDATE memories SET state='archived',updated_at=? WHERE id=?",
+                            (now, memory_id),
+                        )
+                        conn.execute(
+                            """INSERT INTO memory_versions(
+                                 memory_id,content,confidence,state,valid_from,valid_to,
+                                 system_from,reason,source_ref
+                               ) VALUES(?,?,?,'archived',?,?,?,?,?)""",
+                            (
+                                memory_id,
+                                memory["content"],
+                                memory["confidence"],
+                                memory["valid_from"],
+                                memory["valid_to"],
+                                now,
+                                f"creation review undone by {normalize_text(actor)[:80]}",
+                                memory["source_ref"],
+                            ),
+                        )
+                        conn.execute(
+                            """INSERT INTO lifecycle_events(
+                                 memory_id,from_state,to_state,reason,retention_score,created_at
+                               ) VALUES(?,?,'archived',?,NULL,?)""",
+                            (
+                                memory_id,
+                                memory["state"],
+                                f"creation review undone by {normalize_text(actor)[:80]}",
+                                now,
+                            ),
+                        )
+                        conn.execute(
+                            """UPDATE memory_recall_memberships SET revoked_at=?
+                               WHERE memory_id=? AND revoked_at IS NULL""",
+                            (now, memory_id),
+                        )
+                conn.execute(
+                    """UPDATE memory_creation_proposals
+                       SET status='pending',decision_action=NULL,decision_note=NULL,
+                           result_memory_id=NULL,review_id=NULL,actor=NULL,decided_at=NULL
+                       WHERE proposal_id=?""",
+                    (proposal_id,),
+                )
+                conn.execute(
+                    "UPDATE operator_review_decisions SET reversed_at=? WHERE review_id=?",
+                    (now, review_id),
+                )
+                self._compile_policy_candidates_tx(conn)
+                return True
+            if not decision["proposal_id"]:
                 return False
             for memory_id, values in dict(prior.get("memories") or {}).items():
                 current = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
@@ -8773,15 +10296,22 @@ class CortexStore:
                    m.duplicate_count,m.last_retrieved_at,m.last_injected_at,m.last_used_at,m.last_helpful_at,
                    m.record_role,m.role_method,m.role_version,m.role_reviewed_at,
                    p.display_title,p.display_summary,p.applies_when,p.retention_reason,
-                   p.readability_flags_json
+                   p.readability_flags_json,rm.eligibility recall_eligibility
                    FROM memories m
                    LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                   LEFT JOIN memory_recall_memberships rm
+                     ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                    AND rm.recall_set_id=(
+                      SELECT recall_set_id FROM memory_recall_sets
+                      WHERE status='active' ORDER BY activated_at DESC LIMIT 1
+                    )
                    ORDER BY m.observed_at DESC LIMIT ?""",
                 (max(1, min(memory_limit, 2000)),),
             ).fetchall()
             ids = [str(row["id"]) for row in memory_rows]
             edge_rows: list[sqlite3.Row] = []
             dependency_rows: list[sqlite3.Row] = []
+            neighborhood_rows: list[sqlite3.Row] = []
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 edge_rows = self._conn.execute(
@@ -8805,6 +10335,20 @@ class CortexStore:
                        WHERE memory_id IN ({placeholders}) AND evidence_id IN ({placeholders})
                        LIMIT 4000""",
                     (*ids, *ids),
+                ).fetchall()
+                neighborhood_rows = self._conn.execute(
+                    f"""SELECT nm.memory_id,n.slug,n.label,n.category,n.safety_class,
+                               nm.confidence,nm.explanation
+                        FROM memory_neighborhood_memberships nm
+                        JOIN memory_neighborhoods n ON n.neighborhood_id=nm.neighborhood_id
+                        WHERE nm.memory_id IN ({placeholders})
+                        ORDER BY nm.memory_id,
+                          CASE WHEN n.slug='credentials' THEN 0
+                               WHEN n.category='project' THEN 1
+                               WHEN n.category='service' THEN 2
+                               WHEN n.slug='tools' THEN 3 ELSE 4 END,
+                          nm.confidence DESC,n.label""",
+                    tuple(ids),
                 ).fetchall()
             tool_rows = self._conn.execute(
                 """SELECT task_type,tool_name,success_count,failure_count,helpful_count,harmful_count,
@@ -9188,11 +10732,26 @@ class CortexStore:
             metacognition_recent.append(item)
         from .research import research_snapshot
 
+        neighborhoods_by_memory: dict[str, list[dict[str, Any]]] = {}
+        for row in neighborhood_rows:
+            item = dict(row)
+            neighborhoods_by_memory.setdefault(str(item.pop("memory_id")), []).append(item)
+        decoded_memories: list[dict[str, Any]] = []
+        for row in memory_rows:
+            memory = self._decode_refinery_row(row)
+            neighborhoods = neighborhoods_by_memory.get(str(memory["id"]), [])
+            memory["neighborhoods"] = neighborhoods
+            memory["primary_neighborhood"] = (
+                str(neighborhoods[0]["label"]) if neighborhoods else "Ungrouped"
+            )
+            decoded_memories.append(memory)
+
         return {
             "generated_at": utc_now(),
             "stats": self.stats(),
             "refinery": self.refinery_summary(),
-            "memories": [self._decode_refinery_row(row) for row in memory_rows],
+            "memories": decoded_memories,
+            "recall_set": self.recall_set_snapshot(),
             "edges": [_decode_edge(row) for row in edge_rows],
             "dependencies": [dict(row) for row in dependency_rows],
             "tools": [dict(row) for row in tool_rows],
@@ -9948,6 +11507,131 @@ def _json_string_list(value: Any) -> list[str]:
     return [normalize_text(str(item))[:200] for item in parsed if normalize_text(str(item))]
 
 
+def _sanitize_creation_context_map(value: dict[str, Any] | None) -> dict[str, str]:
+    """Normalize and redact bounded proposal metadata before it reaches the ledger."""
+
+    normalized = _normalize_context_map(value)
+    return {
+        key: sanitize_memory(item).text[:300]
+        for key, item in normalized.items()
+        if sanitize_memory(item).text
+    }
+
+
+def _sanitize_creation_context_list(values: Sequence[str] | None) -> list[str]:
+    sanitized = [sanitize_memory(item).text[:200] for item in _normalize_context_list(values)]
+    return _normalize_context_list([item for item in sanitized if item])
+
+
+def _bounded_creation_assessment(value: dict[str, Any]) -> dict[str, Any]:
+    """Keep only inspectable assessment fields with bounded, JSON-safe values."""
+
+    if not isinstance(value, dict):
+        raise ValueError("creation assessment must be a JSON object")
+    return {
+        "candidate_hash": normalize_text(str(value.get("candidate_hash") or ""))[:128],
+        "kind": normalize_text(str(value.get("kind") or "semantic"))[:80],
+        "source_type": normalize_text(str(value.get("source_type") or "conversation"))[:120],
+        "context_mode": normalize_text(str(value.get("context_mode") or "standalone"))[:40],
+        "reusable_score": _clamp(float(value.get("reusable_score") or 0.0)),
+        "likely_useful_again": bool(value.get("likely_useful_again")),
+        "durability": normalize_text(str(value.get("durability") or "unknown"))[:40],
+        "quality_flags": _normalize_context_list(value.get("quality_flags") or [])[:20],
+        "semantic_token_count": max(0, min(100000, int(value.get("semantic_token_count") or 0))),
+        "duplicate_memory_id": normalize_text(str(value.get("duplicate_memory_id") or ""))[:100] or None,
+        "contradiction_ids": _normalize_context_list(value.get("contradiction_ids") or [])[:20],
+        "independently_understandable": bool(value.get("independently_understandable")),
+        "metadata_completeness": _clamp(float(value.get("metadata_completeness") or 0.0)),
+        "decision": normalize_text(str(value.get("decision") or "review"))[:40],
+        "reason": normalize_text(str(value.get("reason") or "Candidate is waiting for review."))[:600],
+        "policy_effect": {
+            "automatic_action": normalize_text(
+                str(dict(value.get("policy_effect") or {}).get("automatic_action") or "")
+            )[:80]
+            or None,
+            "matched_versions": _normalize_context_list(
+                dict(value.get("policy_effect") or {}).get("matched_versions") or []
+            )[:20],
+        },
+    }
+
+
+def _decode_creation_proposal(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    item["candidate"] = _trace_json_object(item.pop("candidate_json", "{}"))
+    item["assessment"] = _trace_json_object(item.pop("assessment_json", "{}"))
+    item["redacted"] = bool(item.get("redacted"))
+    item["recurrence_count"] = int(item.get("recurrence_count") or 1)
+    return item
+
+
+def _creation_neighborhood_preview(proposal: dict[str, Any]) -> list[str]:
+    """Describe likely grouping before the candidate becomes a memory."""
+
+    candidate = dict(proposal.get("candidate") or {})
+    labels: list[str] = []
+    content = normalize_text(str(proposal.get("content") or ""))
+    if re.search(
+        r"\b(?:passwords?|credentials?|logins?|secret manager|1password|bitwarden|vault item)\b",
+        content,
+        re.I,
+    ):
+        labels.extend(["Credential references", "Tool use"])
+    elif str(proposal.get("source_type") or "").casefold().startswith("tool_"):
+        labels.append("Tool use")
+    kind_labels = {
+        "preference": "Preferences",
+        "procedure": "Procedures",
+        "decision": "Decisions",
+        "prospective": "Plans",
+        "operational": "Operations",
+        "identity": "People",
+    }
+    kind_label = kind_labels.get(str(proposal.get("kind") or "").casefold())
+    if kind_label:
+        labels.append(kind_label)
+    scope = dict(candidate.get("scope") or {})
+    project = normalize_text(str(scope.get("project") or scope.get("active_project") or ""))
+    if project:
+        labels.append(f"Project: {project}")
+    systems = list(
+        dict.fromkeys(
+            [
+                *list(candidate.get("applicable_systems") or []),
+                *_explicit_service_mentions(content),
+            ]
+        )
+    )
+    labels.extend(
+        f"Service: {normalize_text(str(system))}"
+        for system in systems[:8]
+        if normalize_text(str(system))
+    )
+    return list(dict.fromkeys(labels))[:8]
+
+
+def _explicit_service_mentions(content: str) -> list[str]:
+    """Find conservative service names in credential-location statements.
+
+    Capture provenance still remains available as an applicable system, but a
+    sentence such as "the Atlas deploy credential" should also live near Atlas
+    rather than being grouped only under the harness that observed it.
+    """
+
+    text = normalize_text(content)
+    patterns = (
+        r"\b(?:the\s+)?([A-Z][A-Za-z0-9._-]{1,79})(?:\s+(?:deploy|production|staging|admin|api|service|account)){0,3}\s+(?:password|credential|login|secret)\b",
+        r"\b(?:password|credential|login|secret)\s+(?:for|to)\s+(?:the\s+)?([A-Z][A-Za-z0-9._-]{1,79})\b",
+    )
+    matches: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            value = normalize_text(match.group(1))
+            if value and value.casefold() not in {"the", "this", "that"}:
+                matches.append(value)
+    return list(dict.fromkeys(matches))[:8]
+
+
 def _memory_metadata_completeness(
     context_mode: str,
     *,
@@ -10331,7 +12015,7 @@ def _normalize_trace_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_trace_action(action: dict[str, Any]) -> dict[str, Any]:
     action_name = normalize_text(str(action.get("action") or "ignored")).casefold()
-    if action_name not in {"created", "updated", "ignored"}:
+    if action_name not in {"created", "updated", "ignored", "proposed"}:
         action_name = "updated" if action_name else "ignored"
     memory_id = normalize_text(str(action.get("memory_id") or ""))[:120] or None
     result = {
@@ -10343,6 +12027,8 @@ def _normalize_trace_action(action: dict[str, Any]) -> dict[str, Any]:
         result["kind"] = normalize_text(str(action["kind"]))[:40]
     if action.get("state"):
         result["state"] = normalize_text(str(action["state"]))[:40]
+    if action.get("proposal_id"):
+        result["proposal_id"] = normalize_text(str(action["proposal_id"]))[:120]
     return result
 
 

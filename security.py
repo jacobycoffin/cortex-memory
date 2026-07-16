@@ -28,6 +28,14 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1=[REDACTED]",
     ),
+    (
+        re.compile(
+            r"\b(password|passwd|passcode|pin)\b\s+(?:is|was)\s+"
+            r"(?!(?:stored|saved|managed|kept|located)\b)([^\s,;]{3,})",
+            re.I,
+        ),
+        r"\1 is [REDACTED]",
+    ),
 )
 
 _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (

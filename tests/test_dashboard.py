@@ -390,7 +390,7 @@ class DashboardInterfaceTests(unittest.TestCase):
             "/api/refinery/rebuild-presentations",
         ):
             self.assertIn(route, server)
-        self.assertIn('parsed.path.startswith(("/api/review/", "/api/policy/", "/api/refinery/"))', server)
+        self.assertIn('"/api/recall-sets/"', server)
         self.assertIn("apply_refinery_action", server)
         self.assertIn("undo_refinery_action", server)
         self.assertIn("rebuild_presentations", server)

@@ -26,6 +26,11 @@ def main() -> int:
     search.add_argument("query")
     search.add_argument("--limit", type=int, default=6)
     search.add_argument("--include-archived", action="store_true")
+    search.add_argument(
+        "--evidence-lookup",
+        action="store_true",
+        help="Include lookup-only reference evidence; graph expansion remains primary-only",
+    )
     search.add_argument("--historical", action="store_true")
     search.add_argument("--as-of", help="ISO timestamp used by historical retrieval")
     remember = sub.add_parser("remember")
@@ -166,6 +171,7 @@ def main() -> int:
                     args.query,
                     limit=args.limit,
                     include_archived=args.include_archived,
+                    evidence_lookup=args.evidence_lookup,
                     temporal_mode="historical" if args.historical or args.as_of else "current",
                     as_of=args.as_of,
                 )

@@ -368,6 +368,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/snapshot", "/api/memory", "/api/sleep/status",
                 "/api/benchmark/status", "/api/evaluation/status",
                 "/api/refinery/summary", "/api/refinery/items", "/api/refinery/shadow",
+                "/api/recall-sets",
             }:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
@@ -452,6 +453,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 retriever = MemoryRetriever(store)
                 self._json(HTTPStatus.OK, retriever.shadow_tiered_comparison(query_text))
                 return
+            if parsed.path == "/api/recall-sets":
+                self._json(HTTPStatus.OK, {"recall_sets": store.recall_set_snapshot()})
+                return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -464,6 +468,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/review/inference",
                 "/api/review/copilot",
                 "/api/review/proposal",
+                "/api/review/creation",
                 "/api/review/undo",
                 "/api/policy/action",
                 "/api/sleep/start",
@@ -482,6 +487,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/refinery/action",
                 "/api/refinery/undo",
                 "/api/refinery/rebuild-presentations",
+                "/api/recall-sets/preview",
+                "/api/recall-sets/activate",
+                "/api/recall-sets/switch",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -493,7 +501,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._login()
                 return
             needs_complete_auth = (
-                parsed.path.startswith(("/api/review/", "/api/policy/", "/api/refinery/"))
+                parsed.path.startswith(
+                    ("/api/review/", "/api/policy/", "/api/refinery/", "/api/recall-sets/")
+                )
                 or parsed.path in {
                     "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
                     "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
@@ -606,6 +616,41 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     return
                 if parsed.path == "/api/policy/action":
                     self._policy_action(payload, actor=actor)
+                    return
+                if parsed.path == "/api/review/creation":
+                    result = store.review_memory_creation(
+                        str(payload.get("proposal_id") or ""),
+                        str(payload.get("action") or ""),
+                        edited_content=(
+                            str(payload.get("content")) if payload.get("content") is not None else None
+                        ),
+                        reason_text=str(payload.get("reason_text") or ""),
+                        actor=actor,
+                        decision_scope=str(payload.get("decision_scope") or "item_only"),
+                    )
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
+                    return
+                if parsed.path == "/api/recall-sets/preview":
+                    self._json(
+                        HTTPStatus.OK,
+                        {"success": True, "preview": store.preview_trained_recall_set()},
+                    )
+                    return
+                if parsed.path == "/api/recall-sets/activate":
+                    result = store.start_trained_recall_set(actor=actor)
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
+                    return
+                if parsed.path == "/api/recall-sets/switch":
+                    target = str(payload.get("target") or "")
+                    snapshot = store.recall_set_snapshot()
+                    if target in {"legacy", "trained"}:
+                        target_id = str(
+                            (snapshot.get("sets", {}).get(target) or {}).get("recall_set_id") or ""
+                        )
+                    else:
+                        target_id = str(payload.get("recall_set_id") or target)
+                    result = store.activate_recall_set(target_id, actor=actor)
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return
                 if parsed.path == "/api/refinery/action":
                     proposed = payload.get("proposed_records")

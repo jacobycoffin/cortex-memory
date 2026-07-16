@@ -197,6 +197,10 @@ class ToolLearningTests(unittest.TestCase):
                 },
             )
         )
+        reviewed = self.provider._store.review_memory_creation(
+            saved["proposal_id"], "remember", actor="adversarial-test"
+        )
+        memory_id = str(reviewed["memory_id"])
         self.provider.prefetch("How should operations dashboard actions work?", session_id="tools-session")
         self.provider.sync_turn(
             "How should operations dashboard actions work?",
@@ -204,7 +208,7 @@ class ToolLearningTests(unittest.TestCase):
             session_id="tools-session",
         )
         explanation = json.loads(
-            self.provider.handle_tool_call("cortex_memory", {"action": "explain", "memory_id": saved["memory_id"]})
+            self.provider.handle_tool_call("cortex_memory", {"action": "explain", "memory_id": memory_id})
         )["explanation"]
         memory = explanation["memory"]
         self.assertGreaterEqual(memory["selected_count"], 1)
@@ -214,7 +218,7 @@ class ToolLearningTests(unittest.TestCase):
             any(
                 record["outcome"] == "ignored"
                 for record in self.provider._store._conn.execute(
-                    "SELECT outcome FROM usage_records WHERE memory_id=?", (saved["memory_id"],)
+                    "SELECT outcome FROM usage_records WHERE memory_id=?", (memory_id,)
                 ).fetchall()
             )
         )

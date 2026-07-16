@@ -12,6 +12,8 @@ Cortex Memory is a local evidence system around agent inference. Its architectur
 6. A tool procedure requires repeated evidence from distinct tasks.
 7. The hot path must not require a network service or an extra LLM call.
 8. Offline model reflection may propose, but never directly mutate, memory.
+9. A conversation observation or agent-selected write is a proposal, not approved knowledge.
+10. Plaintext secrets never enter memory storage or retrieval indexes; only safe secret-manager references may be remembered.
 
 ## Runtime flow
 
@@ -25,7 +27,10 @@ flowchart TD
     D2 --> E
     B --> D3["Explicit project / scope candidates"]
     D3 --> E
-    E --> F["Bounded personalized graph activation"]
+    B --> D4["Directly named semantic neighborhoods"]
+    D4 --> E
+    E --> R["Active recall-set eligibility"]
+    R --> F["Bounded personalized graph activation"]
     F --> G["Similarity + context + utility + source scoring"]
     G --> G2["Applicability gate"]
     G2 --> H["Diversity and token budget"]
@@ -74,7 +79,7 @@ Three independent local paths generate candidates:
 - `memory_features` stores inspectable tokens, crude stems, adjacent pairs, concept aliases, and low-weight character trigrams. It catches modest paraphrases and typos without claiming embedding-level semantics.
 - indexed `memory_context_terms` lookup can surface project/task/precondition/system/version candidates even when their wording has no direct query overlap. Store writes, migration backfill, and connection-local raw-SQL triggers keep this index aligned without a newest-row scan cap.
 
-The union becomes the seed set for a bounded personalized PageRank-style walk over explicit associations. The neighborhood is capped, the iteration count is fixed, and graph activation cannot bypass lifecycle-state checks.
+The union becomes the seed set for a bounded personalized PageRank-style walk over explicit associations. The neighborhood is capped, the iteration count is fixed, and graph activation cannot bypass lifecycle-state or active recall-set checks. Semantic neighborhoods are overlapping, explained group memberships—not graph edges—and expand only when a query directly names the neighborhood, project, or service.
 
 Persistent associations are evidence-bearing records, not similarity labels. `edge_evidence` stores the evidence type, stable evidence key, plain-language explanation, optional task/source reference, and metadata behind each typed edge. Replaying the same evidence key does not inflate its weight or witness count. Shared task attribution, explicit vault wikilinks, structured claim conflicts, version lineage, approved consolidation, and independently witnessed Sleep replay are valid link sources. Token overlap by itself is not. Migration recovers only reasons supported by existing relational data; unverifiable legacy links remain in history and are excluded from the default map.
 

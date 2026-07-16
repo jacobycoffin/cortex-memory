@@ -131,9 +131,9 @@ HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```
 
-Choose `cortex`, then restart the Hermes process so it initializes the provider. Cortex's injected system block makes it the primary durable store, gives `cortex_memory` precedence over Hermes's generic memory tool, and tells Hermes to use it for lasting facts, preferences, decisions, corrections, and verified procedures. Existing `MEMORY.md` and `USER.md` files remain available as curated bootstrap context; Cortex does not delete or rewrite them, and still mirrors an explicit legacy built-in write as a safety net because current Hermes keeps that surface active alongside external providers.
+Choose `cortex`, then restart the Hermes process so it initializes the provider. Cortex's injected system block makes it the primary memory workflow and gives `cortex_memory` precedence over Hermes's generic memory tool. Agent-selected writes, automatic turn extraction, and intercepted legacy built-in writes become non-recallable Creation Inbox proposals; an operator approval is what turns a proposal into durable recall. Existing `MEMORY.md` and `USER.md` files remain available as curated bootstrap context, and Cortex does not delete or rewrite them.
 
-For a Cortex-primary Hermes deployment, also set `memory.nudge_interval: 0`. This disables Hermes's periodic legacy background-memory writer; Cortex's `sync_turn` still performs bounded durable-candidate capture and episode recording after every primary turn. The existing built-in files remain readable bootstrap context, and foreground durable writes are routed to `cortex_memory` by the injected contract.
+For a Cortex-primary Hermes deployment, also set `memory.nudge_interval: 0`. This disables Hermes's periodic legacy background-memory writer; Cortex's `sync_turn` still performs bounded candidate proposals and episode recording after every primary turn. The existing built-in files remain readable bootstrap context, and foreground durable-write requests are routed to the Creation Inbox by the injected contract.
 
 If the `hermes` launcher is not on your VPS `PATH`, run the real environment directly:
 
@@ -148,6 +148,10 @@ See [Quickstart](docs/QUICKSTART.md) for migration, vault indexing, VPS services
 In one Hermes session:
 
 > Remember that production deploys require the test suite and a health check.
+
+Open **Train Kaya → New memories** in the Brain dashboard. Inspect the source,
+proposed wording, grouping, duplicate/conflict checks, and recall effect, then
+choose **Remember it**.
 
 In a fresh session:
 

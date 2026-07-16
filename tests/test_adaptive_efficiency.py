@@ -223,7 +223,7 @@ class MetacognitionEnforcementTests(unittest.TestCase):
             provider.initialize("monitor-session", hermes_home=tmp, agent_context="primary")
             try:
                 memory_id, _ = provider._store.add_memory(
-                    "The exact experimental service password is always orange.",
+                    "The experimental service endpoint is the orange gateway.",
                     source_category="AGENT_INFERENCE",
                     confidence=0.25,
                     currentness_confidence=0.2,
@@ -239,11 +239,11 @@ class MetacognitionEnforcementTests(unittest.TestCase):
                     )
 
                 context = provider.prefetch(
-                    "What is the exact experimental service password?",
+                    "What is the experimental service endpoint?",
                     session_id="monitor-session",
                 )
 
-                self.assertIn("experimental service password", context)
+                self.assertIn("experimental service endpoint", context)
                 prediction = provider._store._conn.execute(
                     """SELECT decision,applied,outcome FROM metacognitive_predictions
                        WHERE memory_id=?""",
@@ -271,7 +271,7 @@ class MetacognitionEnforcementTests(unittest.TestCase):
             provider.initialize("monitor-session", hermes_home=tmp, agent_context="primary")
             try:
                 memory_id, _ = provider._store.add_memory(
-                    "The exact experimental service password is always orange.",
+                    "The experimental service endpoint is the orange gateway.",
                     source_category="AGENT_INFERENCE",
                     confidence=0.25,
                     currentness_confidence=0.2,
@@ -287,7 +287,7 @@ class MetacognitionEnforcementTests(unittest.TestCase):
                     )
 
                 context = provider.prefetch(
-                    "What is the exact experimental service password?",
+                    "What is the experimental service endpoint?",
                     session_id="monitor-session",
                 )
 

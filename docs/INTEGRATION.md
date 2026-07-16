@@ -75,7 +75,7 @@ with CortexHarnessAdapter("./state/cortex.db") as cortex:
 
 The wrapper adaptively skips greetings and self-contained tasks, so “primary” does not mean blindly injecting memory into every turn. `force_recall=True` is available when a harness already knows the task must use durable history.
 
-Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and mirrors a successful legacy built-in write into Cortex. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search. Set Hermes's `memory.nudge_interval` to `0` in a Cortex-primary deployment so the periodic legacy background reviewer does not keep filling `MEMORY.md`; Cortex's provider `sync_turn` remains responsible for bounded automatic capture and episode recording.
+Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and intercepts a successful legacy built-in write as a Cortex creation proposal. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search. Set Hermes's `memory.nudge_interval` to `0` in a Cortex-primary deployment so the periodic legacy background reviewer does not keep filling `MEMORY.md`; Cortex's provider `sync_turn` remains responsible for bounded automatic proposals and episode recording. Neither automatic turn extraction nor a model-issued memory tool call becomes recallable until an operator approves it.
 
 The harness decides how it detects durable facts, which evidence the answer used, and when an outcome is known. Cortex deliberately does not infer success merely because a memory was retrieved.
 
@@ -83,7 +83,7 @@ Each `recall` opens a task trace automatically. `RecallBatch.finish` closes its 
 
 Pass explicit context whenever the harness knows it: `active_project`, durable `scope`, named `entities`, current `system_state`, and applicable system/version identifiers. A context-dependent memory is ineligible when its required scope or preconditions are missing. Conversation and session IDs remain in the audit trace but are excluded from the stable feedback bucket, so reuse learning can accumulate across sessions.
 
-For durable writes, use `context_mode="standalone"` only when the text makes sense by itself. Otherwise pass `context_mode="context_dependent"` plus its project/scope/entities/preconditions/source context. The store records durability, duplicate, contradiction, and comprehensibility checks in `memory_write_decisions`; automatic capture may ignore an unresolved or under-scoped candidate instead of creating a low-quality memory.
+For creation proposals, use `context_mode="standalone"` only when the text makes sense by itself. Otherwise pass `context_mode="context_dependent"` plus its project/scope/entities/preconditions/source context. The store records durability, duplicate, contradiction, and comprehensibility checks before placing the candidate in the review inbox; automatic capture may ignore an unresolved or under-scoped candidate instead of creating a low-quality proposal. Use `CortexHarnessAdapter.propose` for anything selected or phrased by an agent. `CortexHarnessAdapter.remember` is the trusted commit primitive and is reserved for an operator approval or a controlled, verified import.
 
 ## Source and trust labels
 
@@ -91,13 +91,16 @@ Use `source_category` consistently:
 
 | Category | Use |
 | --- | --- |
-| `USER_EXPLICIT` | The user directly stated or confirmed it. |
+| `USER_EXPLICIT` | The user explicitly asked Cortex to remember the exact statement. |
+| `USER_STATED` | A deterministic extractor found it in a user turn, but the exact candidate has not been reviewed. |
 | `TOOL_VERIFIED` | A tool result directly established it. |
 | `DOCUMENT_EXTRACTED` | It came from an indexed document. |
 | `AGENT_INFERENCE` | The agent inferred it; derived memories should identify evidence. |
+| `AGENT_PROPOSED` | An agent selected, summarized, or phrased a candidate that still requires review. |
+| `OPERATOR_APPROVED` | The dashboard operator approved the exact memory text through Creation review. |
 | `REFLECTION` | It was proposed during reflection and must remain reviewable. |
 
-Do not store secrets, raw tool credentials, or authorization decisions as ordinary memories. Cortex sanitizes likely secrets and quarantines instruction-like text, but the harness remains responsible for minimizing sensitive input.
+Do not store secrets, raw tool credentials, or authorization decisions as ordinary memories. Cortex redacts likely secret values before proposal storage. It may remember only a safe location reference such as “the Hermes deploy credential is stored in 1Password under Hermes VPS.” Those references join the protected Credential references neighborhood under Tool use and may also join the relevant service neighborhood. The harness remains responsible for minimizing sensitive input.
 
 ## Feedback semantics
 

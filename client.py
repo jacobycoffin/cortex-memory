@@ -110,6 +110,55 @@ class CortexMemory:
             storage_policy="explicit",
         )
 
+    def propose(
+        self,
+        content: str,
+        *,
+        kind: str = "semantic",
+        source_type: str = "agent_proposal",
+        source_category: str = "AGENT_PROPOSED",
+        source_ref: str | None = None,
+        session_id: str | None = None,
+        confidence: float = 0.65,
+        importance: float = 0.5,
+        volatility: float = 0.4,
+        trust: float = 0.55,
+        context_mode: str = "standalone",
+        scope: dict[str, Any] | None = None,
+        entities: Sequence[str] = (),
+        preconditions: dict[str, Any] | None = None,
+        source_context: str | None = None,
+        applicable_systems: Sequence[str] = (),
+        applicable_versions: Sequence[str] = (),
+        extraction_method: str = "agent_proposal",
+        storage_policy: str = "review_required",
+    ) -> dict[str, Any]:
+        """Stage a non-recallable candidate for operator review."""
+
+        sanitized = sanitize_memory(content)
+        return self.store.propose_memory_creation(
+            sanitized.text,
+            kind=kind,
+            source_type=source_type,
+            source_category=source_category,
+            source_ref=source_ref,
+            session_id=session_id,
+            context_mode=context_mode,
+            scope=scope,
+            entities=entities,
+            preconditions=preconditions,
+            source_context=source_context,
+            applicable_systems=applicable_systems,
+            applicable_versions=applicable_versions,
+            confidence=confidence,
+            importance=importance,
+            volatility=volatility,
+            trust=trust,
+            extraction_method=extraction_method,
+            quarantine_reason=sanitized.quarantine_reason,
+            storage_policy=storage_policy,
+        )
+
     def recall(
         self,
         query: str,

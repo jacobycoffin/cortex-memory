@@ -24,6 +24,11 @@ class CortexHarnessContractTests(unittest.TestCase):
         self.assertIn("do not duplicate", CORTEX_BOOTSTRAP_POINTER.casefold())
         self.assertIn("memory.cortex", manifest["system_prompt"])
         self.assertEqual(manifest["lifecycle"][0]["operation"], "bounded_recall")
+        self.assertEqual(manifest["lifecycle"][2]["operation"], "stage_memory_creation_proposal")
+        self.assertEqual(
+            manifest["enforcement"]["agent_generated_write"],
+            "stage_non_recallable_proposal",
+        )
         self.assertEqual(
             manifest["enforcement"]["native_durable_write_tool"],
             "disable_or_intercept_when_supported",
@@ -53,6 +58,30 @@ class CortexHarnessContractTests(unittest.TestCase):
                 self.assertIn(memory_id, affected)
                 self.assertIn("primary durable memory", adapter.system_prompt_block().casefold())
 
+    def test_portable_adapter_separates_proposal_from_trusted_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexHarnessAdapter(Path(tmp) / "cortex.db") as adapter:
+                proposal = adapter.propose(
+                    "Jacoby may prefer deployment summaries with a compact lead.",
+                    kind="preference",
+                    source_context="agent summary of a user turn",
+                )
+                self.assertEqual(proposal["status"], "pending")
+                self.assertEqual(proposal["source_category"], "AGENT_PROPOSED")
+                turn = adapter.before_turn(
+                    "How should I format deployment summaries?",
+                    force_recall=True,
+                )
+                self.assertEqual(turn.memory_ids, [])
+                reviewed = adapter.memory.store.review_memory_creation(
+                    proposal["proposal_id"], "remember", actor="harness-test"
+                )
+                recalled = adapter.before_turn(
+                    "How should I format deployment summaries?",
+                    force_recall=True,
+                )
+                self.assertIn(str(reviewed["memory_id"]), recalled.memory_ids)
+
     def test_hermes_adapter_injects_the_same_primary_memory_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             provider = CortexMemoryProvider({"db_path": "$HERMES_HOME/cortex/test.db"})
@@ -60,7 +89,8 @@ class CortexHarnessContractTests(unittest.TestCase):
             try:
                 prompt = provider.system_prompt_block()
                 self.assertIn("long-term memory store of record", prompt)
-                self.assertIn("Do not copy them into the harness's small built-in memory", prompt)
+                self.assertIn("do not copy it into the harness's small built-in memory", prompt)
+                self.assertIn("not recallable until a person approves", prompt)
                 self.assertIn("takes precedence for every durable write", prompt)
                 self.assertIn("cortex_memory", prompt)
             finally:

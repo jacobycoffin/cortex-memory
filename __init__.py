@@ -90,8 +90,9 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
     "name": "cortex_memory",
     "description": (
         "Primary durable memory for this agent; prefer this tool over a generic built-in memory tool. Search "
-        "Cortex for prior user or project context, and use remember for durable facts, preferences, decisions, "
-        "and verified procedures instead of duplicating them in limited harness-native memory. Feedback after a "
+        "Cortex for prior user or project context, and use remember to propose durable facts, preferences, "
+        "decisions, and verified procedures instead of duplicating them in limited harness-native memory. A "
+        "remember proposal is not recallable until the operator approves it. Feedback after a "
         "recalled memory helps or misleads; correct rather than overwriting history. Forget archives safely and "
         "never hard-deletes."
     ),
@@ -118,7 +119,10 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "undo_consolidation",
                 ],
             },
-            "content": {"type": "string", "description": "Memory text for remember/correct."},
+            "content": {
+                "type": "string",
+                "description": "Candidate memory text for remember, or replacement text for correct.",
+            },
             "query": {"type": "string", "description": "Search query."},
             "memory_id": {"type": "string", "description": "Full Cortex ID or unique displayed prefix."},
             "memory_ids": {"type": "array", "items": {"type": "string"}},
@@ -140,6 +144,13 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
             "pinned": {"type": "boolean"},
             "outcome": {"type": "string", "enum": ["useful", "successful", "confirmed", "irrelevant", "wrong"]},
             "include_archived": {"type": "boolean"},
+            "evidence_lookup": {
+                "type": "boolean",
+                "description": (
+                    "Allow explicit source/document/technical evidence in this search. "
+                    "Evidence-only records are never added through graph expansion."
+                ),
+            },
             "apply": {
                 "type": "boolean",
                 "description": "Apply a reversible lifecycle or consolidation change only when its provider mode allows it.",
@@ -839,20 +850,23 @@ class CortexMemoryProvider(MemoryProvider):
             return
         if action in {"add", "replace"}:
             sanitized = sanitize_memory(content)
-            self._store.add_memory(
+            self._store.propose_memory_creation(
                 sanitized.text,
                 kind="preference" if target == "user" else "semantic",
                 source_type="builtin_memory",
-                source_category="USER_EXPLICIT" if target == "user" else "REFLECTION",
+                # Hermes's model chose and phrased this write. Even when the
+                # target is the user profile, that is not proof that the user
+                # explicitly confirmed the exact stored claim.
+                source_category="AGENT_PROPOSED",
                 source_ref=(metadata or {}).get("tool_name") if metadata else None,
                 session_id=(metadata or {}).get("session_id") if metadata else self._session_id,
+                source_context="agent-generated Hermes built-in memory write",
                 confidence=0.90,
                 importance=0.88,
-                trust=0.92,
-                pinned=True,
-                protected=True,
+                trust=0.55,
                 extraction_method="hermes_builtin_memory",
                 quarantine_reason=sanitized.quarantine_reason,
+                storage_policy="review_required",
             )
         elif action == "remove":
             existing = self._store.find_by_content(content)
@@ -862,7 +876,7 @@ class CortexMemoryProvider(MemoryProvider):
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
         if not self._store or self._agent_context not in {"primary", ""}:
             return ""
-        captured = 0
+        proposed = 0
         for message in messages[-24:]:
             role = str(message.get("role") or "")
             if role not in {"user", "assistant"}:
@@ -870,8 +884,17 @@ class CortexMemoryProvider(MemoryProvider):
             content = message.get("content")
             if not isinstance(content, str):
                 continue
-            captured += len(self._capture(sanitize_memory(content).text, role=role, session_id=self._session_id))
-        return f"Cortex preserved {captured} durable memory candidates with provenance before compression."
+            proposed += len(
+                self._capture(
+                    sanitize_memory(content).text,
+                    role=role,
+                    session_id=self._session_id,
+                )
+            )
+        return (
+            f"Cortex staged {proposed} memory candidates for review before compression; "
+            "none became recallable automatically."
+        )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         if not self._store:
@@ -921,11 +944,13 @@ class CortexMemoryProvider(MemoryProvider):
                 if not content:
                     return _json_error("content is required")
                 sanitized = sanitize_memory(content)
-                memory_id, created = self._store.add_memory(
+                proposal = self._store.propose_memory_creation(
                     sanitized.text,
                     kind=str(args.get("kind") or "semantic"),
-                    source_type="explicit_tool",
-                    source_category="USER_EXPLICIT",
+                    # A tool call is generated by the agent. It cannot promote
+                    # its own phrasing to USER_EXPLICIT or protected truth.
+                    source_type="agent_tool_proposal",
+                    source_category="AGENT_PROPOSED",
                     session_id=self._session_id,
                     context_mode=str(args.get("context_mode") or "standalone"),
                     scope=dict(args.get("scope") or {}),
@@ -936,38 +961,46 @@ class CortexMemoryProvider(MemoryProvider):
                     applicable_versions=[str(item) for item in args.get("applicable_versions") or []],
                     confidence=float(args.get("confidence", 0.88)),
                     importance=float(args.get("importance", 0.78)),
-                    trust=0.90,
-                    pinned=bool(args.get("pinned", False)),
-                    protected=True,
+                    trust=0.55,
                     quarantine_reason=sanitized.quarantine_reason,
                     subject=str(args.get("subject") or "") or None,
                     predicate=str(args.get("predicate") or "") or None,
                     object_value=str(args.get("object_value") or "") or None,
                     valid_from=str(args.get("valid_from") or "") or None,
                     valid_to=str(args.get("valid_to") or "") or None,
-                    extraction_method="explicit_cortex_tool",
+                    extraction_method="cortex_tool_proposal_v1",
                     supersedes_id=self._resolve(args.get("supersedes_id")),
                     evidence_ids=[
                         resolved for raw in args.get("evidence_ids") or [] if (resolved := self._resolve(raw))
                     ],
-                    storage_policy="explicit",
+                    storage_policy="review_required",
                 )
+                proposal_id = str(proposal["proposal_id"])
+                created = bool(proposal.get("created"))
+                status = str(proposal.get("status") or "pending")
                 self._queue_memory_action(
                     session_id=str(kwargs.get("session_id") or self._session_id or "default"),
-                    action="created" if created else "updated",
-                    memory_id=memory_id,
+                    action="proposed",
+                    memory_id=None,
+                    proposal_id=proposal_id,
                     kind=str(args.get("kind") or "semantic"),
-                    state="quarantine" if sanitized.quarantine_reason else "active",
+                    state=status,
                     reason=(
-                        "explicit durable-memory write"
+                        "agent-generated candidate staged for operator review"
                         if created
-                        else "explicit write merged into an existing duplicate"
+                        else "repeated candidate added evidence to an existing review proposal"
                     ),
                 )
                 return _json_ok(
-                    memory_id=memory_id,
+                    proposal_id=proposal_id,
                     created=created,
-                    state="quarantine" if sanitized.quarantine_reason else "active",
+                    status=status,
+                    recallable=False,
+                    message=(
+                        "Candidate staged for review; it is not an active memory yet."
+                        if created
+                        else "Candidate matched an existing review proposal; recurrence evidence was updated."
+                    ),
                     redacted=sanitized.redacted,
                 )
 
@@ -978,6 +1011,7 @@ class CortexMemoryProvider(MemoryProvider):
                     limit=int(self._config["top_k"]),
                     token_budget=int(self._config["token_budget"]),
                     include_archived=bool(args.get("include_archived", False)),
+                    evidence_lookup=bool(args.get("evidence_lookup", False)),
                     context=RetrievalContext(
                         active_project=str(args.get("active_project") or "").strip() or None,
                         goal=str(args.get("query") or ""),
@@ -1230,7 +1264,7 @@ class CortexMemoryProvider(MemoryProvider):
     ) -> list[str]:
         if not self._store:
             return []
-        ids: list[str] = []
+        proposal_ids: list[str] = []
         for candidate in extract_candidates(text, role=role):
             sanitized = sanitize_memory(candidate.content)
             scoped_to_project = bool(
@@ -1243,6 +1277,11 @@ class CortexMemoryProvider(MemoryProvider):
             source_context = f"{role} turn in session {session_id}"
             applicable_systems = self._applicable_systems if candidate.kind == "procedure" else ()
             applicable_versions = self._applicable_versions if candidate.kind == "procedure" else ()
+            source_type = f"{role}_turn"
+            # Deterministic extraction shows where a claim came from, not that
+            # the user approved the extractor's exact wording. Assistant text
+            # is more clearly an agent proposal rather than user evidence.
+            source_category = "USER_STATED" if role == "user" else "AGENT_PROPOSED"
             assessment = self._store.assess_storage_candidate(
                 sanitized.text,
                 kind=candidate.kind,
@@ -1252,6 +1291,9 @@ class CortexMemoryProvider(MemoryProvider):
                 source_context=source_context,
                 applicable_systems=applicable_systems,
                 applicable_versions=applicable_versions,
+                source_type=source_type,
+                source_category=source_category,
+                extraction_method="deterministic_candidate_extractor_v1",
                 confidence=candidate.confidence,
                 importance=candidate.importance,
                 volatility=candidate.volatility,
@@ -1269,11 +1311,11 @@ class CortexMemoryProvider(MemoryProvider):
                         }
                     )
                 continue
-            memory_id, created = self._store.add_memory(
+            proposal = self._store.propose_memory_creation(
                 sanitized.text,
                 kind=candidate.kind,
-                source_type=f"{role}_turn",
-                source_category="USER_EXPLICIT" if role == "user" else "AGENT_INFERENCE",
+                source_type=source_type,
+                source_category=source_category,
                 session_id=session_id,
                 context_mode=context_mode,
                 scope=scope,
@@ -1287,27 +1329,29 @@ class CortexMemoryProvider(MemoryProvider):
                 trust=0.90 if role == "user" else 0.55,
                 extraction_method="deterministic_candidate_extractor_v1",
                 quarantine_reason=sanitized.quarantine_reason,
-                storage_policy="automatic",
+                storage_policy="review_required",
+                assessment=assessment,
             )
-            if created and not sanitized.quarantine_reason:
-                ids.append(memory_id)
+            proposal_id = str(proposal["proposal_id"])
+            created = bool(proposal.get("created"))
+            status = str(proposal.get("status") or "pending")
+            proposal_ids.append(proposal_id)
             if action_sink is not None:
                 action_sink.append(
                     {
-                        "action": "created" if created else "updated",
-                        "memory_id": memory_id,
+                        "action": "proposed",
+                        "memory_id": None,
+                        "proposal_id": proposal_id,
                         "kind": candidate.kind,
-                        "state": "quarantine" if sanitized.quarantine_reason else "active",
+                        "state": status,
                         "reason": (
-                            "durable candidate stored with explicit provenance"
-                            if created and not sanitized.quarantine_reason
-                            else "instruction-like candidate stored outside active recall"
+                            "candidate staged for operator review; it is not recallable"
                             if created
-                            else "duplicate candidate merged into the existing memory"
+                            else "repeated candidate coalesced into the existing review proposal"
                         ),
                     }
                 )
-        return ids
+        return proposal_ids
 
     def _reinforce_group(
         self,
@@ -1498,6 +1542,7 @@ class CortexMemoryProvider(MemoryProvider):
         action: str,
         memory_id: str | None,
         reason: str,
+        proposal_id: str | None = None,
         kind: str | None = None,
         state: str | None = None,
     ) -> None:
@@ -1506,6 +1551,8 @@ class CortexMemoryProvider(MemoryProvider):
             "memory_id": memory_id,
             "reason": reason,
         }
+        if proposal_id:
+            item["proposal_id"] = proposal_id
         if kind:
             item["kind"] = kind
         if state:

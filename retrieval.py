@@ -132,6 +132,7 @@ class MemoryRetriever:
         graph_depth: int = 1,
         threshold: float | None = None,
         context: RetrievalContext | None = None,
+        evidence_lookup: bool = False,
     ) -> list[RetrievalResult]:
         results, _diagnostics = self.search_detailed(
             query,
@@ -143,6 +144,7 @@ class MemoryRetriever:
             graph_depth=graph_depth,
             threshold=threshold,
             context=context,
+            evidence_lookup=evidence_lookup,
         )
         return results
 
@@ -158,6 +160,7 @@ class MemoryRetriever:
         graph_depth: int = 1,
         threshold: float | None = None,
         context: RetrievalContext | None = None,
+        evidence_lookup: bool = False,
     ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
         if not query or limit <= 0 or token_budget <= 0:
             return [], RetrievalDiagnostics(0, 0, 0, True)
@@ -165,7 +168,10 @@ class MemoryRetriever:
         retrieval_context = _normalize_retrieval_context(context, goal=query)
         candidate_limit = max(40, limit * 8)
         lexical_candidates = self.store.fts_search(
-            expanded_query, limit=candidate_limit, include_archived=include_archived
+            expanded_query,
+            limit=candidate_limit,
+            include_archived=include_archived,
+            evidence_lookup=evidence_lookup,
         )
         feature_candidates = self.store.feature_search(
             expanded_query, limit=candidate_limit, include_archived=include_archived
@@ -179,6 +185,13 @@ class MemoryRetriever:
             applicable_versions=retrieval_context.applicable_versions,
             limit=candidate_limit,
             include_archived=include_archived,
+            evidence_lookup=evidence_lookup,
+        )
+        neighborhood_candidates = self.store.neighborhood_search(
+            expanded_query,
+            limit=candidate_limit,
+            include_archived=include_archived,
+            evidence_lookup=evidence_lookup,
         )
         candidates_by_id: dict[str, dict[str, Any]] = {}
         for candidate in lexical_candidates:
@@ -195,6 +208,17 @@ class MemoryRetriever:
             if memory_id in candidates_by_id:
                 candidates_by_id[memory_id]["context_candidate_score"] = candidate.get(
                     "context_candidate_score", 0.0
+                )
+            else:
+                candidates_by_id[memory_id] = candidate
+        for candidate in neighborhood_candidates:
+            memory_id = str(candidate["id"])
+            if memory_id in candidates_by_id:
+                candidates_by_id[memory_id]["neighborhood_candidate_score"] = candidate.get(
+                    "neighborhood_candidate_score", 0.0
+                )
+                candidates_by_id[memory_id]["neighborhood_labels"] = candidate.get(
+                    "neighborhood_labels", ""
                 )
             else:
                 candidates_by_id[memory_id] = candidate
@@ -236,6 +260,12 @@ class MemoryRetriever:
                     {"active", "cold", "archived"} if include_archived else {"active", "cold"}
                 ):
                     continue
+                if not self.store.is_memory_recall_eligible(
+                    neighbor_id,
+                    evidence_lookup=False,
+                    include_archived=include_archived,
+                ):
+                    continue
                 result = self._score(
                     query,
                     memory,
@@ -266,6 +296,13 @@ class MemoryRetriever:
 
             result = max(remaining, key=diversified_value)
             remaining.remove(result)
+            if not self.store.is_memory_recall_eligible(
+                str(result.memory["id"]),
+                evidence_lookup=evidence_lookup,
+                include_archived=include_archived,
+            ):
+                rejection_reasons[str(result.memory["id"])] = "outside the active recall set"
+                continue
             effective_threshold = self.threshold if threshold is None else float(threshold)
             if result.components.get("context_gate", 1.0) < 1.0:
                 rejection_reasons[str(result.memory["id"])] = (
@@ -567,6 +604,7 @@ class MemoryRetriever:
             * context_components["context_completeness"]
             * context_components["is_context_dependent"]
         )
+        neighborhood = min(1.0, float(memory.get("neighborhood_candidate_score", 0.0) or 0.0))
 
         score = (
             0.20 * lexical
@@ -581,6 +619,7 @@ class MemoryRetriever:
             + 0.03 * memory_type
             + 0.02 * uniqueness
             + 0.06 * graph
+            + 0.04 * neighborhood
             + context_boost
             + 0.08 * context_adaptation
             - relevance_penalty
@@ -623,6 +662,7 @@ class MemoryRetriever:
             "memory_type": memory_type,
             "uniqueness": uniqueness,
             "graph": graph,
+            "neighborhood": neighborhood,
             "relevance_penalty": relevance_penalty,
             "stale_risk": stale_risk,
             "wrong_rate": min(1.0, wrong_rate),
