@@ -1310,6 +1310,14 @@
     .outcome-task-head strong { min-width: 0; overflow: hidden; font-size: .68rem; text-overflow: ellipsis; white-space: nowrap; }
     .outcome-task-head span { flex: 0 0 auto; color: var(--muted); font: 500 .52rem/1.2 ui-monospace,monospace; }
     .outcome-task p { margin: 7px 0 0; color: var(--text-soft); font-size: .62rem; line-height: 1.45; }
+    .outcome-why { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 9px; }
+    .outcome-why summary { cursor: pointer; color: var(--blue); font: 650 .55rem/1.3 ui-monospace,monospace; }
+    .outcome-why-list { display: grid; margin-top: 8px; }
+    .outcome-why-row { padding: 8px 0; border-top: 1px solid var(--border); }
+    .outcome-why-row strong, .outcome-why-row span { display: block; font-size: .53rem; line-height: 1.4; }
+    .outcome-why-row span { margin-top: 3px; color: var(--muted); }
+    .outcome-why-row p { margin-top: 4px; color: var(--text-soft); font-size: .52rem; }
+    .outcome-why-row.rejected { opacity: .72; }
     .outcome-memory-strip { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
     .outcome-memory-strip button { max-width: 240px; overflow: hidden; padding: 4px 6px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: .53rem; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
     .outcome-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
@@ -1583,6 +1591,28 @@
     .training-next strong { display: block; font-size: .68rem; }
     .training-next span { display: block; margin-top: 4px; color: var(--muted); font-size: .57rem; line-height: 1.45; }
     .policy-lab { margin-top: 14px; }
+    .training-governance-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 14px; margin-top: 14px; }
+    .schema-rule { margin-top: 10px; padding: 11px 12px; border-left: 3px solid var(--blue); background: var(--surface-2); color: var(--text-soft); font-size: .61rem; line-height: 1.5; }
+    .schema-evaluation-list, .decision-ledger-list { display: grid; margin-top: 11px; }
+    .schema-evaluation { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; padding: 11px 0; border-top: 1px solid var(--border); }
+    .schema-evaluation strong { display: block; font-size: .65rem; }
+    .schema-evaluation p { margin: 4px 0 0; color: var(--muted); font-size: .56rem; line-height: 1.45; }
+    .schema-evaluation span { align-self: start; padding: 4px 6px; border: 1px solid var(--border); color: var(--muted); font: 650 .49rem/1 ui-monospace,monospace; text-transform: uppercase; }
+    .schema-evaluation.admitted span { color: var(--green); border-color: color-mix(in srgb,var(--green) 35%,var(--border)); }
+    .schema-evaluation.inactive span { color: var(--amber); border-color: color-mix(in srgb,var(--amber) 35%,var(--border)); }
+    .experience-stat-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; margin-top: 11px; }
+    .experience-stat { min-width: 0; padding: 11px; border: 1px solid var(--border); background: var(--surface-2); }
+    .experience-stat span { display: block; color: var(--muted); font: 600 .49rem/1.2 ui-monospace,monospace; text-transform: uppercase; }
+    .experience-stat strong { display: block; margin-top: 7px; font: 560 1.05rem/1 var(--display); }
+    .decision-ledger { margin-top: 14px; }
+    .decision-ledger-row { display: grid; grid-template-columns: 105px minmax(0,1fr) auto; gap: 12px; align-items: start; padding: 12px 0; border-top: 1px solid var(--border); }
+    .decision-ledger-kind { color: var(--blue); font: 650 .52rem/1.35 ui-monospace,monospace; text-transform: uppercase; overflow-wrap: anywhere; }
+    .decision-ledger-copy strong { display: block; font-size: .65rem; line-height: 1.4; }
+    .decision-ledger-copy p { margin: 4px 0 0; color: var(--muted); font-size: .56rem; line-height: 1.48; overflow-wrap: anywhere; }
+    .decision-ledger-copy details { margin-top: 7px; color: var(--muted); font-size: .53rem; }
+    .decision-ledger-copy summary { cursor: pointer; color: var(--text-soft); }
+    .decision-ledger-copy pre { max-height: 190px; overflow: auto; margin: 7px 0 0; padding: 9px; background: var(--surface-2); white-space: pre-wrap; word-break: break-word; font: .5rem/1.45 ui-monospace,monospace; }
+    .decision-ledger-meta { min-width: 116px; color: var(--muted); font-size: .52rem; line-height: 1.45; text-align: right; }
     .policy-candidate-list, .active-policy-list { display: grid; gap: 9px; margin-top: 11px; }
     .policy-candidate { padding: 14px; border: 1px solid var(--border); background: var(--surface-2); }
     .policy-candidate.ready { border-left: 3px solid var(--green); }
@@ -1612,6 +1642,7 @@
       .training-steps { grid-template-columns: 1fr; }
       .training-step + .training-step { border-left: 0; border-top: 1px solid var(--border); }
       .policy-gates { grid-template-columns: repeat(2,minmax(0,1fr)); }
+      .training-governance-grid { grid-template-columns: 1fr; }
       .policy-gate:nth-child(3) { border-left: 0; border-top: 1px solid var(--border); }
       .policy-gate:nth-child(4) { border-top: 1px solid var(--border); }
     }
@@ -1622,6 +1653,8 @@
       .training-overview-head, .training-next, .policy-candidate-head, .active-policy { grid-template-columns: 1fr; }
       .training-progress-number { text-align: left; }
       .policy-gates { grid-template-columns: 1fr; }
+      .decision-ledger-row { grid-template-columns: 1fr; gap: 5px; }
+      .decision-ledger-meta { text-align: left; }
       .policy-gate + .policy-gate { border-left: 0; border-top: 1px solid var(--border); }
       .creation-flow, .creation-explanation-grid, .creation-checks, .creation-decision .review-action-options, .creation-decision .review-scope-options, .creation-receipt, .recall-set-panel, .recall-set-counts { grid-template-columns: 1fr; }
       .creation-flow-step + .creation-flow-step, .creation-check + .creation-check { border-left: 0; border-top: 1px solid var(--border); }
@@ -1965,6 +1998,22 @@
             <div class="panel-heading"><div><h2>What Cortex is learning from you</h2><p>Operator decisions are evidence, not instant global rules. Repeated patterns become reviewable policy signals.</p></div><span class="chip" id="review-decision-total">0 decisions</span></div>
             <div class="review-learning-grid" id="review-learning-signals"></div>
             <div class="review-history-list" id="review-history-list"></div>
+          </section>
+          <div class="training-governance-grid">
+            <section class="panel panel-pad" aria-labelledby="schema-training-heading">
+              <div class="panel-heading"><div><h2 id="schema-training-heading">How Cortex groups memories</h2><p>Broad neighborhoods are immediate. Named projects and services must earn a permanent place on the map.</p></div><span class="chip" id="schema-training-total">0 evaluated</span></div>
+              <div class="schema-rule" id="schema-training-rule">Checking the evidence rule…</div>
+              <div class="schema-evaluation-list" id="schema-evaluation-list"></div>
+            </section>
+            <section class="panel panel-pad" aria-labelledby="experience-training-heading">
+              <div class="panel-heading"><div><h2 id="experience-training-heading">Learning experience dataset</h2><p>Cortex records decisions and outcomes without copying memory text into the training export by default.</p></div><span class="chip" id="experience-training-total">0 examples</span></div>
+              <div class="experience-stat-grid" id="experience-stat-grid"></div>
+              <div class="measurement-boundary" id="experience-claim-boundary">This dataset trains Cortex policies, not Kaya’s base model.</div>
+            </section>
+          </div>
+          <section class="panel panel-pad decision-ledger" aria-labelledby="decision-ledger-heading">
+            <div class="panel-heading"><div><h2 id="decision-ledger-heading">Why Cortex did this</h2><p>One timeline for admission, your reviews, neighborhood changes, recall-set boundaries, policy versions, and lifecycle actions.</p></div><select class="control" id="decision-log-filter" aria-label="Filter Cortex decision log"><option value="all">All decisions</option><option value="operator_review">Your reviews</option><option value="admission">Admission</option><option value="neighborhood">Neighborhoods</option><option value="recall_set">Recall sets</option><option value="policy">Policies</option><option value="lifecycle">Lifecycle</option></select></div>
+            <div class="decision-ledger-list" id="decision-ledger-list"></div>
           </section>
           <section class="panel panel-pad policy-lab" aria-labelledby="policy-lab-heading">
             <div class="panel-heading"><div><h2 id="policy-lab-heading">Proposed standards</h2><p>This is where repeated reviews become changes to Cortex’s admission, linking, retrieval, and retention core. Every proposal shows its rule, evidence gates, replay result, shadow progress, and rollback path.</p></div><button class="ghost-btn" id="policy-compile" type="button">Compile latest reviews</button></div>
@@ -2528,6 +2577,7 @@
     document.getElementById("health-review-close").addEventListener("click", closeHealthReview);
     document.getElementById("training-next-action").addEventListener("click", handleTrainingNextAction);
     document.getElementById("policy-compile").addEventListener("click", () => runPolicyAction("compile"));
+    document.getElementById("decision-log-filter").addEventListener("change", renderTrainingGovernance);
     document.getElementById("review-filters").addEventListener("click", event => {
       const button=event.target.closest("[data-review-filter]");if(!button)return;
       app.review.filter=button.dataset.reviewFilter||"all";app.review.index=0;app.review.connectionPattern="";
@@ -2620,7 +2670,7 @@
     }
 
     function renderAll({ preserveReviewDraft = false } = {}) {
-      renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
+      renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderTrainingGovernance(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
       if (app.view === "graph") renderActiveGraph();
     }
 
@@ -3544,6 +3594,15 @@
       const scopeLabels={item_only:"This review only",exact_duplicates:"Exact duplicates",policy_evidence:"Teach Kaya"};active.slice(0,8).forEach(item=>{const row=el("div","review-history-row"),copy=el("div","");copy.append(el("strong","",`${humanize(item.action)} · ${reviewReasonDisplay(item.reason_code)}`),el("span","",` ${humanize(item.item_type)} · ${scopeLabels[item.decision_scope]||"Legacy training evidence"} · ${formatDate(item.created_at)}`));row.append(copy,el("span","",item.reason_text||"No additional note"));if(item.proposal_id||item.item_type==="refinery"){const undo=el("button","ghost-btn","Undo");undo.type="button";undo.addEventListener("click",()=>undoReviewDecision(item.review_id));row.append(undo);}else row.append(el("span","","Preserved in source workflow"));history.append(row);});
     }
 
+    function renderTrainingGovernance(){
+      if(!app.data)return;
+      const neighborhood=app.data.review_inbox?.neighborhood_training||{},evaluations=neighborhood.evaluations||[],schemaHost=document.getElementById("schema-evaluation-list");document.getElementById("schema-training-total").textContent=`${formatNum(evaluations.length)} evaluated`;document.getElementById("schema-training-rule").textContent=neighborhood.rule||"Named project and service neighborhoods require repeated approved memories across independent contexts.";schemaHost.replaceChildren();
+      if(!evaluations.length)schemaHost.append(emptyState("No named neighborhood candidates","Cortex still uses broad Projects, Services, Tool use, and Credential references. A named map area appears only after it earns enough evidence."));
+      evaluations.slice(0,12).forEach(item=>{const row=el("article",`schema-evaluation ${item.decision||"held"}`),copy=el("div","");copy.append(el("strong","",`${humanize(item.category)}: ${item.display_name}`),el("p","",`${item.reason} Evidence: ${formatNum(item.memory_count||0)} memories across ${formatNum(item.context_count||0)} contexts.`));row.append(copy,el("span","",humanize(item.decision)));schemaHost.append(row);});
+      const dataset=app.data.learning_experiences||{},counts=dataset.counts||{},total=Object.values(counts).reduce((sum,value)=>sum+Number(value||0),0),experienceHost=document.getElementById("experience-stat-grid");document.getElementById("experience-training-total").textContent=`${formatNum(total)} examples`;experienceHost.replaceChildren();[["Candidates noticed",counts.candidate_observed||0],["Memories selected",counts.memory_selected||0],["Actually used",counts.memory_used||0],["Outcomes labeled",counts.outcome_labeled||0]].forEach(([label,value])=>{const card=el("div","experience-stat");card.append(el("span","",label),el("strong","",formatNum(value)));experienceHost.append(card);});document.getElementById("experience-claim-boundary").textContent=dataset.claim_boundary||"The default export contains no memory text and trains Cortex policies, not Kaya’s base model.";
+      const filter=document.getElementById("decision-log-filter")?.value||"all",entries=(app.data.decision_log||[]).filter(item=>filter==="all"||item.category===filter),ledger=document.getElementById("decision-ledger-list");ledger.replaceChildren();if(!entries.length)ledger.append(emptyState("No matching decisions yet","Admission, review, map, policy, recall-set, and lifecycle decisions will appear here with their reason and effect."));entries.slice(0,40).forEach(item=>{const row=el("article","decision-ledger-row"),kind=el("div","decision-ledger-kind",`${humanize(item.category)}\n${humanize(item.action)}`),copy=el("div","decision-ledger-copy"),status=item.reversed_at?"Reversed":item.reversible?"Reversible":"Recorded";copy.append(el("strong","",item.summary||humanize(item.action)),el("p","",`${humanize(item.scope||"item only")} · ${status} · affected ${formatNum(item.affected_ids?.length||0)}`));const details=el("details",""),summary=el("summary","","See before, after, and IDs"),pre=el("pre","",JSON.stringify({affected_ids:item.affected_ids||[],before:item.before||{},after:item.after||{}},null,2));details.append(summary,pre);copy.append(details);const meta=el("div","decision-ledger-meta",`${item.actor||"cortex"}\n${formatDate(item.created_at)}`);row.append(kind,copy,meta);ledger.append(row);});
+    }
+
     function policySelectorText(selector){if(selector?.src_kind&&selector?.dst_kind){const endpoint=prefix=>`${humanize(selector[`${prefix}_source_category`]||"matching")} ${humanize(selector[`${prefix}_kind`]||"memory")}`;return`${endpoint("src")} ↔ ${endpoint("dst")}`;}return Object.entries(selector||{}).map(([key,value])=>`${humanize(key)} = ${humanize(value)}`).join(" · ")||"All matching evidence";}
     function policyChangeText(change){return Object.entries(change||{}).map(([key,value])=>`${humanize(key)}: ${typeof value==="number"&&key.includes("adjustment")?signed(value,3):humanize(value)}`).join(" · ")||"No core adjustment";}
     function goToTrainingReviews(domain="") {const filters={connection:"connections",retention:"cleanup",admission:"creation",retrieval:"accuracy"};app.review.filter=filters[domain]||"creation";app.review.index=0;app.graph.highlightEdge=null;setView("review");renderReviewInbox();requestAnimationFrame(()=>document.querySelector(".review-filter-bar")?.scrollIntoView({behavior:"smooth",block:"start"}));}
@@ -3664,7 +3723,7 @@
       document.getElementById("outcome-write-status").textContent=writeEnabled?"Audited labels enabled":"Read-only on this host";
       const host=document.getElementById("outcome-task-list");host.replaceChildren();
       if(!tasks.length){host.append(emptyState("No attributed tasks yet","Use Kaya on a memory-bearing task. Once the response uses recalled evidence, it becomes eligible for an outcome label."));}
-      tasks.slice(0,12).forEach(task=>{const card=el("article","outcome-task"),head=el("div","outcome-task-head"),query=String(task.query||"Private recall task"),current=String(task.label_outcome||"");head.append(el("strong","",truncate(query,150)),el("span","",`${humanize(task.task_type||"general")} · ${timeAgo(new Date(task.created_at))}`));card.append(head,el("p","",`${formatNum(task.used_count||0)} attributed of ${formatNum(task.selected_count||0)} selected · ${humanize(task.recall_mode||"unknown")} recall · ${formatNum(task.estimated_tokens||0)} estimated tokens`));const memories=el("div","outcome-memory-strip");(task.memories||[]).slice(0,5).forEach(memory=>{const button=el("button","",truncate(cleanMemory(memory.content),72));button.type="button";button.title=cleanMemory(memory.content);button.addEventListener("click",()=>selectMemory(memory.memory_id));memories.append(button);});card.append(memories);const actions=el("div","outcome-actions");[["helpful","Helpful"],["validated","Validated"],["harmful","Harmful"],["corrected","Corrected"]].forEach(([outcome,label])=>{const button=el("button",`outcome-choice ${["harmful","corrected"].includes(outcome)?"negative":""} ${current===outcome?"active":""}`,label);button.type="button";button.disabled=!writeEnabled;button.addEventListener("click",()=>labelOutcomeTask(task.task_id,outcome,button));actions.append(button);});if(current){const undo=el("button","outcome-choice","Undo label");undo.type="button";undo.disabled=!writeEnabled;undo.addEventListener("click",()=>undoOutcomeTask(task.task_id,undo));actions.append(undo);}card.append(actions);host.append(card);});
+      tasks.slice(0,12).forEach(task=>{const card=el("article","outcome-task"),head=el("div","outcome-task-head"),query=String(task.query||"Private recall task"),current=String(task.label_outcome||"");head.append(el("strong","",truncate(query,150)),el("span","",`${humanize(task.task_type||"general")} · ${timeAgo(new Date(task.created_at))}`));card.append(head,el("p","",`${formatNum(task.used_count||0)} attributed of ${formatNum(task.selected_count||0)} selected · ${humanize(task.recall_mode||"unknown")} recall · ${formatNum(task.estimated_tokens||0)} estimated tokens`));const memories=el("div","outcome-memory-strip");(task.memories||[]).slice(0,5).forEach(memory=>{const button=el("button","",truncate(cleanMemory(memory.content),72));button.type="button";button.title=cleanMemory(memory.content);button.addEventListener("click",()=>selectMemory(memory.memory_id));memories.append(button);});card.append(memories);if(task.why_recalled){const why=el("details","outcome-why"),summary=el("summary","","Why Kaya recalled these memories"),list=el("div","outcome-why-list");(task.why_recalled.candidates||[]).slice(0,12).forEach(candidate=>{const row=el("div",`outcome-why-row ${candidate.selected?"selected":"rejected"}`);row.append(el("strong","",`${candidate.selected?"Used in context":"Not selected"} · ${humanize(candidate.kind||"memory")} · score ${Number(candidate.score||0).toFixed(3)}`),el("span","",candidate.reason||"No selection reason recorded."),el("p","",truncate(cleanMemory(candidate.content_preview||candidate.memory_id||"Memory"),150)));list.append(row);});why.append(summary,el("p","",task.why_recalled.reason||"Cortex ran bounded retrieval for this task."),list);card.append(why);}const actions=el("div","outcome-actions");[["helpful","Helpful"],["validated","Validated"],["harmful","Harmful"],["corrected","Corrected"]].forEach(([outcome,label])=>{const button=el("button",`outcome-choice ${["harmful","corrected"].includes(outcome)?"negative":""} ${current===outcome?"active":""}`,label);button.type="button";button.disabled=!writeEnabled;button.addEventListener("click",()=>labelOutcomeTask(task.task_id,outcome,button));actions.append(button);});if(current){const undo=el("button","outcome-choice","Undo label");undo.type="button";undo.disabled=!writeEnabled;undo.addEventListener("click",()=>undoOutcomeTask(task.task_id,undo));actions.append(undo);}card.append(actions);host.append(card);});
       renderPrivateEvaluation(evaluation||{});
     }
 
@@ -4136,13 +4195,15 @@
         applies.append(el("p","memory-card-summary",presentation.applies_when||"Applies everywhere"));
         [["Mode",humanize(memory.context_mode||"standalone")],["Scope",formatMap(memory.scope)],["Entities",formatList(memory.entities)],["Preconditions",formatMap(memory.preconditions)],["Systems",formatList(memory.applicable_systems)],["Versions",formatList(memory.applicable_versions)],["Valid window",`${memory.valid_from||"open"} → ${memory.valid_to||"open"}`],["Metadata complete",`${Math.round(Number(memory.metadata_completeness||0)*100)}%`]].forEach(([name,value])=>contextDl.append(el("dt","",name),el("dd","",value)));
         applies.append(contextDl);body.append(applies);
+        const neighborhoodSection=detailSection("Where this memory lives"),neighborhoodRows=payload.neighborhoods||[];
+        if(neighborhoodRows.length){neighborhoodRows.forEach(item=>{const card=el("div","connection");card.append(el("strong","",item.label),el("p","",item.explanation||"Assigned by the current semantic grouping rule."),el("span","",`${humanize(item.category)} · ${Math.round(Number(item.confidence||0)*100)}% assignment confidence${item.safety_class==="secret_reference_only"?" · secret references only":""}`));neighborhoodSection.append(card);});}else neighborhoodSection.append(el("p","small-meta","No semantic neighborhood has been assigned yet. The memory remains directly searchable."));body.append(neighborhoodSection);
         const retained=detailSection("Why it is retained");
         retained.append(el("p","memory-card-summary",presentation.retention_reason||"Retained by the storage quality checks."));
         const flags=presentation.readability_flags||[];
         if(flags.length){const flagRow=el("div","memory-card-flags");flags.forEach(flag=>flagRow.append(el("span","flag-chip",humanize(flag))));retained.append(flagRow);}
         const scores=el("div","score-grid");[["Confidence",memory.confidence],["Currentness",memory.currentness_confidence],["Importance",memory.importance],["Uniqueness",memory.uniqueness],["Trust",memory.trust],["Volatility",memory.volatility]].forEach(([name,value])=>scores.append(scoreBar(name,value)));retained.append(scores);
         const counters=el("div","counter-grid");[["Retrieved",memory.retrieved_count],["Selected",memory.selected_count],["Used",memory.used_count],["Helpful",Number(memory.helpful_count||0)+Number(memory.validated_count||0)],["Harmful",Number(memory.harmful_count||0)+Number(memory.false_positive_count||0)],["Success",memory.success_count],["Versions",payload.versions.length],["Links",payload.edges.length]].forEach(([name,value])=>{const c=el("div","counter");c.append(el("strong","",formatNum(value)),el("span","",name));counters.append(c);});retained.append(counters);body.append(retained);
-        const provenance=detailSection("Source and evidence"),dl=el("dl","detail-grid");[["Source",`${humanize(memory.source_category)} · ${humanize(memory.source_type)}`],["Reference",memory.source_ref||"—"],["Observed",formatDate(memory.observed_at)],["Extraction",humanize(memory.extraction_method)],["Claim",memory.subject?`${memory.subject} · ${memory.predicate} · ${memory.object_value}`:"Unstructured"],["Source context",memory.source_context||"None"],["Memory ID",memory.id],["Role decided by",`${humanize(memory.role_method||"legacy_default")}${memory.role_reviewed_at?` · reviewed ${formatDate(memory.role_reviewed_at)}`:""}`],["Protected",memory.protected?"Yes":"No"],["Dirty",memory.dirty?(memory.dirty_reason||"Yes"):"No"]].forEach(([name,value])=>dl.append(el("dt","",name),el("dd","",value)));provenance.append(dl);body.append(provenance);
+        const provenance=detailSection("Source and evidence"),dl=el("dl","detail-grid"),origin=memory.origin_source_category||memory.source_category,approval=memory.approval_state==="operator_approved"?"Allowed into recall by operator review; not independently verified":humanize(memory.approval_state||"unreviewed");[["Original source",`${humanize(origin)} · ${humanize(memory.source_type)}`],["Review status",approval],["Stored category",humanize(memory.source_category)],["Reference",memory.source_ref||"—"],["Observed",formatDate(memory.observed_at)],["Extraction",humanize(memory.extraction_method)],["Claim",memory.subject?`${memory.subject} · ${memory.predicate} · ${memory.object_value}`:"Unstructured"],["Source context",memory.source_context||"None"],["Memory ID",memory.id],["Role decided by",`${humanize(memory.role_method||"legacy_default")}${memory.role_reviewed_at?` · reviewed ${formatDate(memory.role_reviewed_at)}`:""}`],["Protected",memory.protected?"Yes":"No"],["Dirty",memory.dirty?(memory.dirty_reason||"Yes"):"No"]].forEach(([name,value])=>dl.append(el("dt","",name),el("dd","",value)));provenance.append(dl);body.append(provenance);
         const rawSection=detailSection("Raw record");
         const raw=document.createElement("details");raw.className="raw-evidence";if(role!=="reference")raw.open=false;
         const rawSummary=document.createElement("summary");rawSummary.textContent="View raw stored content (unchanged evidence)";

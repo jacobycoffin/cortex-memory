@@ -66,6 +66,22 @@ _PATTERNS: tuple[tuple[str, re.Pattern[str], float, float], ...] = (
 
 _EXPLICIT = re.compile(r"^\s*(?:please\s+)?remember(?:\s+that)?\s*[:,.-]?\s*", re.I)
 _ASSISTANT_SIGNALS = re.compile(r"\b(?:verified|resolved|root cause|the fix|successfully|decision|configured)\b", re.I)
+_TRANSIENT_REQUEST = re.compile(
+    r"\b(?:i|we)\s+(?:want|need|plan)\s+(?:you\s+)?to\b|"
+    r"\b(?:today|right now|for now|this turn|in this response)\b",
+    re.I,
+)
+_STABLE_PREFERENCE = re.compile(
+    r"\b(?:always|never|usually|generally|by default|from now on|whenever)\b", re.I
+)
+_ASSISTANT_STATUS = re.compile(
+    r"\b(?:i(?:'ve| have)?|we(?:'ve| have)?)\s+(?:completed|finished|deployed|updated|tested)|"
+    r"\b(?:done|tests? pass(?:ed)?|successfully (?:completed|deployed|updated|ran))\b",
+    re.I,
+)
+_DURABLE_ASSISTANT_EXPLANATION = re.compile(
+    r"\b(?:root cause|workaround|fixed by|the fix|command is|verified with)\b", re.I
+)
 
 
 @dataclass(frozen=True)
@@ -94,7 +110,20 @@ def extract_candidates(text: str, *, role: str = "user") -> list[Candidate]:
             sentence = normalize_text(_EXPLICIT.sub("", sentence))
         if not sentence or (_QUESTION.search(sentence) and not explicit):
             continue
+        if (
+            role == "user"
+            and not explicit
+            and _TRANSIENT_REQUEST.search(sentence)
+            and not _STABLE_PREFERENCE.search(sentence)
+        ):
+            continue
         if role == "assistant" and not _ASSISTANT_SIGNALS.search(sentence):
+            continue
+        if (
+            role == "assistant"
+            and _ASSISTANT_STATUS.search(sentence)
+            and not _DURABLE_ASSISTANT_EXPLANATION.search(sentence)
+        ):
             continue
 
         match = None

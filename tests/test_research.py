@@ -163,6 +163,9 @@ class ResearchLabTests(unittest.TestCase):
         self.store.log_access(first, "retrieved")
         self.assertTrue(self.store.correct_memory(first, "Deployments require a passing live health check."))
         self.store.log_access(first, "injected")
+        pending = research_snapshot(self.store)["reconsolidation"]
+        self.assertEqual(pending["events"][0]["status"], "pending")
+        self.store.log_access(first, "used")
         reconsolidation = research_snapshot(self.store)["reconsolidation"]
         self.assertEqual(reconsolidation["after_recall"], 1)
         self.assertEqual(reconsolidation["events"][0]["status"], "reexposed")

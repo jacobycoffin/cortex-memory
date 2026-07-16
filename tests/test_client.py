@@ -7,10 +7,92 @@ from pathlib import Path
 
 from tests._bootstrap import ROOT
 
-from cortex.client import CortexMemory
+from cortex.client import CortexMemory, RecallBatch
+from cortex.retrieval import MemoryRetriever, RetrievalResult
 
 
 class CortexClientTests(unittest.TestCase):
+    def test_recall_context_carries_origin_and_review_without_claiming_truth(self) -> None:
+        result = RetrievalResult(
+            memory={
+                "id": "memory-provenance-123",
+                "kind": "semantic",
+                "content": "The release name is Juniper.",
+                "state": "active",
+                "source_type": "conversation",
+                "source_category": "OPERATOR_APPROVED",
+                "origin_source_category": "USER_STATED",
+                "source_ref": "session-42",
+                "approval_state": "operator_approved",
+            },
+            score=0.74,
+            components={"lexical": 0.8},
+            estimated_tokens=24,
+        )
+
+        memory = result.as_dict()
+        batch = RecallBatch(
+            task_id="task-provenance",
+            query="What is the release name?",
+            memories=[memory],
+            _store=object(),  # context rendering does not touch storage
+        )
+        context = batch.context()
+
+        self.assertEqual(memory["source_type"], "conversation")
+        self.assertEqual(memory["source_category"], "OPERATOR_APPROVED")
+        self.assertEqual(memory["origin_source_category"], "USER_STATED")
+        self.assertEqual(memory["source_ref"], "session-42")
+        self.assertEqual(memory["approval_state"], "operator_approved")
+        self.assertIn("source: user-stated", context)
+        self.assertIn("ref: session-42", context)
+        self.assertIn("review: approved, not independently verified", context)
+        self.assertNotIn("source: operator-approved", context)
+
+    def test_repeated_retrieval_and_injection_do_not_raise_activation(self) -> None:
+        baseline = {
+            "kind": "semantic",
+            "volatility": 0.4,
+            "updated_at": "2026-01-01T00:00:00+00:00",
+            "last_used_at": None,
+            "last_helpful_at": None,
+            "last_injected_at": None,
+            "retrieved_count": 0,
+            "injected_count": 0,
+            "used_count": 0,
+            "success_count": 0,
+            "confirmed_count": 0,
+            "helpful_count": 0,
+            "validated_count": 0,
+        }
+        repeatedly_seen = {
+            **baseline,
+            "retrieved_count": 10_000,
+            "injected_count": 10_000,
+            "last_injected_at": "2026-07-16T12:00:00+00:00",
+            # Some legacy irrelevant-access paths updated this timestamp even
+            # though the memory was never actually used.
+            "last_used_at": "2026-07-16T12:00:00+00:00",
+        }
+
+        self.assertAlmostEqual(
+            MemoryRetriever._activation(baseline),
+            MemoryRetriever._activation(repeatedly_seen),
+            places=7,
+        )
+        previously_used = {**baseline, "used_count": 1, "last_used_at": baseline["updated_at"]}
+        later_ignored = {
+            **previously_used,
+            "last_used_at": "2026-07-16T12:00:00+00:00",
+            "retrieved_count": 1,
+            "injected_count": 1,
+        }
+        self.assertAlmostEqual(
+            MemoryRetriever._activation(previously_used),
+            MemoryRetriever._activation(later_ignored),
+            places=7,
+        )
+
     def test_agent_neutral_remember_recall_feedback_and_sleep(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with CortexMemory(Path(tmp) / "cortex.db") as memory:

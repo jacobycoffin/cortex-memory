@@ -470,7 +470,7 @@ def _replay_usage(store: CortexStore, run_id: str, *, limit: int = 1000) -> dict
                FROM usage_records u
                LEFT JOIN sleep_usage_state s ON s.task_id=u.task_id
                WHERE s.task_id IS NULL AND u.used=1
-                 AND u.outcome IN ('used','helpful','validated')
+                 AND u.outcome IN ('helpful','validated')
                GROUP BY u.task_id ORDER BY first_created ASC LIMIT ?""",
             (limit,),
         ).fetchall()
@@ -480,7 +480,7 @@ def _replay_usage(store: CortexStore, run_id: str, *, limit: int = 1000) -> dict
             rows = store._conn.execute(
                 f"""SELECT u.task_id,u.memory_id,u.session_id,u.outcome,u.attribution
                     FROM usage_records u WHERE u.task_id IN ({placeholders}) AND u.used=1
-                      AND u.outcome IN ('used','helpful','validated')
+                      AND u.outcome IN ('helpful','validated')
                     ORDER BY u.created_at ASC""",
                 tuple(task_ids),
             ).fetchall()
@@ -541,6 +541,10 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
     with store._lock:
         rows = store._conn.execute(
             """SELECT e.src_id,e.dst_id,COUNT(DISTINCT e.witness_key) witnesses,
+                      COUNT(DISTINCT CASE WHEN e.evidence_kind='helpful_co_use'
+                        THEN e.witness_key END) helpful_witnesses,
+                      COUNT(DISTINCT CASE WHEN e.evidence_kind='episode_replay'
+                        THEN e.witness_key END) episode_witnesses,
                       AVG(e.score) avg_score,COUNT(*) evidence_count
                FROM sleep_association_evidence e
                JOIN memories s ON s.id=e.src_id
@@ -568,6 +572,17 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
         )
         if int(row["witnesses"]) < required_witnesses:
             continue
+        helpful_witnesses = int(row["helpful_witnesses"] or 0)
+        episode_witnesses = int(row["episode_witnesses"] or 0)
+        direct_similarity = feature_similarity(
+            str(src_memory.get("content") or ""), str(dst_memory.get("content") or "")
+        )
+        episode_only = helpful_witnesses == 0
+        if episode_only and (
+            episode_witnesses < max(3, required_witnesses)
+            or direct_similarity < 0.35
+        ):
+            continue
         with store._lock:
             prior_applied = store._conn.execute(
                 """SELECT MAX(evidence_count) n FROM sleep_proposals
@@ -593,7 +608,8 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
             continue
         kind = "association_reinforcement" if existing else "association"
         rationale = (
-            f"The pair co-occurred in {int(row['witnesses'])} independent replay witnesses; "
+            f"The pair has {helpful_witnesses} helpful co-use and {episode_witnesses} episode "
+            f"witnesses ({int(row['witnesses'])} independent total); "
             f"the active threshold for this pattern is {required_witnesses}. "
             "Review or reinforce only because multiple observations agree."
             + (
@@ -614,12 +630,15 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
             status="proposed",
             details={
                 "distinct_witnesses": int(row["witnesses"]),
+                "helpful_witnesses": helpful_witnesses,
+                "episode_witnesses": episode_witnesses,
+                "direct_similarity": round(direct_similarity, 6),
                 "required_witnesses": required_witnesses,
                 "operator_policy_versions": connection_policy.get("matched_versions", []),
             },
         )
         proposed += 1
-        if config.mode == "apply":
+        if config.mode == "apply" and helpful_witnesses >= required_witnesses:
             _apply_association(store, run_id, proposal_id, src_id, dst_id, evidence_count)
             applied += 1
     return {"proposals": proposed, "applied": applied}

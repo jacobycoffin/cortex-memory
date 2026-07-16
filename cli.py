@@ -88,6 +88,26 @@ def main() -> int:
         "context-feedback", help="Inspect project/task-specific memory usefulness evidence"
     )
     context_feedback.add_argument("--limit", type=int, default=100)
+    neighborhood_report = sub.add_parser(
+        "neighborhood-report",
+        help="Explain why named project/service neighborhoods were admitted or held back",
+    )
+    neighborhood_report.add_argument("--limit", type=int, default=100)
+    decision_log = sub.add_parser(
+        "decision-log", help="Show the unified admission, review, policy, schema, and lifecycle timeline"
+    )
+    decision_log.add_argument("--limit", type=int, default=200)
+    learning_dataset = sub.add_parser(
+        "learning-dataset",
+        help="Export privacy-safe Cortex learning experiences for replay or policy training",
+    )
+    learning_dataset.add_argument("--limit", type=int, default=10000)
+    learning_dataset.add_argument("--jsonl", action="store_true")
+    learning_dataset.add_argument(
+        "--include-text",
+        action="store_true",
+        help="Explicit local opt-in to include sanitized memory/proposal text",
+    )
     sub.add_parser(
         "quality-report",
         help="Show retrieval precision, false positives, context failures, health, and Sleep evidence",
@@ -266,6 +286,18 @@ def main() -> int:
             )
         elif args.command == "context-feedback":
             result = store.context_feedback_summary(limit=args.limit)
+        elif args.command == "neighborhood-report":
+            result = store.neighborhood_training_snapshot(limit=args.limit)
+        elif args.command == "decision-log":
+            result = store.decision_log(limit=args.limit)
+        elif args.command == "learning-dataset":
+            result = store.learning_experience_dataset(
+                limit=args.limit, include_text=args.include_text
+            )
+            if args.jsonl:
+                for item in result["experiences"]:
+                    print(json.dumps(item, ensure_ascii=False, default=str))
+                return 0
         elif args.command == "quality-report":
             result = store.memory_quality_report()
         elif args.command == "refinery-report":

@@ -290,6 +290,7 @@ Keep mutation modes and metacognition in `shadow` until you have reviewed your o
 
 - [Scientific Foundations (PDF)](output/pdf/Cortex-Scientific-Foundations.pdf) — an 11-page visual guide to 25 primary sources, their engineering translations, and the claims Cortex should and should not make.
 - [Brain and memory foundations](docs/BRAIN_FOUNDATIONS.md) — annotated primary sources, anatomy cautions, and the complete research-to-feature map.
+- [Cognitive baseline](docs/CORTEX_COGNITIVE_BASELINE.md) — the complete human-memory-inspired operating plan, agent lifecycle, training path, semantic schema rules, and privacy-safe dataset workflow.
 - [Architecture](docs/ARCHITECTURE.md) — data model, retrieval, learning, repair, and trust boundaries.
 - [Harness integration](docs/INTEGRATION.md) — the portable API and event contract for any agent runtime.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.

@@ -12,6 +12,48 @@ from cortex.store import CortexStore
 
 
 class MetacognitiveAssessmentTests(unittest.TestCase):
+    def test_new_source_priors_preserve_origin_and_do_not_equate_approval_with_truth(self) -> None:
+        def source_prior(source_category: str, *, origin: str | None = None) -> float:
+            memory = {
+                "id": f"source-{source_category}-{origin or 'none'}",
+                "source_category": source_category,
+                "confidence": 0.65,
+                "trust": 0.65,
+                "success_count": 0,
+                "confirmed_count": 0,
+                "helpful_count": 0,
+                "validated_count": 0,
+                "harmful_count": 0,
+                "false_positive_count": 0,
+                "dirty": 0,
+                "state": "active",
+            }
+            if origin:
+                memory["origin_source_category"] = origin
+            result = RetrievalResult(
+                memory=memory,
+                score=0.5,
+                components={
+                    "lexical": 0.5,
+                    "phrase": 0.0,
+                    "semantic": 0.0,
+                    "currentness": 0.7,
+                    "utility": 0.5,
+                    "stale_risk": 0.0,
+                    "wrong_rate": 0.0,
+                    "superseded": 0.0,
+                },
+                estimated_tokens=20,
+            )
+            return float(assess_retrieval(result).features["source_prior"])
+
+        self.assertGreater(source_prior("USER_STATED"), source_prior("OPERATOR_APPROVED"))
+        self.assertGreater(source_prior("OPERATOR_APPROVED"), source_prior("AGENT_PROPOSED"))
+        self.assertEqual(
+            source_prior("OPERATOR_APPROVED", origin="AGENT_PROPOSED"),
+            source_prior("AGENT_PROPOSED"),
+        )
+
     def test_source_monitoring_is_separate_from_retrieval_score(self) -> None:
         memory = {
             "id": "verified-memory",

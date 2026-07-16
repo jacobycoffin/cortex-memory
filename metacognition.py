@@ -11,9 +11,13 @@ from .retrieval import RetrievalResult
 SOURCE_PRIORS = {
     "TOOL_VERIFIED": 0.92,
     "USER_EXPLICIT": 0.88,
+    "USER_STATED": 0.82,
     "DOCUMENT_EXTRACTED": 0.80,
+    # An operator can approve storage without independently verifying truth.
+    "OPERATOR_APPROVED": 0.72,
     "REFLECTION": 0.62,
     "AGENT_INFERENCE": 0.52,
+    "AGENT_PROPOSED": 0.48,
 }
 
 
@@ -59,7 +63,11 @@ def assess_retrieval(
 
     memory = result.memory
     components = result.components
-    source_category = str(memory.get("source_category") or "AGENT_INFERENCE")
+    source_category = str(
+        memory.get("origin_source_category")
+        or memory.get("source_category")
+        or "AGENT_INFERENCE"
+    )
     source_prior = SOURCE_PRIORS.get(source_category, 0.66)
     direct_relevance = max(
         float(components.get("lexical", 0.0)),

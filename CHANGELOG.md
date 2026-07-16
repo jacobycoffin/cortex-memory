@@ -2,6 +2,10 @@
 
 ## 0.3.0-dev.1 — Unreleased
 
+- advanced the database to schema 24 with evidence-earned named project/service neighborhoods, separate origin and operator-approval provenance, append-only privacy-safe learning experiences, and one inspectable decision ledger for admission, review, schema, recall-set, policy, and lifecycle changes;
+- made retrieval, retention, reconsolidation, and Sleep reinforcement depend on attributed use, helpful outcomes, and independent contexts instead of repeated retrieval or prompt injection, with selected-but-unused inhibition and relation-specific graph activation;
+- added conservative prospective recall, stricter transient/status-noise capture filters, preview-confirmed clean-start recall sets, unified provider context budgeting, privacy-safe dataset export, and the human-memory-inspired cognitive baseline and harness lifecycle;
+- upgraded Train Kaya, the memory drawer, Outcome Lab, and the memory map so operators can see why a candidate was noticed, where it would live, why a memory was or was not selected, why a neighborhood exists, and the evidence behind every visible connection;
 - added schema 20 Review Copilot interpretations: an opt-in bounded LLM can translate an operator's natural-language connection reasoning into a validated action, relationship, and item-only or pattern-training scope; it may ask one clarifying question, never applies its own recommendation, and links the original explanation and structured preview to the later confirmed review without creating recallable memory;
 - added a portable Cortex-first harness contract, machine-readable `harness-contract` manifest, and `CortexHarnessAdapter` reference lifecycle so any Python agent harness can run bounded recall before inference, resolve actually used evidence afterward, and reserve harness-native memory for a bootstrap pointer and temporary session scratch;
 - strengthened the Hermes system prompt and tool description so Cortex is explicitly the primary durable store for user facts, preferences, decisions, corrections, and verified procedures rather than a secondary copy of Hermes's bounded built-in memory;

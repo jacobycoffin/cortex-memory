@@ -637,7 +637,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     )
                     return
                 if parsed.path == "/api/recall-sets/activate":
-                    result = store.start_trained_recall_set(actor=actor)
+                    result = store.start_trained_recall_set(
+                        actor=actor,
+                        expected_preview_id=str(payload.get("preview_id") or ""),
+                    )
                     self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return
                 if parsed.path == "/api/recall-sets/switch":

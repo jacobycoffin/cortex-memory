@@ -27,9 +27,14 @@ _HALF_LIFE_DAYS = {
 _SOURCE_RELIABILITY = {
     "TOOL_VERIFIED": 0.95,
     "USER_EXPLICIT": 0.90,
+    "USER_STATED": 0.84,
     "DOCUMENT_EXTRACTED": 0.82,
+    # Review is a useful governance signal, but it is not independent
+    # verification of the underlying claim.
+    "OPERATOR_APPROVED": 0.76,
     "REFLECTION": 0.62,
     "AGENT_INFERENCE": 0.52,
+    "AGENT_PROPOSED": 0.48,
 }
 
 _MEMORY_TYPE_PRIOR = {
@@ -80,11 +85,19 @@ class RetrievalResult:
     estimated_tokens: int
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        source_category = str(self.memory.get("source_category") or "AGENT_INFERENCE")
+        origin_source_category = str(
+            self.memory.get("origin_source_category") or source_category
+        )
+        record = {
             "id": self.memory["id"],
             "kind": self.memory["kind"],
             "content": self.memory["content"],
             "state": self.memory["state"],
+            "source_type": self.memory.get("source_type"),
+            "source_category": source_category,
+            "origin_source_category": origin_source_category,
+            "source_ref": self.memory.get("source_ref"),
             "context_mode": str(self.memory.get("context_mode") or "standalone"),
             "scope": _memory_context_map(self.memory, "scope", "scope_json"),
             "entities": _memory_context_list(self.memory, "entities", "entities_json"),
@@ -102,6 +115,9 @@ class RetrievalResult:
             "components": {k: round(v, 5) for k, v in self.components.items()},
             "estimated_tokens": self.estimated_tokens,
         }
+        if self.memory.get("approval_state") is not None:
+            record["approval_state"] = str(self.memory["approval_state"])
+        return record
 
 
 @dataclass(frozen=True)
@@ -193,6 +209,7 @@ class MemoryRetriever:
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
+        prospective_candidates = self.store.due_prospective_memories(limit=min(2, limit))
         candidates_by_id: dict[str, dict[str, Any]] = {}
         for candidate in lexical_candidates:
             candidates_by_id[str(candidate["id"])] = candidate
@@ -222,6 +239,16 @@ class MemoryRetriever:
                 )
             else:
                 candidates_by_id[memory_id] = candidate
+        for candidate in prospective_candidates:
+            memory_id = str(candidate["id"])
+            if memory_id in candidates_by_id:
+                candidates_by_id[memory_id]["prospective_due_score"] = 1.0
+            else:
+                candidates_by_id[memory_id] = candidate
+        experience_strengths = self.store.memory_experience_strengths(list(candidates_by_id))
+        for memory_id, evidence in experience_strengths.items():
+            if memory_id in candidates_by_id:
+                candidates_by_id[memory_id].update(evidence)
         candidates = list(candidates_by_id.values())
         superseded = self.store.superseded_ids(list(candidates_by_id)) if temporal_mode == "current" else set()
         contradicted = self.store.contradicted_ids(list(candidates_by_id))
@@ -576,7 +603,10 @@ class MemoryRetriever:
         memory_type = _MEMORY_TYPE_PRIOR.get(str(memory.get("kind") or "semantic"), 0.60)
         stale_risk = self._stale_risk(memory)
         harmful = int(memory.get("harmful_count", 0)) + int(memory["false_positive_count"])
-        wrong_rate = harmful / max(1, int(memory["injected_count"]))
+        # Only judged use is evidence about correctness. Merely injecting the
+        # same item again must not dilute its observed error rate.
+        judged = int(memory.get("used_count", 0)) + harmful
+        wrong_rate = harmful / max(1, judged)
         context_components = _context_components(memory, context or RetrievalContext(goal=query), query)
         context_feedback = self.store.context_feedback(
             str(memory["id"]),
@@ -626,6 +656,7 @@ class MemoryRetriever:
             - 0.08 * stale_risk
             - 0.12 * min(1.0, wrong_rate)
             - 0.15 * float(contradicted)
+            + 0.18 * float(memory.get("prospective_due_score") or 0.0)
         )
         if superseded:
             score -= 0.18
@@ -669,12 +700,15 @@ class MemoryRetriever:
             "superseded": float(superseded),
             "contradiction_risk": float(contradicted),
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
+            "prospective_due": float(memory.get("prospective_due_score") or 0.0),
             "context_candidate": min(1.0, float(memory.get("context_candidate_score", 0.0)) / 4.0),
             "context_historical_usefulness": float(context_feedback["usefulness"]),
             "context_feedback_observations": min(
                 1.0, float(context_feedback["observations"]) / 10.0
             ),
             "context_adaptation": context_adaptation,
+            "spaced_reinforcement": float(memory.get("spaced_reinforcement") or 0.0),
+            "selected_unused": min(1.0, float(memory.get("selected_unused") or 0.0) / 5.0),
             **context_components,
         }
         estimated_tokens = max(12, math.ceil(len(memory["content"]) / 4) + 18)
@@ -682,21 +716,26 @@ class MemoryRetriever:
 
     @staticmethod
     def _activation(memory: dict[str, Any]) -> float:
-        age = _age_days(memory["last_used_at"] or memory["last_injected_at"] or memory["updated_at"])
+        # Retrieval and injection are observations, not successful rehearsal.
+        # An "irrelevant" access can also update last_used_at, so outcome-free
+        # selection cannot safely provide recency credit. Positive outcome
+        # events have their own timestamp; actual use still earns frequency.
+        age = _age_days(memory.get("last_helpful_at") or memory.get("updated_at"))
         half_life = _HALF_LIFE_DAYS.get(memory["kind"], 120.0)
         half_life *= max(0.2, 1.15 - float(memory["volatility"]))
         recency = 1.0 / (1.0 + age / max(1.0, half_life))
         weighted_uses = (
-            0.03 * int(memory["retrieved_count"])
-            + 0.08 * int(memory["injected_count"])
-            + 0.75 * int(memory["used_count"])
+            0.25 * min(2, int(memory["used_count"]))
             + 1.5 * int(memory["success_count"])
             + 2.0 * int(memory["confirmed_count"])
             + 1.5 * int(memory.get("helpful_count", 0))
             + 2.0 * int(memory.get("validated_count", 0))
         )
         frequency = min(1.0, math.log1p(weighted_uses) / math.log(12.0))
-        return min(1.0, 0.58 * recency + 0.42 * frequency)
+        spaced = max(0.0, min(1.0, float(memory.get("spaced_reinforcement") or 0.0)))
+        selected_unused = max(0, int(memory.get("selected_unused") or 0))
+        inhibition = 0.10 * min(1.0, selected_unused / 5.0)
+        return max(0.0, min(1.0, 0.54 * recency + 0.28 * frequency + 0.18 * spaced - inhibition))
 
     @staticmethod
     def _utility(memory: dict[str, Any]) -> float:
@@ -710,7 +749,8 @@ class MemoryRetriever:
         false = int(memory["false_positive_count"]) + int(memory.get("harmful_count", 0))
         # Bayesian smoothing prevents one early success from dominating.
         positive = (successes + 1.5) / (used + 3.0)
-        penalty = false / max(3.0, int(memory["injected_count"]) + 2.0)
+        # Injection is not an outcome and cannot wash out negative feedback.
+        penalty = false / max(3.0, used + false + 2.0)
         return max(0.0, min(1.0, positive - 0.7 * penalty))
 
     @staticmethod
@@ -897,7 +937,12 @@ def _context_components(
 
 
 def _source_reliability(memory: dict[str, Any]) -> float:
-    prior = _SOURCE_RELIABILITY.get(str(memory.get("source_category") or "AGENT_INFERENCE"), 0.64)
+    source_category = str(
+        memory.get("origin_source_category")
+        or memory.get("source_category")
+        or "AGENT_INFERENCE"
+    )
+    prior = _SOURCE_RELIABILITY.get(source_category, 0.64)
     trust = max(0.0, min(1.0, float(memory.get("trust") or 0.0)))
     return max(0.0, min(1.0, 0.55 * prior + 0.45 * trust))
 
