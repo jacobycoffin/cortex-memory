@@ -41,6 +41,7 @@ from .research import (
     undo_sleep_apply_trial,
     update_prospective_item,
 )
+from .retrieval import MemoryRetriever
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
 
@@ -182,6 +183,63 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     evaluation_lock = threading.RLock()
     evaluation_job: dict[str, threading.Thread | None] = {"thread": None}
     schedule_cache: dict[str, object] = {"checked_at": 0.0, "value": None}
+    refinery_lock = threading.RLock()
+    refinery_job: dict[str, threading.Thread | None] = {"thread": None}
+    refinery_runtime: dict[str, object] = {
+        "status": "idle",
+        "phase": "waiting",
+        "progress": 0,
+        "message": "No presentation rebuild is running.",
+        "started_at": None,
+        "completed_at": None,
+        "error": None,
+        "result": None,
+    }
+
+    def refinery_rebuild_status() -> dict[str, object]:
+        with refinery_lock:
+            return json.loads(json.dumps(refinery_runtime, default=str))
+
+    def refinery_rebuild_progress(update: dict[str, object]) -> None:
+        with refinery_lock:
+            refinery_runtime.update(
+                {
+                    "status": "running",
+                    "phase": str(update.get("phase") or "rebuilding"),
+                    "progress": int(update.get("progress") or 0),
+                    "message": str(update.get("message") or "Rebuilding presentations."),
+                }
+            )
+
+    def run_refinery_rebuild() -> None:
+        try:
+            result = store.rebuild_presentations(progress_callback=refinery_rebuild_progress)
+            with refinery_lock:
+                refinery_runtime.update(
+                    {
+                        "status": "completed",
+                        "phase": "completed",
+                        "progress": 100,
+                        "message": (
+                            f"Rebuilt {result.get('rebuilt', 0)} presentations. "
+                            "Raw memory content was not changed."
+                        ),
+                        "completed_at": utc_now(),
+                        "result": result,
+                    }
+                )
+        except Exception as error:
+            with refinery_lock:
+                refinery_runtime.update(
+                    {
+                        "status": "failed",
+                        "phase": "failed",
+                        "progress": 100,
+                        "message": "Presentation rebuild stopped before completing.",
+                        "completed_at": utc_now(),
+                        "error": str(error)[:300],
+                    }
+                )
 
     def sleep_schedule() -> dict[str, object]:
         now = time.monotonic()
@@ -302,6 +360,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path in {
                 "/api/snapshot", "/api/memory", "/api/sleep/status",
                 "/api/benchmark/status", "/api/evaluation/status",
+                "/api/refinery/summary", "/api/refinery/items", "/api/refinery/shadow",
             }:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
@@ -357,6 +416,34 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     return
                 self._json(HTTPStatus.OK, store.explain(memory_id))
                 return
+            if parsed.path == "/api/refinery/summary":
+                summary = store.refinery_summary()
+                summary["rebuild"] = refinery_rebuild_status()
+                summary["review_writes_enabled"] = reviews_enabled
+                self._json(HTTPStatus.OK, summary)
+                return
+            if parsed.path == "/api/refinery/items":
+                params = parse_qs(parsed.query)
+                try:
+                    items = store.refinery_items(
+                        view=params.get("view", ["readable"])[0],
+                        limit=int(params.get("limit", ["60"])[0]),
+                        offset=int(params.get("offset", ["0"])[0]),
+                    )
+                except ValueError as error:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                self._json(HTTPStatus.OK, items)
+                return
+            if parsed.path == "/api/refinery/shadow":
+                params = parse_qs(parsed.query)
+                query_text = params.get("q", [""])[0][:500]
+                if not query_text.strip():
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "q is required"})
+                    return
+                retriever = MemoryRetriever(store)
+                self._json(HTTPStatus.OK, retriever.shadow_tiered_comparison(query_text))
+                return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
@@ -382,6 +469,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/summary/review",
                 "/api/prospective/create",
                 "/api/prospective/update",
+                "/api/refinery/preview",
+                "/api/refinery/action",
+                "/api/refinery/undo",
+                "/api/refinery/rebuild-presentations",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -393,7 +484,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._login()
                 return
             needs_complete_auth = (
-                parsed.path.startswith(("/api/review/", "/api/policy/"))
+                parsed.path.startswith(("/api/review/", "/api/policy/", "/api/refinery/"))
                 or parsed.path in {
                     "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
                     "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
@@ -424,6 +515,25 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path.startswith(("/api/experiment/", "/api/sleep/trial/", "/api/summary/", "/api/prospective/")):
                 self._research_action(parsed.path)
                 return
+            if parsed.path == "/api/refinery/preview":
+                preview_payload = self._read_json()
+                if preview_payload is None:
+                    return
+                try:
+                    preview = store.refinery_preview(
+                        str(preview_payload.get("kind") or ""),
+                        str(preview_payload.get("memory_id") or ""),
+                        target_role=(
+                            str(preview_payload.get("target_role"))
+                            if preview_payload.get("target_role")
+                            else None
+                        ),
+                    )
+                except ValueError as error:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                self._json(HTTPStatus.OK, {"success": True, "preview": preview})
+                return
             if not reviews_enabled:
                 self._json(HTTPStatus.FORBIDDEN, {"error": "guided review changes are disabled on this dashboard"})
                 return
@@ -434,6 +544,55 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 actor = auth.username() if auth_enabled else "local-operator"
                 if parsed.path == "/api/policy/action":
                     self._policy_action(payload, actor=actor)
+                    return
+                if parsed.path == "/api/refinery/action":
+                    proposed = payload.get("proposed_records")
+                    result = store.apply_refinery_action(
+                        str(payload.get("action") or ""),
+                        str(payload.get("memory_id") or ""),
+                        proposed_records=proposed if isinstance(proposed, list) else None,
+                        reason_code=str(payload.get("reason_code") or "unspecified"),
+                        reason_text=str(payload.get("reason_text") or ""),
+                        actor=actor,
+                        decision_scope=str(payload.get("decision_scope") or "item_only"),
+                    )
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
+                    return
+                if parsed.path == "/api/refinery/undo":
+                    changed = store.undo_refinery_action(
+                        str(payload.get("review_id") or ""), actor=actor
+                    )
+                    if not changed:
+                        self._json(HTTPStatus.CONFLICT, {"error": "This refinery decision cannot be reversed."})
+                        return
+                    self._json(HTTPStatus.OK, {"success": True})
+                    return
+                if parsed.path == "/api/refinery/rebuild-presentations":
+                    with refinery_lock:
+                        worker = refinery_job.get("thread")
+                        if worker and worker.is_alive():
+                            self._json(HTTPStatus.CONFLICT, {"error": "a presentation rebuild is already running"})
+                            return
+                        refinery_runtime.update(
+                            {
+                                "status": "running",
+                                "phase": "starting",
+                                "progress": 1,
+                                "message": "Starting a bounded presentation rebuild.",
+                                "started_at": utc_now(),
+                                "completed_at": None,
+                                "error": None,
+                                "result": None,
+                            }
+                        )
+                        worker = threading.Thread(
+                            target=run_refinery_rebuild,
+                            name="cortex-refinery-rebuild",
+                            daemon=True,
+                        )
+                        refinery_job["thread"] = worker
+                        worker.start()
+                    self._json(HTTPStatus.ACCEPTED, refinery_rebuild_status())
                     return
                 if parsed.path == "/api/review/proposal":
                     result = store.decide_review_proposal(
@@ -447,9 +606,11 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return
                 if parsed.path == "/api/review/undo":
-                    changed = store.undo_review_decision(
-                        str(payload.get("review_id") or ""), actor=actor
-                    )
+                    review_id = str(payload.get("review_id") or "")
+                    changed = store.undo_review_decision(review_id, actor=actor)
+                    if not changed:
+                        # Refinery decisions live in their own reversible ledger.
+                        changed = store.undo_refinery_action(review_id, actor=actor)
                     if not changed:
                         self._json(HTTPStatus.CONFLICT, {"error": "This review decision cannot be reversed."})
                         return
@@ -926,4 +1087,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         evaluation_worker = evaluation_job.get("thread")
         if evaluation_worker and evaluation_worker.is_alive():
             evaluation_worker.join()
+        refinery_worker = refinery_job.get("thread")
+        if refinery_worker and refinery_worker.is_alive():
+            refinery_worker.join()
         store.close()

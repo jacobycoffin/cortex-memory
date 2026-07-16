@@ -191,10 +191,23 @@ Optional reflection is last and defaults to zero tokens. When an operator suppli
 - vault indexing is incremental, reads source notes without modifying them, and revises a stable memory ID plus version history when an existing section changes or returns after removal;
 - remote Sleep reflection is disabled by default and, when enabled, crosses the local trust boundary with selected memory text.
 
+## Memory Refinery
+
+Schema 18 gives every record an explicit `record_role` that is independent of memory `kind` and lifecycle `state`:
+
+- `canonical` — a concise, independently understandable statement intended for normal memory use;
+- `reference` — raw or document-like evidence (vault sections, code, tables, configuration, diagrams, command sequences, logs) that stays searchable but is never presented as a normal memory;
+- `event` — an episodic observation with bounded temporal value;
+- `claim` — an inferred statement that stays labeled unconfirmed until reviewed or evidence-backed.
+
+Roles are assigned by a versioned deterministic classifier (`role_classifier_v1`, no model call) with inspectable reasons and readability flags; operator-reviewed roles are never overwritten by reclassification. A derived `memory_presentations` row (title, summary, applicability, retention reason, flags, generator version, source digest) is presentation only: it never replaces stored raw content, never raises confidence, and rebuilds when the underlying content changes. Factual refinery changes — role change, rewrite, split, archive, trash — flow through `memory_refinery_proposals` plus the existing `operator_review_decisions` ledger with before-state and undo information; rewrite and split store operator-authored text as explicit evidence with `derived_from` dependencies on the untouched raw record.
+
+Stage 1 is presentation only: classification and backfill change no live retrieval eligibility or ranking. The proposed role-tier policy (`role_tier_shadow_v1`) exists as a shadow comparison in `retrieval.py` — reference evidence requires direct lexical, scope, entity, system, version, or exact technical support; events respect temporal relevance; unsupported claims stay gated — and activation is deferred until representative labeled cases and a paired evaluation pass.
+
 ## Schema evolution
 
 Schema 4 added `memory_features`, `recall_runs`, `lifecycle_events`, `pruning_regret`, `consolidation_runs`, `consolidation_members`, `tool_workflows`, and `tool_workflow_stats`.
 
 Schema 5 adds `recall_budget_observations` plus the connection-local revision and external `data_version` invalidation needed by safe caching. Opening an older database creates and backfills required structures without deleting existing memories.
 
-Schema 17 adds explicit item-only, exact-duplicate, and policy-evidence reach to every operator review. Existing pre-schema-17 decisions preserve their former training-evidence meaning during migration; new reviews default to item-only. Schema 16 adds compiled `policy_candidates`, active and rolled-back `policy_versions`, and append-only `policy_events` for the guided Kaya Training workflow. Schema 15 adds the reversible `operator_review_decisions` ledger used by the unified Review Inbox. Schema 10 adds controlled assignments, agent-task observations, matched Sleep trials, cited summary review, prospective state, and reconsolidation events. Schema 9 added auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.
+Schema 18 adds `record_role`/`role_method`/`role_version`/`role_reviewed_at` columns, `memory_presentations`, and `memory_refinery_proposals`; the additive migration and version-keyed backfill classify existing rows and build presentations without changing any state, content, version, ID, dependency, document-chunk mapping, or retrieval result. Schema 17 adds explicit item-only, exact-duplicate, and policy-evidence reach to every operator review. Existing pre-schema-17 decisions preserve their former training-evidence meaning during migration; new reviews default to item-only. Schema 16 adds compiled `policy_candidates`, active and rolled-back `policy_versions`, and append-only `policy_events` for the guided Kaya Training workflow. Schema 15 adds the reversible `operator_review_decisions` ledger used by the unified Review Inbox. Schema 10 adds controlled assignments, agent-task observations, matched Sleep trials, cited summary review, prospective state, and reconsolidation events. Schema 9 added auditable task labels, private evaluation cases and run ledgers, and tool-guidance exposure records. Earlier Sleep, metacognition, and benchmark tables remain additive; migration creates new tables without rewriting existing memories or edges.

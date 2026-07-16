@@ -57,6 +57,7 @@ The suite currently covers:
 - schema 15 Review Inbox coverage: decision-ready proposal snapshots, explained connection approval, typed operator-learning signals, reversible denial, and tombstone/restore version history.
 - schema 16 operator-policy coverage: review compilation, support and consistency gates, replay, shadow observations, scoped promotion, live retrieval adjustment, version audit, and rollback.
 - schema 17 decision-reach coverage: one-off exclusion from policy training, exact-duplicate discovery and reversible multi-memory action, explicit Teach Kaya compilation, counters, audit history, and migration defaults.
+- schema 18 Memory Refinery coverage: deterministic role classification (code, tables, configuration, diagrams, documents → reference; explicit user statements canonical; episodes events; unsupported inferences claims), presentation fidelity (negation, anchors, and uncertainty preserved; no invented summaries; no paths in reference titles), idempotent rebuilds with source-change invalidation, legacy-database backfill without touching state/content/IDs, vault reindex idempotency with stable IDs, item-only/exact-duplicate/Teach Kaya reach on clarity actions, editable rewrite/split previews with preserved source dependencies, optional reasons, undo that never overwrites later changes, aggregate-only privacy in summaries and reports, Stage 1 byte-identical retrieval equivalence, and mutation-free shadow role-tier comparisons.
 
 ## Current compatibility check
 

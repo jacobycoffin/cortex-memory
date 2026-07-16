@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -41,6 +42,11 @@ _MEMORY_TYPE_PRIOR = {
     "operational": 0.58,
     "episode": 0.48,
 }
+
+# Shadow-only role tiering. This version string names the exact proposed
+# policy compared against live retrieval; nothing here changes live results.
+SHADOW_ROLE_POLICY_VERSION = "role_tier_shadow_v1"
+_TECHNICAL_TOKEN = re.compile(r"[A-Za-z0-9]+(?:[._/-][A-Za-z0-9]+)+|[a-z0-9]+_[a-z0-9_]+")
 
 
 @dataclass(frozen=True)
@@ -329,6 +335,7 @@ class MemoryRetriever:
                     "content_preview": " ".join(str(result.memory.get("content") or "").split())[:180],
                     "rank": rank,
                     "selected": was_selected,
+                    "pinned": bool(result.memory.get("pinned")),
                     "score": round(float(result.score), 6),
                     "estimated_tokens": int(result.estimated_tokens),
                     "components": {
@@ -344,6 +351,146 @@ class MemoryRetriever:
             abstained=not selected,
             candidate_decisions=tuple(candidate_decisions),
         )
+
+    def shadow_tiered_comparison(
+        self,
+        query: str,
+        *,
+        limit: int = 6,
+        token_budget: int = 700,
+        include_archived: bool = False,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        graph_depth: int = 1,
+        threshold: float | None = None,
+        context: RetrievalContext | None = None,
+    ) -> dict[str, Any]:
+        """Compare live retrieval with the proposed role-tiered policy, shadow-only.
+
+        The live selection is computed by the unchanged pipeline and returned
+        untouched; the shadow selection re-walks the same ranked candidates
+        with role gates applied. Nothing here is injected into context and no
+        counters or logs are updated. Activation stays gated behind paired
+        evaluation.
+        """
+
+        selected, diagnostics = self.search_detailed(
+            query,
+            limit=limit,
+            token_budget=token_budget,
+            include_archived=include_archived,
+            temporal_mode=temporal_mode,
+            as_of=as_of,
+            graph_depth=graph_depth,
+            threshold=threshold,
+            context=context,
+        )
+        live_ids = [str(result.memory["id"]) for result in selected]
+        candidate_ids = [str(row["memory_id"]) for row in diagnostics.candidate_decisions]
+        roles: dict[str, str] = {}
+        if candidate_ids:
+            for memory in self.store.get_memories(candidate_ids):
+                roles[str(memory["id"])] = str(memory.get("record_role") or "canonical")
+        query_technical_tokens = {
+            token.casefold() for token in _TECHNICAL_TOKEN.findall(query or "")
+        }
+        effective_threshold = self.threshold if threshold is None else float(threshold)
+        shadow_ids: list[str] = []
+        consumed = 0
+        gate_decisions: list[dict[str, Any]] = []
+        for row in diagnostics.candidate_decisions:
+            memory_id = str(row["memory_id"])
+            components = dict(row.get("components") or {})
+            role = roles.get(memory_id, "canonical")
+            score = float(row.get("score") or 0.0)
+            pinned = bool(row.get("pinned"))
+            if len(shadow_ids) >= max(1, int(limit)):
+                break
+            if components.get("context_gate", 1.0) < 1.0:
+                continue
+            if score < effective_threshold and not pinned:
+                continue
+            gate = self._shadow_role_gate(
+                role,
+                components,
+                content_preview=str(row.get("content_preview") or ""),
+                query_technical_tokens=query_technical_tokens,
+            )
+            if not gate["eligible"]:
+                gate_decisions.append({"memory_id": memory_id, "role": role, **gate})
+                continue
+            estimated = int(row.get("estimated_tokens") or 0)
+            if consumed + estimated > token_budget:
+                continue
+            shadow_ids.append(memory_id)
+            consumed += estimated
+            gate_decisions.append({"memory_id": memory_id, "role": role, **gate})
+        live_set, shadow_set = set(live_ids), set(shadow_ids)
+        return {
+            "policy_version": SHADOW_ROLE_POLICY_VERSION,
+            "query_length": len(query or ""),
+            "live_selected_ids": live_ids,
+            "shadow_selected_ids": shadow_ids,
+            "identical": live_ids == shadow_ids,
+            "only_live_ids": [memory_id for memory_id in live_ids if memory_id not in shadow_set],
+            "only_shadow_ids": [memory_id for memory_id in shadow_ids if memory_id not in live_set],
+            "role_gates": gate_decisions[:50],
+            "live_estimated_tokens": diagnostics.estimated_tokens,
+            "shadow_estimated_tokens": consumed,
+            "claim_boundary": (
+                "Shadow results never affect injected context. Activation requires labeled cases and a "
+                "paired evaluation showing no unacceptable loss."
+            ),
+        }
+
+    @staticmethod
+    def _shadow_role_gate(
+        role: str,
+        components: dict[str, Any],
+        *,
+        content_preview: str,
+        query_technical_tokens: set[str],
+    ) -> dict[str, Any]:
+        """Deterministic per-role eligibility under the proposed tiered policy."""
+
+        lexical = float(components.get("lexical") or 0.0)
+        phrase = float(components.get("phrase") or 0.0)
+        graph = float(components.get("graph") or 0.0)
+        currentness = float(components.get("currentness") or 0.0)
+        context_support = max(
+            float(components.get("scope_match") or 0.0) * float(components.get("has_scope") or 0.0),
+            float(components.get("entity_match") or 0.0) * float(components.get("has_entities") or 0.0),
+            float(components.get("system_match") or 0.0) * float(components.get("has_systems") or 0.0),
+            float(components.get("version_match") or 0.0) * float(components.get("has_versions") or 0.0),
+            float(components.get("precondition_match") or 0.0)
+            * float(components.get("has_preconditions") or 0.0),
+        )
+        preview_fold = content_preview.casefold()
+        technical_match = any(token in preview_fold for token in query_technical_tokens)
+        if role == "reference":
+            direct_support = max(lexical, phrase) >= 0.22 or context_support > 0.0 or technical_match
+            graph_only = graph > 0.0 and max(lexical, phrase) < 0.10 and context_support <= 0.0
+            eligible = direct_support and not graph_only
+            reason = (
+                "reference evidence has direct lexical, scope, entity, system, version, or exact "
+                "technical support"
+                if eligible
+                else "reference evidence lacks direct support and cannot ride graph expansion alone"
+            )
+        elif role == "event":
+            eligible = currentness >= 0.35 or max(lexical, phrase) >= 0.30
+            reason = (
+                "event remains temporally relevant or directly requested"
+                if eligible
+                else "event fell outside its temporal relevance window"
+            )
+        elif role == "claim":
+            eligible = False
+            reason = "unsupported claims stay gated until reviewed or evidence-backed"
+        else:
+            eligible = True
+            reason = "canonical records keep normal eligibility"
+        return {"eligible": eligible, "reason": reason}
 
     def _score(
         self,

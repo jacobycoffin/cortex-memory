@@ -2,6 +2,14 @@
 
 ## 0.3.0-dev.1 — Unreleased
 
+- added the schema 18 Memory Refinery: explicit `record_role` (canonical, reference, event, claim) with method/version provenance, one derived `memory_presentations` row per memory, and audited `memory_refinery_proposals`;
+- added a versioned deterministic role classifier and presentation generator (no model calls): document extractions default to reference evidence, structural signals (code, tables, configuration, diagrams, command sequences, logs, raw JSON) file records as reference, episodes become events, unsupported inferences stay claims, and readability flags are preserved for review instead of silently discarding records;
+- reorganized the Index into Readable memories (default), Reference evidence, Needs clarity, and All records, with full-aggregate counts, readable cards (title, statement, applicability, source, retention reason, use evidence), collapsed **View raw evidence**, and a plain-language detail drawer (What Kaya remembers / When this applies / Why it is retained / Source and evidence / Raw record / History and connections);
+- added a Clarity category to Train Kaya with outcome-phrased actions — keep as readable memory, keep only as reference, rewrite clearly, split into separate memories, archive, trash — where rewrite and split show an editable deterministic preview, store operator text as explicit evidence linked to the untouched raw record, default to item-only reach, keep reasons optional, and remain undoable;
+- added bounded authenticated refinery APIs (`summary`, `items`, `shadow`, `preview`, `action`, `undo`, `rebuild-presentations`) behind the existing session, same-origin, and `CORTEX_DASHBOARD_REVIEWS` gates, plus `refinery-report`, `refinery-summary`, and `refinery-shadow` CLI commands;
+- defaulted new vault imports to reference evidence, required canonical clarity checks for automatic capture (flagged automatic writes stay reviewable claims), and kept vault reindex idempotent with stable memory IDs and refreshed presentations;
+- added a shadow-only role-tier retrieval comparison (`role_tier_shadow_v1`): canonical unchanged, reference requires direct lexical/scope/entity/system/version or exact technical support, events respect temporal relevance, unsupported claims stay gated — Stage 1 live selection and ordering are byte-identical and activation stays behind paired evaluation;
+- defaulted the memory map to canonical records with an explicit reference-evidence toggle and role counts kept separate from kind and lifecycle counts;
 - rebranded the project as `cortex-memory`, with Hermes retained as the first harness adapter;
 - added a framework-neutral `CortexMemory` and `RecallBatch` API plus pip packaging and a `cortex-memory` CLI;
 - added a five-event integration contract for custom harnesses and package-install CI coverage;

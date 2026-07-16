@@ -257,6 +257,7 @@ class VaultIndexer:
                         kind=chunk.kind,
                         source_type="vault_markdown",
                         source_category="DOCUMENT_EXTRACTED",
+                        record_role="reference",
                         source_ref=f"vault:{note.relative_path}#{chunk.heading}",
                         entities=[note.title, chunk.heading],
                         source_context=f"Vault document {note.relative_path} under heading {chunk.heading}.",

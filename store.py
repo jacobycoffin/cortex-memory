@@ -14,11 +14,27 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
+from .refinery import (
+    CLARITY_FLAGS,
+    LEGACY_ROLE_METHOD,
+    OPERATOR_ROLE_METHOD,
+    PRESENTATION_METHOD,
+    PRESENTATION_VERSION,
+    RECORD_ROLES,
+    ROLE_CLASSIFIER_VERSION,
+    build_presentation,
+    classify_record_role,
+    deterministic_rewrite_preview,
+    deterministic_split_preview,
+    needs_clarity,
+)
 from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
+REFINERY_BACKFILL_KEY = "refinery_backfill_version"
+REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
 POLICY_MIN_CONSISTENCY = 0.80
 POLICY_SHADOW_MIN_OBSERVATIONS = 3
@@ -198,6 +214,10 @@ class CortexStore:
                 uniqueness REAL NOT NULL DEFAULT 1.0,
                 volatility REAL NOT NULL DEFAULT 0.4,
                 trust REAL NOT NULL DEFAULT 0.7,
+                record_role TEXT NOT NULL DEFAULT 'canonical',
+                role_method TEXT NOT NULL DEFAULT 'legacy_default',
+                role_version TEXT,
+                role_reviewed_at TEXT,
                 state TEXT NOT NULL DEFAULT 'active',
                 pinned INTEGER NOT NULL DEFAULT 0,
                 protected INTEGER NOT NULL DEFAULT 0,
@@ -1029,6 +1049,42 @@ class CortexStore:
             CREATE INDEX IF NOT EXISTS idx_reconsolidation_status
               ON reconsolidation_events(status,corrected_at DESC);
 
+            CREATE TABLE IF NOT EXISTS memory_presentations (
+                memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+                display_title TEXT NOT NULL,
+                display_summary TEXT NOT NULL,
+                applies_when TEXT NOT NULL,
+                retention_reason TEXT NOT NULL,
+                readability_flags_json TEXT NOT NULL DEFAULT '[]',
+                presentation_method TEXT NOT NULL,
+                presentation_version TEXT NOT NULL,
+                source_digest TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS memory_refinery_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                proposal_kind TEXT NOT NULL
+                  CHECK(proposal_kind IN ('promote','rewrite','split','role_change','merge','archive','trash')),
+                source_memory_ids_json TEXT NOT NULL DEFAULT '[]',
+                proposed_records_json TEXT NOT NULL DEFAULT '[]',
+                dependencies_json TEXT NOT NULL DEFAULT '[]',
+                rationale TEXT NOT NULL DEFAULT '',
+                readability_evidence_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'proposed'
+                  CHECK(status IN ('proposed','applied','rejected','undone')),
+                actor TEXT NOT NULL DEFAULT '',
+                review_id TEXT,
+                before_state_json TEXT NOT NULL DEFAULT '{}',
+                undo_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                decided_at TEXT,
+                undone_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_refinery_proposals_status
+              ON memory_refinery_proposals(status,created_at DESC);
+
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
                 memory_id UNINDEXED,
                 content,
@@ -1064,10 +1120,12 @@ class CortexStore:
         self._backfill_memory_features()
         self._backfill_memory_context_terms()
         self._rebuild_feature_stats()
+        self._backfill_refinery()
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memories_claim ON memories(subject, predicate, state, valid_from, valid_to)"
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_dirty ON memories(dirty, state)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_role ON memories(record_role, state)")
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -1422,6 +1480,10 @@ class CortexStore:
             "applicable_systems_json": "TEXT NOT NULL DEFAULT '[]'",
             "applicable_versions_json": "TEXT NOT NULL DEFAULT '[]'",
             "metadata_completeness": "REAL NOT NULL DEFAULT 1.0",
+            "record_role": "TEXT NOT NULL DEFAULT 'canonical'",
+            "role_method": "TEXT NOT NULL DEFAULT 'legacy_default'",
+            "role_version": "TEXT",
+            "role_reviewed_at": "TEXT",
         }
         for name, declaration in additions.items():
             if name not in columns:
@@ -1475,6 +1537,153 @@ class CortexStore:
             self._conn.execute(
                 "UPDATE operator_review_decisions SET decision_scope='policy_evidence'"
             )
+
+    def _active_dependency_ids_tx(self, conn: sqlite3.Connection) -> set[str]:
+        return {
+            str(row["memory_id"])
+            for row in conn.execute(
+                "SELECT DISTINCT memory_id FROM memory_dependencies WHERE active=1"
+            ).fetchall()
+        }
+
+    @staticmethod
+    def _has_active_dependency_tx(conn: sqlite3.Connection, memory_id: str) -> bool:
+        return bool(
+            conn.execute(
+                "SELECT 1 FROM memory_dependencies WHERE memory_id=? AND active=1 LIMIT 1",
+                (memory_id,),
+            ).fetchone()
+        )
+
+    def _classify_and_present_tx(
+        self,
+        conn: sqlite3.Connection,
+        memory: dict[str, Any],
+        *,
+        has_active_dependencies: bool,
+        explicit_role: str | None = None,
+        role_method: str | None = None,
+        storage_policy: str | None = None,
+        preserve_operator_role: bool = True,
+    ) -> dict[str, Any]:
+        """Classify one record and refresh its derived presentation, in place.
+
+        Never changes content, state, versions, IDs, or retrieval behavior.
+        Operator-reviewed roles are preserved unless explicitly overridden.
+        """
+
+        memory_id = str(memory["id"])
+        classification = classify_record_role(memory, has_active_dependencies=has_active_dependencies)
+        current_method = str(memory.get("role_method") or LEGACY_ROLE_METHOD)
+        operator_owned = preserve_operator_role and current_method == OPERATOR_ROLE_METHOD
+        if explicit_role:
+            if explicit_role not in RECORD_ROLES:
+                raise ValueError(f"unsupported record role: {explicit_role}")
+            next_role = explicit_role
+            next_method = role_method or "ingest_default"
+        elif operator_owned:
+            next_role = str(memory.get("record_role") or "canonical")
+            next_method = OPERATOR_ROLE_METHOD
+        else:
+            next_role = str(classification["record_role"])
+            next_method = str(classification["role_method"])
+            if (
+                storage_policy == "automatic"
+                and next_role == "canonical"
+                and any(flag in CLARITY_FLAGS for flag in classification["readability_flags"])
+            ):
+                # Automatic capture must pass the canonical clarity checks;
+                # flagged records stay reviewable claims instead.
+                next_role = "claim"
+                classification["reasons"].append(
+                    "Automatic capture with readability flags is kept as a reviewable claim, "
+                    "not a canonical memory."
+                )
+        classification = {**classification, "record_role": next_role}
+        conn.execute(
+            "UPDATE memories SET record_role=?,role_method=?,role_version=? WHERE id=?",
+            (next_role, next_method, str(classification["role_version"]), memory_id),
+        )
+        presentation = build_presentation(
+            {**memory, "record_role": next_role},
+            classification,
+            has_active_dependencies=has_active_dependencies,
+        )
+        now = utc_now()
+        conn.execute(
+            """INSERT INTO memory_presentations(
+                 memory_id,display_title,display_summary,applies_when,retention_reason,
+                 readability_flags_json,presentation_method,presentation_version,source_digest,
+                 created_at,updated_at
+               ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(memory_id) DO UPDATE SET
+                 display_title=excluded.display_title,
+                 display_summary=excluded.display_summary,
+                 applies_when=excluded.applies_when,
+                 retention_reason=excluded.retention_reason,
+                 readability_flags_json=excluded.readability_flags_json,
+                 presentation_method=excluded.presentation_method,
+                 presentation_version=excluded.presentation_version,
+                 source_digest=excluded.source_digest,
+                 updated_at=excluded.updated_at""",
+            (
+                memory_id,
+                str(presentation["display_title"])[:200],
+                str(presentation["display_summary"])[:600],
+                str(presentation["applies_when"])[:400],
+                str(presentation["retention_reason"])[:400],
+                _trace_json(list(presentation["readability_flags"])),
+                str(presentation["presentation_method"]),
+                str(presentation["presentation_version"]),
+                str(memory.get("content_hash") or content_hash(str(memory.get("content") or ""))),
+                now,
+                now,
+            ),
+        )
+        return classification
+
+    def _backfill_refinery(self) -> None:
+        """Version-keyed role and presentation backfill.
+
+        Reclassifies rows that were never classified or that carry a stale
+        classifier version, and rebuilds presentations whose source digest or
+        generator version no longer matches. Operator-reviewed roles are never
+        overwritten. The pass changes no state, content, version, ID,
+        dependency, or retrieval-visible value.
+        """
+
+        row = self._conn.execute(
+            "SELECT value FROM meta WHERE key=?", (REFINERY_BACKFILL_KEY,)
+        ).fetchone()
+        if row and str(row["value"]) == REFINERY_BACKFILL_VERSION:
+            return
+        dependency_ids = self._active_dependency_ids_tx(self._conn)
+        memory_rows = self._conn.execute(
+            """SELECT m.*, p.source_digest presentation_digest,
+                      p.presentation_version presentation_version
+               FROM memories m LEFT JOIN memory_presentations p ON p.memory_id=m.id"""
+        ).fetchall()
+        for raw in memory_rows:
+            memory = dict(raw)
+            stale_presentation = (
+                memory.get("presentation_digest") != memory.get("content_hash")
+                or memory.get("presentation_version") != PRESENTATION_VERSION
+            )
+            stale_role = (
+                str(memory.get("role_method") or LEGACY_ROLE_METHOD) != OPERATOR_ROLE_METHOD
+                and str(memory.get("role_version") or "") != ROLE_CLASSIFIER_VERSION
+            )
+            if not stale_presentation and not stale_role:
+                continue
+            self._classify_and_present_tx(
+                self._conn,
+                memory,
+                has_active_dependencies=str(memory["id"]) in dependency_ids,
+            )
+        self._conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (REFINERY_BACKFILL_KEY, REFINERY_BACKFILL_VERSION),
+        )
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
@@ -1771,6 +1980,7 @@ class CortexStore:
         supersedes_id: str | None = None,
         evidence_ids: Sequence[str] | None = None,
         storage_policy: str = "trusted",
+        record_role: str | None = None,
     ) -> tuple[str, bool]:
         content = normalize_text(content)
         if not content:
@@ -1913,6 +2123,16 @@ class CortexStore:
                     session_id=session_id,
                     memory_id=memory_id,
                 )
+                merged_row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                if merged_row:
+                    # A duplicate write refreshes the presentation but must not
+                    # let an automatic capture downgrade an existing record.
+                    self._classify_and_present_tx(
+                        conn,
+                        dict(merged_row),
+                        has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                        explicit_role=record_role,
+                    )
                 return memory_id, False
 
             memory_id = str(uuid.uuid4())
@@ -2024,6 +2244,14 @@ class CortexStore:
                 session_id=session_id,
                 memory_id=memory_id,
             )
+            created_row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            self._classify_and_present_tx(
+                conn,
+                dict(created_row),
+                has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                explicit_role=record_role,
+                storage_policy=storage_policy,
+            )
             return memory_id, True
 
     def correct_memory(
@@ -2095,6 +2323,13 @@ class CortexStore:
                 source_ref=source_ref,
             )
             self._mark_dependents_dirty_tx(conn, memory_id, f"evidence corrected: {reason}")
+            corrected_row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if corrected_row:
+                self._classify_and_present_tx(
+                    conn,
+                    dict(corrected_row),
+                    has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                )
             return True
 
     def set_state(
@@ -4971,6 +5206,13 @@ class CortexStore:
                        ) VALUES(?,?,?,?,?,?)""",
                     (memory_id, prior_state, next_state, normalize_text(reason)[:500], None, now),
                 )
+            revised_row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if revised_row:
+                self._classify_and_present_tx(
+                    conn,
+                    dict(revised_row),
+                    has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                )
             return {
                 "updated": content_changed,
                 "reactivated": prior_state in {"archived", "cold"} and next_state == "active",
@@ -5057,8 +5299,18 @@ class CortexStore:
                 str(row["src_id"]), str(row["dst_id"]), str(row["relation"]), limit=20
             )
             edge_items.append(item)
+        with self._lock:
+            presentation_row = self._conn.execute(
+                "SELECT * FROM memory_presentations WHERE memory_id=?", (memory_id,)
+            ).fetchone()
+        presentation = dict(presentation_row) if presentation_row else None
+        if presentation:
+            presentation["readability_flags"] = _json_string_list(
+                presentation.pop("readability_flags_json", "[]")
+            )
         return {
             "memory": memory,
+            "presentation": presentation,
             "versions": self.versions(memory_id),
             "edges": edge_items,
             "dependencies": self.dependencies(memory_id),
@@ -5618,6 +5870,9 @@ class CortexStore:
         with self._lock:
             state_rows = self._conn.execute("SELECT state,COUNT(*) AS n FROM memories GROUP BY state").fetchall()
             kind_rows = self._conn.execute("SELECT kind,COUNT(*) AS n FROM memories GROUP BY kind").fetchall()
+            role_rows = self._conn.execute(
+                "SELECT record_role,COUNT(*) AS n FROM memories GROUP BY record_role"
+            ).fetchall()
             counts = self._conn.execute(
                 "SELECT (SELECT COUNT(*) FROM memories) memories, (SELECT COUNT(*) FROM edges) edges, "
                 "(SELECT COUNT(*) FROM edge_evidence) edge_evidence, "
@@ -5655,12 +5910,15 @@ class CortexStore:
                 "(SELECT COUNT(*) FROM prospective_items WHERE status='open') prospective_open, "
                 "(SELECT COUNT(*) FROM reconsolidation_events) reconsolidation_events, "
                 "(SELECT COUNT(*) FROM document_sources WHERE status='active') documents, "
-                "(SELECT COUNT(*) FROM document_chunks WHERE active=1) document_chunks"
+                "(SELECT COUNT(*) FROM document_chunks WHERE active=1) document_chunks, "
+                "(SELECT COUNT(*) FROM memory_presentations) memory_presentations, "
+                "(SELECT COUNT(*) FROM memory_refinery_proposals) refinery_proposals"
             ).fetchone()
         return {
             **dict(counts),
             "states": {r["state"]: r["n"] for r in state_rows},
             "kinds": {r["kind"]: r["n"] for r in kind_rows},
+            "roles": {r["record_role"]: r["n"] for r in role_rows},
             "db_path": str(self.path),
             "db_bytes": self.path.stat().st_size if self.path.exists() else 0,
             "schema_version": SCHEMA_VERSION,
@@ -6437,6 +6695,917 @@ class CortexStore:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Memory Refinery: roles, presentations, proposals, actions, and undo
+    # ------------------------------------------------------------------
+
+    _REFINERY_ACTIONS = {
+        "keep_canonical",
+        "keep_reference",
+        "rewrite",
+        "split",
+        "archive",
+        "trash",
+    }
+    _REFINERY_ROLE_ACTIONS = {"keep_canonical": "canonical", "keep_reference": "reference"}
+
+    @staticmethod
+    def _clarity_flag_placeholders() -> tuple[str, tuple[str, ...]]:
+        return ",".join("?" for _ in CLARITY_FLAGS), tuple(CLARITY_FLAGS)
+
+    def _clarity_predicate_sql(self) -> tuple[str, tuple[str, ...]]:
+        placeholders, params = self._clarity_flag_placeholders()
+        sql = (
+            "m.state IN ('active','cold') AND m.record_role<>'reference' "
+            "AND m.role_reviewed_at IS NULL AND EXISTS ("
+            "  SELECT 1 FROM json_each(COALESCE(p.readability_flags_json,'[]')) "
+            f"  WHERE json_each.value IN ({placeholders})"
+            ")"
+        )
+        return sql, params
+
+    def refinery_summary(self) -> dict[str, Any]:
+        """Aggregate role, readability, presentation, and migration status.
+
+        Aggregates only: no memory content, source paths, or identifiers.
+        """
+
+        clarity_sql, clarity_params = self._clarity_predicate_sql()
+        with self._lock:
+            role_state_rows = self._conn.execute(
+                "SELECT record_role,state,COUNT(*) n FROM memories GROUP BY record_role,state"
+            ).fetchall()
+            flag_rows = self._conn.execute(
+                """SELECT json_each.value flag,COUNT(*) n
+                   FROM memory_presentations,json_each(memory_presentations.readability_flags_json)
+                   GROUP BY json_each.value ORDER BY n DESC"""
+            ).fetchall()
+            clarity_count = int(
+                self._conn.execute(
+                    f"""SELECT COUNT(*) n FROM memories m
+                        LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                        WHERE {clarity_sql}""",
+                    clarity_params,
+                ).fetchone()["n"]
+            )
+            presentation_counts = self._conn.execute(
+                """SELECT COUNT(*) total,
+                          SUM(CASE WHEN p.source_digest<>m.content_hash
+                                     OR p.presentation_version<>? THEN 1 ELSE 0 END) stale
+                   FROM memory_presentations p JOIN memories m ON m.id=p.memory_id""",
+                (PRESENTATION_VERSION,),
+            ).fetchone()
+            missing_presentations = int(
+                self._conn.execute(
+                    """SELECT COUNT(*) n FROM memories m
+                       WHERE NOT EXISTS(SELECT 1 FROM memory_presentations p WHERE p.memory_id=m.id)"""
+                ).fetchone()["n"]
+            )
+            proposal_rows = self._conn.execute(
+                "SELECT status,COUNT(*) n FROM memory_refinery_proposals GROUP BY status"
+            ).fetchall()
+            role_usage_rows = self._conn.execute(
+                """SELECT m.record_role role,
+                          COUNT(*) selected,
+                          SUM(u.used) used,
+                          SUM(CASE WHEN u.outcome IN ('helpful','validated') THEN 1 ELSE 0 END) helpful,
+                          SUM(CASE WHEN u.outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) harmful,
+                          SUM(CASE WHEN u.outcome='ignored' THEN 1 ELSE 0 END) ignored
+                   FROM usage_records u JOIN memories m ON m.id=u.memory_id
+                   GROUP BY m.record_role"""
+            ).fetchall()
+            backfill_row = self._conn.execute(
+                "SELECT value FROM meta WHERE key=?", (REFINERY_BACKFILL_KEY,)
+            ).fetchone()
+        role_counts: dict[str, int] = {}
+        recallable_role_counts: dict[str, int] = {}
+        role_state_counts: dict[str, dict[str, int]] = {}
+        for row in role_state_rows:
+            role = str(row["record_role"])
+            state = str(row["state"])
+            count = int(row["n"])
+            role_counts[role] = role_counts.get(role, 0) + count
+            role_state_counts.setdefault(role, {})[state] = count
+            if state in {"active", "cold"}:
+                recallable_role_counts[role] = recallable_role_counts.get(role, 0) + count
+        total = sum(role_counts.values())
+        backfill_version = str(backfill_row["value"]) if backfill_row else ""
+        return {
+            "classifier_version": ROLE_CLASSIFIER_VERSION,
+            "presentation_version": PRESENTATION_VERSION,
+            "backfill": {
+                "recorded_version": backfill_version,
+                "current_version": REFINERY_BACKFILL_VERSION,
+                "complete": backfill_version == REFINERY_BACKFILL_VERSION,
+            },
+            "role_counts": role_counts,
+            "role_state_counts": role_state_counts,
+            "recallable_role_counts": recallable_role_counts,
+            "readability_flag_counts": {str(row["flag"]): int(row["n"]) for row in flag_rows},
+            "needs_clarity_count": clarity_count,
+            "view_counts": {
+                "readable": role_counts.get("canonical", 0),
+                "reference": role_counts.get("reference", 0),
+                "clarity": clarity_count,
+                "all": total,
+            },
+            "presentations": {
+                "total": int(presentation_counts["total"] or 0),
+                "stale": int(presentation_counts["stale"] or 0),
+                "missing": missing_presentations,
+            },
+            "proposals": {str(row["status"]): int(row["n"]) for row in proposal_rows},
+            "role_usage": [dict(row) for row in role_usage_rows],
+        }
+
+    def refinery_items(
+        self,
+        *,
+        view: str = "readable",
+        limit: int = 60,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """Bounded, filtered rows for one refinery Index view."""
+
+        view_value = str(view or "readable").casefold()
+        if view_value not in {"readable", "reference", "clarity", "all"}:
+            raise ValueError("view must be readable, reference, clarity, or all")
+        bounded_limit = max(1, min(int(limit), 200))
+        bounded_offset = max(0, min(int(offset), 100_000))
+        clarity_sql, clarity_params = self._clarity_predicate_sql()
+        predicates = {
+            "readable": ("m.record_role='canonical'", ()),
+            "reference": ("m.record_role='reference'", ()),
+            "clarity": (clarity_sql, clarity_params),
+            "all": ("1=1", ()),
+        }
+        where_sql, params = predicates[view_value]
+        with self._lock:
+            total = int(
+                self._conn.execute(
+                    f"""SELECT COUNT(*) n FROM memories m
+                        LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                        WHERE {where_sql}""",
+                    params,
+                ).fetchone()["n"]
+            )
+            rows = self._conn.execute(
+                f"""SELECT m.*,
+                           p.display_title,p.display_summary,p.applies_when,p.retention_reason,
+                           p.readability_flags_json,p.presentation_method,p.presentation_version,
+                           p.source_digest presentation_digest,p.updated_at presentation_updated_at
+                    FROM memories m
+                    LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                    WHERE {where_sql}
+                    ORDER BY m.observed_at DESC,m.id
+                    LIMIT ? OFFSET ?""",
+                (*params, bounded_limit, bounded_offset),
+            ).fetchall()
+        items = [self._decode_refinery_row(row) for row in rows]
+        return {
+            "view": view_value,
+            "total": total,
+            "limit": bounded_limit,
+            "offset": bounded_offset,
+            "items": items,
+        }
+
+    @staticmethod
+    def _decode_refinery_row(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = _decode_memory_metadata(row)
+        flags = _json_string_list(item.pop("readability_flags_json", "[]"))
+        item["readability_flags"] = flags
+        item["needs_clarity"] = (
+            needs_clarity(str(item.get("record_role") or "canonical"), flags)
+            and str(item.get("state")) in {"active", "cold"}
+            and not item.get("role_reviewed_at")
+        )
+        return item
+
+    def refinery_classification_report(self) -> dict[str, Any]:
+        """Dry-run classification over every record, without any mutation.
+
+        Returns aggregate counts plus bounded, redacted examples (ID prefixes
+        and flags only — never content or source paths).
+        """
+
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM memories").fetchall()
+            dependency_ids = self._active_dependency_ids_tx(self._conn)
+        current_counts: dict[str, int] = {}
+        proposed_counts: dict[str, int] = {}
+        flag_counts: dict[str, int] = {}
+        source_counts: dict[str, dict[str, int]] = {}
+        changed = 0
+        examples: list[dict[str, Any]] = []
+        for raw in rows:
+            memory = dict(raw)
+            current_role = str(memory.get("record_role") or "canonical")
+            classification = classify_record_role(
+                memory, has_active_dependencies=str(memory["id"]) in dependency_ids
+            )
+            proposed_role = (
+                current_role
+                if str(memory.get("role_method") or "") == OPERATOR_ROLE_METHOD
+                else str(classification["record_role"])
+            )
+            current_counts[current_role] = current_counts.get(current_role, 0) + 1
+            proposed_counts[proposed_role] = proposed_counts.get(proposed_role, 0) + 1
+            for flag in classification["readability_flags"]:
+                flag_counts[flag] = flag_counts.get(flag, 0) + 1
+            source = str(memory.get("source_category") or "UNKNOWN")
+            source_counts.setdefault(source, {})
+            source_counts[source][proposed_role] = source_counts[source].get(proposed_role, 0) + 1
+            if proposed_role != current_role:
+                changed += 1
+                if len(examples) < 20:
+                    examples.append(
+                        {
+                            "memory_id_prefix": str(memory["id"])[:8],
+                            "current_role": current_role,
+                            "proposed_role": proposed_role,
+                            "readability_flags": list(classification["readability_flags"]),
+                        }
+                    )
+        return {
+            "classifier_version": ROLE_CLASSIFIER_VERSION,
+            "records": len(rows),
+            "current_role_counts": current_counts,
+            "proposed_role_counts": proposed_counts,
+            "records_with_changed_role": changed,
+            "readability_flag_counts": dict(sorted(flag_counts.items(), key=lambda p: (-p[1], p[0]))),
+            "proposed_roles_by_source_category": source_counts,
+            "redacted_examples": examples,
+            "mutations": 0,
+        }
+
+    def refinery_preview(
+        self,
+        kind: str,
+        memory_id: str,
+        *,
+        target_role: str | None = None,
+    ) -> dict[str, Any]:
+        """Deterministic, mutation-free preview for rewrite, split, or role change."""
+
+        kind_value = str(kind or "").casefold()
+        if kind_value not in {"rewrite", "split", "role_change"}:
+            raise ValueError("preview kind must be rewrite, split, or role_change")
+        memory = self.get_memory(memory_id)
+        if not memory:
+            raise ValueError("memory not found")
+        with self._lock:
+            has_dependencies = self._has_active_dependency_tx(self._conn, memory_id)
+            presentation_row = self._conn.execute(
+                "SELECT * FROM memory_presentations WHERE memory_id=?", (memory_id,)
+            ).fetchone()
+        classification = classify_record_role(memory, has_active_dependencies=has_dependencies)
+        readability_evidence = {
+            "readability_flags": list(classification["readability_flags"]),
+            "reasons": list(classification["reasons"]),
+            "structures": list(classification["structures"]),
+        }
+        base = {
+            "kind": kind_value,
+            "memory_id": memory_id,
+            "current_role": str(memory.get("record_role") or "canonical"),
+            "source_dependencies": [memory_id],
+            "readability_evidence": readability_evidence,
+            "requires_confirmation": True,
+            "presentation": dict(presentation_row) if presentation_row else None,
+        }
+        content = str(memory.get("content") or "")
+        if kind_value == "rewrite":
+            base["proposed_records"] = [
+                {
+                    "content": deterministic_rewrite_preview(content, memory=memory),
+                    "kind": str(memory.get("kind") or "semantic"),
+                    "editable": True,
+                }
+            ]
+            base["rationale"] = (
+                "Deterministic starting point for an operator rewrite. Words are preserved exactly; "
+                "edit the text, then confirm to store it as explicit operator evidence linked to the source."
+            )
+        elif kind_value == "split":
+            parts = deterministic_split_preview(content, memory=memory)
+            if len(parts) < 2:
+                raise ValueError(
+                    "this record does not have a safe deterministic split boundary; use rewrite instead"
+                )
+            base["proposed_records"] = [
+                {"content": part, "kind": str(memory.get("kind") or "semantic"), "editable": True}
+                for part in parts
+            ]
+            base["rationale"] = (
+                "Deterministic split on paragraph, bullet, or sentence boundaries. Edit each part, remove "
+                "any that should not become memories, then confirm."
+            )
+        else:
+            role = str(target_role or "").casefold()
+            if role not in RECORD_ROLES:
+                raise ValueError(f"target_role must be one of {', '.join(RECORD_ROLES)}")
+            base["proposed_role"] = role
+            base["rationale"] = (
+                f"Change how this record is governed and presented: {base['current_role']} → {role}. "
+                "Raw content, provenance, state, and history do not change."
+            )
+        return base
+
+    def _insert_operator_memory_tx(
+        self,
+        conn: sqlite3.Connection,
+        content: str,
+        *,
+        kind: str,
+        source_memory: dict[str, Any],
+        actor: str,
+        now: str,
+    ) -> str:
+        """Insert one operator-authored memory inside an open transaction."""
+
+        clean = normalize_text(content)
+        if not clean:
+            raise ValueError("proposed memory content cannot be empty")
+        if len(clean) > 4000:
+            raise ValueError("proposed memory content is longer than the 4000 character bound")
+        digest = content_hash(clean)
+        context_mode = _normalize_context_mode(
+            str(source_memory.get("context_mode") or "standalone")
+        )
+        scope = _normalize_context_map(_trace_json_object(source_memory.get("scope_json")))
+        entities = _normalize_context_list(_json_string_list(source_memory.get("entities_json")))
+        preconditions = _normalize_context_map(
+            _trace_json_object(source_memory.get("preconditions_json"))
+        )
+        applicable_systems = _normalize_context_list(
+            _json_string_list(source_memory.get("applicable_systems_json"))
+        )
+        applicable_versions = _normalize_context_list(
+            _json_string_list(source_memory.get("applicable_versions_json"))
+        )
+        scope_json = _trace_json(scope)
+        preconditions_json = _trace_json(preconditions)
+        systems_json = _trace_json(applicable_systems)
+        versions_json = _trace_json(applicable_versions)
+        duplicate = conn.execute(
+            """SELECT id FROM memories WHERE content_hash=? AND context_mode=?
+                 AND scope_json=? AND preconditions_json=?
+                 AND applicable_systems_json=? AND applicable_versions_json=? LIMIT 1""",
+            (
+                digest,
+                context_mode,
+                scope_json,
+                preconditions_json,
+                systems_json,
+                versions_json,
+            ),
+        ).fetchone()
+        if duplicate:
+            raise ValueError("an identical memory already exists; edit the text before confirming")
+        memory_id = str(uuid.uuid4())
+        source_ref = f"refinery:{source_memory['id']}"
+        operator_context = f"Rewritten by {actor} from a stored record during Clarity review."
+        prior_source_context = normalize_text(str(source_memory.get("source_context") or ""))
+        source_context = normalize_text(
+            f"{prior_source_context} {operator_context}" if prior_source_context else operator_context
+        )
+        calculated_completeness = _memory_metadata_completeness(
+            context_mode,
+            scope=scope,
+            entities=entities,
+            preconditions=preconditions,
+            source_context=source_context,
+            applicable_systems=applicable_systems,
+            applicable_versions=applicable_versions,
+        )
+        metadata_completeness = _clamp(
+            float(source_memory.get("metadata_completeness") or calculated_completeness)
+        )
+        conn.execute(
+            """INSERT INTO memories(
+                id, kind, content, content_hash, source_type, source_category, source_ref, session_id,
+                context_mode,scope_json,entities_json,preconditions_json,source_context,
+                applicable_systems_json,applicable_versions_json,metadata_completeness,
+                created_at, updated_at, observed_at, valid_from, valid_to, subject, predicate, object_value,
+                extraction_method, confidence, currentness_confidence, importance, uniqueness,
+                volatility, trust, state, pinned, protected, supersedes_id, quarantine_reason,
+                record_role, role_method, role_version, role_reviewed_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                memory_id,
+                kind,
+                clean,
+                digest,
+                "operator_rewrite",
+                "USER_EXPLICIT",
+                source_ref,
+                None,
+                context_mode,
+                scope_json,
+                _trace_json(entities),
+                preconditions_json,
+                source_context,
+                systems_json,
+                versions_json,
+                metadata_completeness,
+                now,
+                now,
+                str(source_memory.get("observed_at") or now),
+                source_memory.get("valid_from"),
+                source_memory.get("valid_to"),
+                None,
+                None,
+                None,
+                "refinery_rewrite_v1",
+                0.85,
+                _clamp(float(source_memory.get("currentness_confidence") or 0.75)),
+                _clamp(float(source_memory.get("importance") or 0.5)),
+                1.0,
+                _clamp(float(source_memory.get("volatility") or 0.4)),
+                0.9,
+                "active",
+                0,
+                0,
+                None,
+                None,
+                "canonical",
+                OPERATOR_ROLE_METHOD,
+                ROLE_CLASSIFIER_VERSION,
+                now,
+            ),
+        )
+        conn.execute(
+            """INSERT INTO memory_versions(
+                memory_id, content, confidence, state, valid_from, valid_to,
+                system_from, reason, source_ref
+            ) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                memory_id,
+                clean,
+                0.85,
+                "active",
+                source_memory.get("valid_from"),
+                source_memory.get("valid_to"),
+                now,
+                "created by operator refinery review",
+                source_ref,
+            ),
+        )
+        conn.execute("INSERT INTO memory_fts(memory_id, content) VALUES(?,?)", (memory_id, clean))
+        self._index_features_tx(conn, memory_id, clean)
+        self._index_context_terms_tx(
+            conn,
+            memory_id,
+            context_mode=context_mode,
+            scope=scope,
+            entities=entities,
+            preconditions=preconditions,
+            applicable_systems=applicable_systems,
+            applicable_versions=applicable_versions,
+        )
+        conn.execute(
+            """INSERT OR IGNORE INTO memory_dependencies(
+                 memory_id,evidence_id,relation,weight,active,created_at
+               ) VALUES(?,?,'derived_from',1.0,1,?)""",
+            (memory_id, str(source_memory["id"]), now),
+        )
+        self._record_memory_write_decision_tx(
+            conn,
+            {
+                "candidate_hash": digest,
+                "kind": kind,
+                "source_type": "operator_rewrite",
+                "context_mode": context_mode,
+                "reusable_score": 0.85,
+                "durability": "durable",
+                "quality_flags": [],
+                "duplicate_memory_id": None,
+                "contradiction_ids": [],
+                "independently_understandable": True,
+                "decision": "created",
+                "reason": "operator-confirmed refinery rewrite preserving the source dependency",
+            },
+            session_id=None,
+            memory_id=memory_id,
+        )
+        row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+        self._classify_and_present_tx(
+            conn,
+            dict(row),
+            has_active_dependencies=True,
+            explicit_role="canonical",
+            role_method=OPERATOR_ROLE_METHOD,
+            preserve_operator_role=False,
+        )
+        return memory_id
+
+    def _refinery_state_change_tx(
+        self,
+        conn: sqlite3.Connection,
+        memory: dict[str, Any],
+        next_state: str,
+        explanation: str,
+        now: str,
+    ) -> None:
+        memory_id = str(memory["id"])
+        conn.execute(
+            "UPDATE memory_versions SET system_to=? WHERE memory_id=? AND system_to IS NULL",
+            (now, memory_id),
+        )
+        conn.execute("UPDATE memories SET state=?,updated_at=? WHERE id=?", (next_state, now, memory_id))
+        conn.execute(
+            """INSERT INTO memory_versions(memory_id,content,confidence,state,valid_from,valid_to,
+               system_from,reason,source_ref) VALUES(?,?,?,?,?,?,?,?,?)""",
+            (
+                memory_id,
+                memory["content"],
+                memory["confidence"],
+                next_state,
+                memory["valid_from"],
+                memory["valid_to"],
+                now,
+                explanation,
+                memory["source_ref"],
+            ),
+        )
+        conn.execute(
+            """INSERT INTO lifecycle_events(
+               memory_id,from_state,to_state,reason,retention_score,created_at
+               ) VALUES(?,?,?,?,NULL,?)""",
+            (memory_id, memory["state"], next_state, explanation, now),
+        )
+        if next_state in {"archived", "quarantine", "tombstoned"}:
+            self._mark_dependents_dirty_tx(conn, memory_id, f"refinery review moved evidence to {next_state}")
+
+    def apply_refinery_action(
+        self,
+        action: str,
+        memory_id: str,
+        *,
+        proposed_records: Sequence[dict[str, Any]] | None = None,
+        reason_code: str = "unspecified",
+        reason_text: str = "",
+        actor: str = "dashboard-operator",
+        decision_scope: str = "item_only",
+    ) -> dict[str, Any]:
+        """Apply one confirmed, audited, reversible refinery decision."""
+
+        action_value = str(action or "").casefold()
+        if action_value not in self._REFINERY_ACTIONS:
+            raise ValueError(
+                "refinery actions are keep_canonical, keep_reference, rewrite, split, archive, or trash"
+            )
+        scope_value = _normalize_review_scope(decision_scope)
+        if scope_value == "exact_duplicates" and action_value in {"rewrite", "split"}:
+            raise ValueError("exact-duplicate reach is not available for rewrite or split")
+        reason_value = normalize_text(reason_code)[:80] or "unspecified"
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        review_id = str(uuid.uuid4())
+        proposal_id = str(uuid.uuid4())
+        now = utc_now()
+        with self.transaction() as conn:
+            row = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+            if not row:
+                raise ValueError("memory not found")
+            memory = dict(row)
+            if str(memory["state"]) not in {"active", "cold"}:
+                raise ValueError("only active or cold records can be reviewed here")
+            target_ids = [memory_id]
+            memories = {memory_id: memory}
+            if scope_value == "exact_duplicates":
+                duplicate_rows = conn.execute(
+                    """SELECT * FROM memories
+                       WHERE content_hash=? AND context_mode=? AND scope_json=? AND preconditions_json=?
+                         AND source_type=? AND source_category=? AND COALESCE(source_ref,'')=?
+                         AND id<>? AND state IN ('active','cold')
+                       ORDER BY created_at,id""",
+                    (
+                        memory["content_hash"], memory["context_mode"], memory["scope_json"],
+                        memory["preconditions_json"], memory["source_type"],
+                        memory["source_category"], memory["source_ref"] or "", memory_id,
+                    ),
+                ).fetchall()
+                for duplicate in duplicate_rows:
+                    memories[str(duplicate["id"])] = dict(duplicate)
+                    target_ids.append(str(duplicate["id"]))
+            prior = {
+                "memories": {
+                    target_id: {
+                        "record_role": memories[target_id].get("record_role"),
+                        "role_method": memories[target_id].get("role_method"),
+                        "role_version": memories[target_id].get("role_version"),
+                        "role_reviewed_at": memories[target_id].get("role_reviewed_at"),
+                        "state": memories[target_id].get("state"),
+                        "content_hash": memories[target_id].get("content_hash"),
+                    }
+                    for target_id in target_ids
+                }
+            }
+            effect: dict[str, Any] = {"action": action_value}
+            created_ids: list[str] = []
+            classification = classify_record_role(
+                memory,
+                has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+            )
+
+            if action_value in self._REFINERY_ROLE_ACTIONS:
+                next_role = self._REFINERY_ROLE_ACTIONS[action_value]
+                for target_id in target_ids:
+                    conn.execute(
+                        """UPDATE memories SET record_role=?,role_method=?,role_version=?,
+                           role_reviewed_at=?,updated_at=? WHERE id=?""",
+                        (next_role, OPERATOR_ROLE_METHOD, ROLE_CLASSIFIER_VERSION, now, now, target_id),
+                    )
+                    refreshed = conn.execute("SELECT * FROM memories WHERE id=?", (target_id,)).fetchone()
+                    self._classify_and_present_tx(
+                        conn,
+                        dict(refreshed),
+                        has_active_dependencies=self._has_active_dependency_tx(conn, target_id),
+                        explicit_role=next_role,
+                        role_method=OPERATOR_ROLE_METHOD,
+                        preserve_operator_role=False,
+                    )
+                effect["role_changes"] = {target_id: next_role for target_id in target_ids}
+                proposal_kind = "role_change"
+            elif action_value in {"rewrite", "split"}:
+                records = [dict(record) for record in (proposed_records or []) if isinstance(record, dict)]
+                minimum = 1 if action_value == "rewrite" else 2
+                maximum = 1 if action_value == "rewrite" else 8
+                if not (minimum <= len(records) <= maximum):
+                    raise ValueError(
+                        "rewrite requires exactly one proposed record; split requires two to eight"
+                    )
+                for record in records:
+                    created_ids.append(
+                        self._insert_operator_memory_tx(
+                            conn,
+                            str(record.get("content") or ""),
+                            kind=str(record.get("kind") or memory.get("kind") or "semantic"),
+                            source_memory=memory,
+                            actor=actor_value,
+                            now=now,
+                        )
+                    )
+                conn.execute(
+                    """UPDATE memories SET record_role='reference',role_method=?,role_version=?,
+                       role_reviewed_at=?,updated_at=? WHERE id=?""",
+                    (OPERATOR_ROLE_METHOD, ROLE_CLASSIFIER_VERSION, now, now, memory_id),
+                )
+                refreshed = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                self._classify_and_present_tx(
+                    conn,
+                    dict(refreshed),
+                    has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                    explicit_role="reference",
+                    role_method=OPERATOR_ROLE_METHOD,
+                    preserve_operator_role=False,
+                )
+                effect["created_memory_ids"] = list(created_ids)
+                effect["source_role"] = "reference"
+                proposal_kind = action_value
+            else:
+                next_state = "archived" if action_value == "archive" else "tombstoned"
+                for target_id in target_ids:
+                    self._refinery_state_change_tx(
+                        conn,
+                        memories[target_id],
+                        next_state,
+                        f"refinery review: {reason_value}",
+                        now,
+                    )
+                    conn.execute(
+                        "UPDATE memories SET role_reviewed_at=?,role_method=? WHERE id=?",
+                        (now, OPERATOR_ROLE_METHOD, target_id),
+                    )
+                effect["state_changes"] = {target_id: next_state for target_id in target_ids}
+                proposal_kind = action_value
+
+            undo = {
+                "prior_memories": prior["memories"],
+                "created_memory_ids": created_ids,
+                "created_content_hashes": {
+                    created_id: str(
+                        conn.execute(
+                            "SELECT content_hash FROM memories WHERE id=?", (created_id,)
+                        ).fetchone()["content_hash"]
+                    )
+                    for created_id in created_ids
+                },
+                "post_action": effect,
+            }
+            conn.execute(
+                """INSERT INTO memory_refinery_proposals(
+                     proposal_id,proposal_kind,source_memory_ids_json,proposed_records_json,
+                     dependencies_json,rationale,readability_evidence_json,status,actor,review_id,
+                     before_state_json,undo_json,created_at,decided_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    proposal_id,
+                    proposal_kind,
+                    _trace_json(target_ids),
+                    _trace_json(
+                        [
+                            {"memory_id": created_id}
+                            for created_id in created_ids
+                        ]
+                    ),
+                    _trace_json([memory_id]),
+                    normalize_text(
+                        f"Operator {action_value} decision during Clarity review. "
+                        + " ".join(classification.get("reasons") or [])
+                    )[:1000],
+                    _trace_json(list(classification.get("readability_flags") or [])),
+                    "applied",
+                    actor_value,
+                    review_id,
+                    json.dumps(prior, sort_keys=True),
+                    json.dumps(undo, sort_keys=True),
+                    now,
+                    now,
+                ),
+            )
+            signal = {
+                "item_type": "refinery",
+                "action": action_value,
+                "reason_code": reason_value,
+                "decision_scope": scope_value,
+            }
+            conn.execute(
+                """INSERT INTO operator_review_decisions(
+                   review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
+                   reason_text,prior_json,effect_json,learning_signal_json,decision_scope,actor,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    review_id,
+                    "refinery",
+                    f"refinery:{memory_id}",
+                    None,
+                    memory_id,
+                    None,
+                    action_value,
+                    reason_value,
+                    normalize_text(reason_text)[:1000] or None,
+                    json.dumps(prior, sort_keys=True),
+                    json.dumps({**effect, "refinery_proposal_id": proposal_id}, sort_keys=True),
+                    json.dumps(signal, sort_keys=True),
+                    scope_value,
+                    actor_value,
+                    now,
+                ),
+            )
+            self._compile_policy_candidates_tx(conn)
+        return {
+            "review_id": review_id,
+            "proposal_id": proposal_id,
+            "action": action_value,
+            "decision_scope": scope_value,
+            "affected_memory_ids": target_ids,
+            "created_memory_ids": created_ids,
+        }
+
+    def undo_refinery_action(self, review_id: str, *, actor: str = "dashboard-operator") -> bool:
+        """Reverse one refinery decision without overwriting later changes."""
+
+        now = utc_now()
+        actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        with self.transaction() as conn:
+            decision = conn.execute(
+                """SELECT * FROM operator_review_decisions
+                   WHERE review_id=? AND item_type='refinery' AND reversed_at IS NULL""",
+                (review_id,),
+            ).fetchone()
+            if not decision:
+                return False
+            proposal = conn.execute(
+                "SELECT * FROM memory_refinery_proposals WHERE review_id=? AND status='applied'",
+                (review_id,),
+            ).fetchone()
+            if not proposal:
+                return False
+            try:
+                undo = json.loads(str(proposal["undo_json"] or "{}"))
+            except json.JSONDecodeError:
+                return False
+            post_action = dict(undo.get("post_action") or {})
+            state_changes = dict(post_action.get("state_changes") or {})
+            role_changes = dict(post_action.get("role_changes") or {})
+            source_role = post_action.get("source_role")
+            for memory_id, values in dict(undo.get("prior_memories") or {}).items():
+                current = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                if not current:
+                    continue
+                restore_role_fields = False
+                expected_state = state_changes.get(memory_id)
+                if expected_state:
+                    # Archive/trash undo: only if the state is still what the
+                    # action set, so later changes are never overwritten.
+                    if str(current["state"]) != expected_state:
+                        continue
+                    self._refinery_state_change_tx(
+                        conn,
+                        dict(current),
+                        str(values.get("state") or "active"),
+                        f"refinery undo by {actor_value}",
+                        now,
+                    )
+                    restore_role_fields = True
+                expected_role = role_changes.get(memory_id) or source_role
+                if expected_role and str(current["record_role"]) == expected_role:
+                    restore_role_fields = True
+                if restore_role_fields:
+                    conn.execute(
+                        """UPDATE memories SET record_role=?,role_method=?,role_version=?,
+                           role_reviewed_at=?,updated_at=? WHERE id=?""",
+                        (
+                            str(values.get("record_role") or "canonical"),
+                            str(values.get("role_method") or LEGACY_ROLE_METHOD),
+                            values.get("role_version"),
+                            values.get("role_reviewed_at"),
+                            now,
+                            memory_id,
+                        ),
+                    )
+                    refreshed = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                    self._classify_and_present_tx(
+                        conn,
+                        dict(refreshed),
+                        has_active_dependencies=self._has_active_dependency_tx(conn, memory_id),
+                        explicit_role=str(values.get("record_role") or "canonical"),
+                        role_method=str(values.get("role_method") or LEGACY_ROLE_METHOD),
+                        preserve_operator_role=False,
+                    )
+            created_hashes = dict(undo.get("created_content_hashes") or {})
+            for created_id in list(undo.get("created_memory_ids") or []):
+                current = conn.execute("SELECT * FROM memories WHERE id=?", (created_id,)).fetchone()
+                if not current:
+                    continue
+                unchanged = str(current["content_hash"]) == str(created_hashes.get(created_id) or "")
+                if unchanged and str(current["state"]) == "active":
+                    self._refinery_state_change_tx(
+                        conn,
+                        dict(current),
+                        "tombstoned",
+                        f"refinery undo by {actor_value}",
+                        now,
+                    )
+            conn.execute(
+                "UPDATE memory_refinery_proposals SET status='undone',undone_at=? WHERE proposal_id=?",
+                (now, proposal["proposal_id"]),
+            )
+            conn.execute(
+                "UPDATE operator_review_decisions SET reversed_at=? WHERE review_id=?", (now, review_id)
+            )
+            self._compile_policy_candidates_tx(conn)
+        return True
+
+    def rebuild_presentations(
+        self,
+        *,
+        batch_size: int = 200,
+        progress_callback: Any = None,
+    ) -> dict[str, Any]:
+        """Bounded administrative rebuild of every derived presentation."""
+
+        bounded_batch = max(10, min(int(batch_size), 500))
+        with self._lock:
+            ids = [
+                str(row["id"])
+                for row in self._conn.execute("SELECT id FROM memories ORDER BY id").fetchall()
+            ]
+        rebuilt = 0
+        for start in range(0, len(ids), bounded_batch):
+            batch = ids[start : start + bounded_batch]
+            with self.transaction() as conn:
+                dependency_ids = self._active_dependency_ids_tx(conn)
+                placeholders = ",".join("?" for _ in batch)
+                rows = conn.execute(
+                    f"SELECT * FROM memories WHERE id IN ({placeholders})", tuple(batch)
+                ).fetchall()
+                for row in rows:
+                    memory = dict(row)
+                    self._classify_and_present_tx(
+                        conn,
+                        memory,
+                        has_active_dependencies=str(memory["id"]) in dependency_ids,
+                    )
+                    rebuilt += 1
+            if callable(progress_callback):
+                progress_callback(
+                    {
+                        "phase": "rebuilding",
+                        "progress": int(100 * min(1.0, (start + len(batch)) / max(1, len(ids)))),
+                        "message": f"Rebuilt {rebuilt} of {len(ids)} presentations.",
+                    }
+                )
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (REFINERY_BACKFILL_KEY, REFINERY_BACKFILL_VERSION),
+            )
+            self._conn.commit()
+        return {"rebuilt": rebuilt, "total": len(ids)}
+
     def exact_duplicate_ids(self, memory_id: str) -> list[str]:
         """Return other recallable memories with the same normalized content hash."""
 
@@ -6507,6 +7676,15 @@ class CortexStore:
                        WHERE d.memory_id=m.id AND d.active=1
                      )
                    ORDER BY m.updated_at DESC LIMIT 500"""
+            ).fetchall()
+            clarity_sql, clarity_params = self._clarity_predicate_sql()
+            clarity_rows = self._conn.execute(
+                f"""SELECT m.*,p.display_title,p.display_summary,p.applies_when,p.retention_reason,
+                          p.readability_flags_json
+                    FROM memories m LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                    WHERE {clarity_sql}
+                    ORDER BY m.updated_at DESC LIMIT 300""",
+                clarity_params,
             ).fetchall()
             history_rows = self._conn.execute(
                 """SELECT * FROM operator_review_decisions
@@ -6623,6 +7801,34 @@ class CortexStore:
                 }
             )
 
+        inference_item_ids = {str(row["id"]) for row in unsupported_rows}
+        for row in clarity_rows:
+            memory = self._decode_refinery_row(row)
+            if str(memory["id"]) in inference_item_ids:
+                # The unsupported-claim queue already offers a decision for
+                # this record; one memory gets one inbox entry.
+                continue
+            flags = [str(flag) for flag in memory.get("readability_flags") or []]
+            flag_text = ", ".join(flag.replace("_", " ") for flag in flags) or "readability concerns"
+            items.append(
+                {
+                    "item_key": f"clarity:{memory['id']}",
+                    "item_type": "clarity",
+                    "category": "clarity",
+                    "title": "Make this record readable, or file it as reference",
+                    "question": (
+                        "Deterministic readability checks flagged this record: "
+                        f"{flag_text}. Decide how Kaya should present and govern it."
+                    ),
+                    "score": float(len(flags)) / 10.0,
+                    "evidence_count": len(flags),
+                    "created_at": memory.get("updated_at"),
+                    "memories": [memory],
+                    "evidence": [],
+                    "readability_flags": flags,
+                }
+            )
+
         outcome_lab = self.outcome_lab_snapshot(limit=500)
         outcome_memory_ids = {
             str(memory.get("memory_id"))
@@ -6709,7 +7915,7 @@ class CortexStore:
                 else 0
             )
 
-        category_order = {"conflicts": 0, "cleanup": 1, "connections": 2, "claims": 3, "accuracy": 4}
+        category_order = {"conflicts": 0, "cleanup": 1, "clarity": 2, "connections": 3, "claims": 4, "accuracy": 5}
         items.sort(
             key=lambda item: (
                 category_order.get(str(item.get("category")), 9),
@@ -6749,6 +7955,7 @@ class CortexStore:
                 "archive": "Removes the memory from normal recall while preserving its full history.",
                 "connection": "Approval creates an explained link backed by this operator decision; denial stores why it was rejected.",
                 "learning": "Only decisions marked Teach Kaya become policy evidence. One-off and exact-duplicate actions stay out of proposed standards.",
+                "clarity": "Clarity decisions change how a record is presented and governed. Rewrite and split show an editable preview first, keep the raw record as linked evidence, and remain reversible.",
             },
         }
 
@@ -7137,16 +8344,26 @@ class CortexStore:
         """Return a bounded read-only snapshot for the local visualization dashboard."""
         with self._lock:
             memory_rows = self._conn.execute(
-                """SELECT id,kind,content,source_type,source_category,source_ref,session_id,
-                   created_at,updated_at,observed_at,valid_from,valid_to,subject,predicate,object_value,
-                   extraction_method,confidence,currentness_confidence,importance,uniqueness,volatility,
-                   trust,state,pinned,protected,dirty,dirty_reason,supersedes_id,quarantine_reason,
-                   context_mode,scope_json,entities_json,preconditions_json,source_context,
-                   applicable_systems_json,applicable_versions_json,metadata_completeness,
-                   retrieved_count,selected_count,injected_count,used_count,success_count,confirmed_count,
-                   validated_count,helpful_count,harmful_count,correction_count,false_positive_count,
-                   duplicate_count,last_retrieved_at,last_injected_at,last_used_at,last_helpful_at
-                   FROM memories ORDER BY observed_at DESC LIMIT ?""",
+                """SELECT m.id,m.kind,m.content,m.source_type,m.source_category,m.source_ref,m.session_id,
+                   m.created_at,m.updated_at,m.observed_at,m.valid_from,m.valid_to,m.subject,m.predicate,
+                   m.object_value,
+                   m.extraction_method,m.confidence,m.currentness_confidence,m.importance,m.uniqueness,
+                   m.volatility,
+                   m.trust,m.state,m.pinned,m.protected,m.dirty,m.dirty_reason,m.supersedes_id,
+                   m.quarantine_reason,
+                   m.context_mode,m.scope_json,m.entities_json,m.preconditions_json,m.source_context,
+                   m.applicable_systems_json,m.applicable_versions_json,m.metadata_completeness,
+                   m.retrieved_count,m.selected_count,m.injected_count,m.used_count,m.success_count,
+                   m.confirmed_count,
+                   m.validated_count,m.helpful_count,m.harmful_count,m.correction_count,
+                   m.false_positive_count,
+                   m.duplicate_count,m.last_retrieved_at,m.last_injected_at,m.last_used_at,m.last_helpful_at,
+                   m.record_role,m.role_method,m.role_version,m.role_reviewed_at,
+                   p.display_title,p.display_summary,p.applies_when,p.retention_reason,
+                   p.readability_flags_json
+                   FROM memories m
+                   LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                   ORDER BY m.observed_at DESC LIMIT ?""",
                 (max(1, min(memory_limit, 2000)),),
             ).fetchall()
             ids = [str(row["id"]) for row in memory_rows]
@@ -7561,7 +8778,8 @@ class CortexStore:
         return {
             "generated_at": utc_now(),
             "stats": self.stats(),
-            "memories": [_decode_memory_metadata(row) for row in memory_rows],
+            "refinery": self.refinery_summary(),
+            "memories": [self._decode_refinery_row(row) for row in memory_rows],
             "edges": [_decode_edge(row) for row in edge_rows],
             "dependencies": [dict(row) for row in dependency_rows],
             "tools": [dict(row) for row in tool_rows],
@@ -7905,6 +9123,30 @@ class CortexStore:
                        AND ev.evidence_type<>'legacy_unattributed'
                    )"""
             ).fetchone()["n"]
+            invalid_record_roles = self._conn.execute(
+                """SELECT COUNT(*) n FROM memories
+                   WHERE record_role NOT IN ('canonical','reference','event','claim')
+                      OR role_method=''"""
+            ).fetchone()["n"]
+            orphan_presentations = self._conn.execute(
+                """SELECT COUNT(*) n FROM memory_presentations p
+                   LEFT JOIN memories m ON m.id=p.memory_id WHERE m.id IS NULL"""
+            ).fetchone()["n"]
+            missing_presentations = self._conn.execute(
+                """SELECT COUNT(*) n FROM memories m
+                   WHERE NOT EXISTS(SELECT 1 FROM memory_presentations p WHERE p.memory_id=m.id)"""
+            ).fetchone()["n"]
+            stale_presentations = self._conn.execute(
+                """SELECT COUNT(*) n FROM memory_presentations p
+                   JOIN memories m ON m.id=p.memory_id
+                   WHERE p.source_digest<>m.content_hash"""
+            ).fetchone()["n"]
+            orphan_refinery_proposals = self._conn.execute(
+                """SELECT COUNT(*) n FROM memory_refinery_proposals r
+                   WHERE r.review_id IS NOT NULL AND NOT EXISTS(
+                     SELECT 1 FROM operator_review_decisions d WHERE d.review_id=r.review_id
+                   )"""
+            ).fetchone()["n"]
         return {
             "ok": not (
                 duplicate_groups
@@ -7932,6 +9174,11 @@ class CortexStore:
                 or invalid_context_outcomes
                 or orphan_context_outcomes
                 or invalid_edge_evidence
+                or invalid_record_roles
+                or orphan_presentations
+                or missing_presentations
+                or stale_presentations
+                or orphan_refinery_proposals
             ),
             "duplicate_groups": len(duplicate_groups),
             "orphan_fts_rows": orphan_fts,
@@ -7960,6 +9207,11 @@ class CortexStore:
             "orphan_memory_context_outcomes": orphan_context_outcomes,
             "invalid_edge_evidence": invalid_edge_evidence,
             "unexplained_edges": unexplained_edges,
+            "invalid_record_roles": invalid_record_roles,
+            "orphan_memory_presentations": orphan_presentations,
+            "missing_memory_presentations": missing_presentations,
+            "stale_memory_presentations": stale_presentations,
+            "orphan_refinery_proposals": orphan_refinery_proposals,
         }
 
     def consolidate(self, *, dry_run: bool = True, similarity_threshold: float = 0.78) -> dict[str, Any]:

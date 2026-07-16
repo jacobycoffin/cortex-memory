@@ -180,6 +180,14 @@ class DashboardInterfaceTests(unittest.TestCase):
             "account-open",
             "account-change-form",
             "account-logout",
+            "role-view-bar",
+            "role-count-readable",
+            "role-count-reference",
+            "role-count-clarity",
+            "role-count-all",
+            "role-view-note",
+            "role-strip",
+            "graph-reference",
         }
         self.assertTrue(required.issubset(set(parser.ids)))
 
@@ -219,7 +227,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Label real answers; Cortex handles the calibration.", html)
         self.assertIn("Use, verify, or abstain", html)
         self.assertIn("function renderKindGuide", html)
-        self.assertIn("Connections and why they exist", html)
+        self.assertIn("History and connections", html)
         self.assertIn("edge.explanation", html)
         self.assertIn("filter(edge=>edge.explainable!==false)", html)
         self.assertIn("Hygiene queue", html)
@@ -303,6 +311,73 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertEqual(svg.attrib["viewBox"], "0 0 64 64")
         self.assertGreater((ROOT / "favicon.ico").stat().st_size, 100)
         self.assertGreater((ROOT / "apple-touch-icon.png").stat().st_size, 100)
+
+    def test_refinery_views_and_clarity_review_are_wired(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertIn('explorerRole: "readable"', html)
+        self.assertIn('data-role-view="readable"', html)
+        self.assertIn('data-role-view="reference"', html)
+        self.assertIn('data-role-view="clarity"', html)
+        self.assertIn('data-role-view="all"', html)
+        self.assertIn("Readable memories", html)
+        self.assertIn("Reference evidence", html)
+        self.assertIn("Needs clarity", html)
+        self.assertIn("All records", html)
+        self.assertIn("View raw evidence", html)
+        self.assertIn('raw.className="raw-evidence"', html)
+        self.assertIn("What Kaya remembers", html)
+        self.assertIn("When this applies", html)
+        self.assertIn("Why it is retained", html)
+        self.assertIn("Source and evidence", html)
+        self.assertIn("Raw record", html)
+        self.assertIn("History and connections", html)
+        self.assertIn('data-review-filter="clarity"', html)
+        self.assertIn("Keep as readable memory", html)
+        self.assertIn("Keep only as reference", html)
+        self.assertIn("Rewrite clearly", html)
+        self.assertIn("Split into separate memories", html)
+        self.assertIn("function loadClarityPreview", html)
+        self.assertIn("function renderClarityPreview", html)
+        self.assertIn("/api/refinery/preview", html)
+        self.assertIn("/api/refinery/action", html)
+        self.assertIn("app.graphShowReference", html)
+        self.assertIn("function renderRoleStrip", html)
+        self.assertIn("tap for full memory", html)
+
+    def test_clarity_draft_survives_refresh_and_is_captured_before_rerender(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertIn("function reviewDecisionInProgress()", html)
+        self.assertIn("load(false, { preserveReviewDraft: reviewDecisionInProgress() })", html)
+        self.assertIn("renderAll({ preserveReviewDraft })", html)
+        self.assertIn("if (!preserveReviewDraft) renderReviewInbox()", html)
+        capture_index = html.index('const proposedRecords=item.item_type==="clarity"')
+        rerender_index = html.index("app.review.busy=true;renderReviewInbox();", capture_index)
+        self.assertLess(capture_index, rerender_index)
+        self.assertIn("payload.proposed_records=proposedRecords", html)
+
+    def test_refinery_routes_follow_dashboard_security_boundaries(self) -> None:
+        server = (ROOT / "dashboard.py").read_text()
+        for route in (
+            "/api/refinery/summary",
+            "/api/refinery/items",
+            "/api/refinery/shadow",
+            "/api/refinery/preview",
+            "/api/refinery/action",
+            "/api/refinery/undo",
+            "/api/refinery/rebuild-presentations",
+        ):
+            self.assertIn(route, server)
+        self.assertIn('parsed.path.startswith(("/api/review/", "/api/policy/", "/api/refinery/"))', server)
+        self.assertIn("apply_refinery_action", server)
+        self.assertIn("undo_refinery_action", server)
+        self.assertIn("rebuild_presentations", server)
+        # Mutating refinery routes sit behind the same reviews_enabled gate;
+        # the read-only preview is dispatched before it.
+        preview_index = server.index('parsed.path == "/api/refinery/preview"')
+        gate_index = server.index("guided review changes are disabled on this dashboard")
+        action_index = server.index('parsed.path == "/api/refinery/action"')
+        self.assertLess(preview_index, gate_index)
+        self.assertGreater(action_index, gate_index)
 
     def test_guided_review_is_documented_as_opt_in(self) -> None:
         server = (ROOT / "dashboard.py").read_text()

@@ -1052,7 +1052,7 @@ class CortexStoreTests(unittest.TestCase):
                 "SELECT decision_scope FROM operator_review_decisions WHERE review_id='legacy-review'"
             ).fetchone()
             self.assertEqual(row["decision_scope"], "policy_evidence")
-            self.assertEqual(migrated.stats()["schema_version"], 17)
+            self.assertEqual(migrated.stats()["schema_version"], SCHEMA_VERSION)
         finally:
             migrated.close()
 

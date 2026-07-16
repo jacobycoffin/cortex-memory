@@ -304,6 +304,42 @@
     .score-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--surface-3); }
     .score-dot.on { background: var(--violet); }
     .row-date, .row-use { color: var(--muted); font-size: .68rem; }
+    .role-view-bar { display: flex; gap: 9px; flex-wrap: wrap; }
+    .role-view-tab { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 10px 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); cursor: pointer; transition: border-color .15s, background .15s; }
+    .role-view-tab strong { color: var(--text-soft); font-size: .72rem; font-weight: 600; }
+    .role-view-tab span { color: var(--muted); font-size: .66rem; }
+    .role-view-tab:hover { background: var(--surface-2); }
+    .role-view-tab.active { border-color: var(--violet); background: color-mix(in srgb,var(--violet) 9%,var(--surface)); }
+    .role-view-tab.active strong { color: var(--text); }
+    .role-view-note { color: var(--muted); font-size: .66rem; margin: 9px 0 15px; }
+    .role-strip { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; padding-top: 12px; border-top: 1px solid var(--border); }
+    .role-strip .role-chip strong { margin-left: 4px; font-weight: 700; }
+    .role-chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border); background: var(--surface-2); border-radius: 999px; padding: 4px 8px; font-size: .62rem; color: var(--muted); white-space: nowrap; }
+    .role-chip.role-canonical { color: var(--green); border-color: rgba(101,212,143,.25); background: rgba(101,212,143,.08); }
+    .role-chip.role-reference { color: var(--blue); border-color: rgba(112,168,255,.25); background: rgba(112,168,255,.08); }
+    .role-chip.role-event { color: var(--pink); border-color: color-mix(in srgb,var(--pink) 25%,transparent); background: color-mix(in srgb,var(--pink) 8%,transparent); }
+    .role-chip.role-claim { color: var(--amber); border-color: color-mix(in srgb,var(--amber) 28%,transparent); background: color-mix(in srgb,var(--amber) 9%,transparent); }
+    .flag-chip { display: inline-flex; align-items: center; border: 1px dashed color-mix(in srgb,var(--amber) 45%,var(--border)); border-radius: 999px; padding: 3px 8px; color: var(--amber); font-size: .58rem; white-space: nowrap; }
+    .memory-card { padding: 16px 17px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background .15s; }
+    .memory-card:hover, .memory-card:focus-visible { background: var(--surface-2); }
+    .memory-card:last-child { border-bottom: 0; }
+    .memory-card-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; margin-bottom: 8px; }
+    .memory-card-head .card-date { margin-left: auto; color: var(--muted); font-size: .66rem; white-space: nowrap; }
+    .memory-card-title { color: var(--text); font-size: .84rem; font-weight: 600; line-height: 1.4; }
+    .memory-card-summary { margin-top: 4px; color: var(--text-soft); font-size: .74rem; line-height: 1.52; }
+    .memory-card-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; color: var(--muted); font-size: .65rem; line-height: 1.45; }
+    .memory-card-meta strong { color: var(--text-soft); font-weight: 600; }
+    .memory-card-flags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+    .raw-evidence { margin-top: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); }
+    .raw-evidence summary { cursor: pointer; padding: 9px 12px; color: var(--muted); font-size: .68rem; font-weight: 600; }
+    .raw-evidence[open] summary { border-bottom: 1px solid var(--border); }
+    .raw-evidence pre { margin: 0; padding: 11px 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-soft); font: 500 .69rem/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; max-height: 320px; overflow: auto; }
+    .clarity-preview { margin-top: 12px; padding: 12px; border: 1px solid color-mix(in srgb,var(--blue) 35%,var(--border)); background: var(--surface); }
+    .clarity-preview h4 { font-size: .66rem; margin-bottom: 6px; }
+    .clarity-preview p { color: var(--muted); font-size: .58rem; line-height: 1.45; margin-bottom: 8px; }
+    .clarity-preview textarea { width: 100%; min-height: 74px; margin: 0 0 8px; padding: 9px; resize: vertical; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font: 500 .63rem/1.5 var(--sans); }
+    .clarity-preview .clarity-part-remove { margin: -4px 0 8px; }
+    .clarity-preview-deps { color: var(--muted); font-size: .56rem; line-height: 1.45; margin-top: 4px; }
     .pagination { display: flex; align-items: center; justify-content: space-between; padding: 14px 17px; border-top: 1px solid var(--border); }
     .pagination span { color: var(--muted); font-size: .68rem; }
     .pagination-actions { display: flex; gap: 7px; }
@@ -910,9 +946,14 @@
       .memory-row .status-chip { grid-column: 2; grid-row: 1; }
       .memory-title { font-size: .82rem; -webkit-line-clamp: 4; }
       .memory-source { -webkit-line-clamp: 2; }
+      .memory-card-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
       .memory-mobile-meta { display: block; }
     }
     @media (max-width: 760px) {
+      .role-view-bar { gap: 6px; }
+      .role-view-tab { flex: 1 1 40%; padding: 8px 10px; }
+      .memory-card-meta { display: none; }
+      .memory-card { padding: 14px; }
       :root { --sidebar: 0px; }
       body { padding-bottom: 86px; }
       .sidebar { inset: auto 0 0; width: 100%; height: 81px; padding: 7px max(8px,env(safe-area-inset-right)) calc(7px + env(safe-area-inset-bottom)) max(8px,env(safe-area-inset-left)); background: var(--sidebar-bg); border-top: 1px solid rgba(255,255,255,.12); overflow: hidden; }
@@ -1659,6 +1700,7 @@
             <div class="panel panel-pad">
               <div class="panel-heading"><div><h2>Memory composition</h2><p>How the brain is currently structured</p></div></div>
               <div class="donut-layout"><div class="donut" id="kind-donut"><div class="donut-center"><strong id="donut-total">0</strong><span>memories</span></div></div><div class="legend-list" id="kind-legend"></div><div class="kind-guide" id="kind-guide" aria-label="Memory type guide"></div></div>
+              <div class="role-strip" id="role-strip" aria-label="Record roles, counted separately from memory types"></div>
             </div>
           </div>
 
@@ -1692,6 +1734,7 @@
             <div class="graph-workbench">
               <div class="graph-status"><strong id="graph-summary">Preparing the map…</strong><span id="graph-help">Drag space to pan · drag nodes to arrange · double-click for details · F fits · L toggles labels</span></div>
               <div class="graph-actions">
+                <button class="ghost-btn" id="graph-reference" type="button" aria-pressed="false" title="Show reference evidence records on the map">Reference evidence</button>
                 <button class="ghost-btn" id="graph-fit" type="button">Fit all</button>
                 <button class="ghost-btn" id="graph-arrange" type="button">Reset layout</button>
                 <button class="ghost-btn" id="graph-labels" type="button" aria-pressed="true">Labels</button>
@@ -1745,6 +1788,7 @@
           <div class="review-filter-bar" id="review-filters" aria-label="Filter review inbox">
             <button class="review-filter active" type="button" data-review-filter="all">All</button>
             <button class="review-filter" type="button" data-review-filter="cleanup">Cleanup</button>
+            <button class="review-filter" type="button" data-review-filter="clarity">Clarity</button>
             <button class="review-filter" type="button" data-review-filter="connections">Connections</button>
             <button class="review-filter" type="button" data-review-filter="conflicts">Conflicts</button>
             <button class="review-filter" type="button" data-review-filter="claims">Claims</button>
@@ -2067,7 +2111,14 @@
         </section>
 
         <section class="view" id="view-explorer" aria-labelledby="explorer-heading">
-          <div class="page-heading"><div><div class="eyebrow">Searchable knowledge</div><h1 id="explorer-heading">The index</h1><p>Find a memory, inspect its provenance, and see what gives it weight.</p></div></div>
+          <div class="page-heading"><div><div class="eyebrow">Searchable knowledge</div><h1 id="explorer-heading">The index</h1><p>Readable memories first. Raw documents, code, and tables stay available as reference evidence instead of masquerading as normal memories.</p></div></div>
+          <div class="role-view-bar" id="role-view-bar" role="tablist" aria-label="Index record views">
+            <button class="role-view-tab active" type="button" role="tab" aria-selected="true" data-role-view="readable"><strong>Readable memories</strong><span id="role-count-readable">—</span></button>
+            <button class="role-view-tab" type="button" role="tab" aria-selected="false" data-role-view="reference"><strong>Reference evidence</strong><span id="role-count-reference">—</span></button>
+            <button class="role-view-tab" type="button" role="tab" aria-selected="false" data-role-view="clarity"><strong>Needs clarity</strong><span id="role-count-clarity">—</span></button>
+            <button class="role-view-tab" type="button" role="tab" aria-selected="false" data-role-view="all"><strong>All records</strong><span id="role-count-all">—</span></button>
+          </div>
+          <p class="role-view-note" id="role-view-note">Counts cover the complete audited index; the list below stays bounded for speed.</p>
           <div class="panel explorer-panel">
             <div class="explorer-toolbar"><input class="search-control" id="memory-search" type="search" placeholder="Search content, source, or subject…"><select class="control" id="memory-kind"><option value="">All types</option></select><select class="control" id="memory-state"><option value="">All states</option></select><select class="control" id="memory-source"><option value="">All sources</option></select><select class="control" id="memory-sort"><option value="recent">Newest</option><option value="signal">Highest signal</option><option value="used">Most used</option><option value="confidence">Most confident</option></select><span class="result-count" id="result-count"></span></div>
             <div class="memory-list" id="memory-list"></div>
@@ -2119,8 +2170,9 @@
     const app = {
       data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
       healthReview: { kind: null, index: 0, pending: null, busy: false }, sleepRunId: null, sleepFilter: "all", metacognitionFilter: "all",
-      review: { filter: "all", index: 0, busy: false },
+      review: { filter: "all", index: 0, busy: false, preview: null, previewLoading: false },
       policy: { busy: false, pending: null },
+      explorerRole: "readable", graphShowReference: false,
       failureCause: "all", failureTaskType: "all",
       graph: {
         scale: 1, panX: 0, panY: 0, showLabels: localStorage.getItem("cortex-graph-labels") !== "false",
@@ -2289,7 +2341,7 @@
 
     document.querySelectorAll(".nav-btn").forEach(button => button.addEventListener("click", () => setView(button.dataset.view)));
     document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => setView(button.dataset.go)));
-    document.getElementById("refresh").addEventListener("click", () => load(false));
+    document.getElementById("refresh").addEventListener("click", () => load(false, { preserveReviewDraft: reviewDecisionInProgress() }));
     document.getElementById("theme-toggle").addEventListener("click", event => { event.stopPropagation(); toggleThemeMenu(); });
     document.getElementById("theme-menu").addEventListener("click", event => event.stopPropagation());
     document.querySelectorAll("[data-theme-choice]").forEach(button => button.addEventListener("click", () => setTheme(button.dataset.themeChoice)));
@@ -2304,6 +2356,7 @@
     ["graph-kind","graph-state","graph-relation"].forEach(id => document.getElementById(id).addEventListener("input", () => { renderActiveGraph(); requestAnimationFrame(fitActiveRenderer); }));
     let graphSearchTimer;document.getElementById("graph-search").addEventListener("input",()=>{clearTimeout(graphSearchTimer);graphSearchTimer=setTimeout(handleGraphSearch,180);});
     ["memory-search","memory-kind","memory-state","memory-source","memory-sort"].forEach(id => document.getElementById(id).addEventListener("input", () => { app.explorerPage = 1; renderExplorer(); }));
+    document.querySelectorAll("[data-role-view]").forEach(button => button.addEventListener("click", () => { app.explorerRole = button.dataset.roleView; app.explorerPage = 1; renderExplorer(); }));
     document.getElementById("health-review-close").addEventListener("click", closeHealthReview);
     document.getElementById("training-next-action").addEventListener("click", handleTrainingNextAction);
     document.getElementById("policy-compile").addEventListener("click", () => runPolicyAction("compile"));
@@ -2336,6 +2389,7 @@
     document.getElementById("graph-minus").addEventListener("click", () => zoomActiveRenderer(1 / 1.22));
     document.getElementById("graph-reset").addEventListener("click", fitActiveRenderer);
     document.getElementById("graph-fit").addEventListener("click", fitActiveRenderer);
+    document.getElementById("graph-reference").addEventListener("click", () => { app.graphShowReference = !app.graphShowReference; document.getElementById("graph-reference").setAttribute("aria-pressed", String(app.graphShowReference)); renderActiveGraph(); });
     document.getElementById("graph-arrange").addEventListener("click", resetActiveLayout);
     document.getElementById("graph-labels").addEventListener("click", toggleGraphLabels);
     document.getElementById("graph-focus").addEventListener("click", toggleGraphFocus);
@@ -2366,7 +2420,11 @@
     updateRendererModeControls();
     document.getElementById("graph-labels").setAttribute("aria-pressed", String(app.graph.showLabels));
 
-    async function load(silent = false) {
+    function reviewDecisionInProgress() {
+      return app.view === "review" && Boolean(document.getElementById("review-decision-panel")?.dataset.action);
+    }
+
+    async function load(silent = false, { preserveReviewDraft = silent && reviewDecisionInProgress() } = {}) {
       const refresh = document.getElementById("refresh");
       refresh.classList.add("refreshing");
       try {
@@ -2376,7 +2434,7 @@
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         app.data = await response.json();
         populateFilters();
-        renderAll();
+        renderAll({ preserveReviewDraft });
         const generated = new Date(app.data.generated_at);
         document.getElementById("freshness").textContent = `Updated ${timeAgo(generated)}`;
         document.getElementById("sidebar-status").textContent = `${formatNum(app.data.stats.memories)} memories · ${formatNum(app.data.stats.edges)} connections`;
@@ -2389,8 +2447,8 @@
       }
     }
 
-    function renderAll() {
-      renderOverview(); renderTimeline(); renderReviewInbox(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
+    function renderAll({ preserveReviewDraft = false } = {}) {
+      renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
       if (app.view === "graph") renderActiveGraph();
     }
 
@@ -2473,6 +2531,7 @@
       ]);
       renderActivityChart();
       renderKindDonut();
+      renderRoleStrip();
       renderRecentActivity();
       const highSignal = [...memories].filter(row => row.state === "active").sort((a,b) => signalScore(b)-signalScore(a)).slice(0,6);
       renderSignalList(highSignal);
@@ -2500,6 +2559,13 @@
       points.forEach((p,i)=>{ if(entries.length<=10 || i%Math.ceil(entries.length/6)===0 || i===points.length-1) svg.append(svgText(p.x,H-10,shortDay(p.day),"chart-label","middle")); const c=svgEl("circle",{cx:p.x,cy:p.y,r:4,class:"chart-point"}); const title=svgEl("title"); title.textContent=`${p.day}: ${p.value} memory events`; c.append(title); svg.append(c); });
     }
 
+    function renderRoleStrip() {
+      const host=document.getElementById("role-strip");if(!host)return;host.replaceChildren();
+      const counts=app.data?.refinery?.role_counts||{};
+      const order=["canonical","reference","event","claim"];
+      order.filter(role=>counts[role]).forEach(role=>{const chip=el("span",`role-chip role-${role}`,roleLabel(role));chip.append(el("strong","",formatNum(counts[role])));host.append(chip);});
+      if(!host.childNodes.length)host.append(el("span","small-meta","Record roles appear after the first classification pass."));
+    }
     function renderKindDonut() {
       const aggregateKinds=app.data?.stats?.kinds, counts=aggregateKinds&&typeof aggregateKinds==="object"?Object.fromEntries(Object.entries(aggregateKinds).map(([kind,count])=>[kind,Number(count)||0])):countBy(app.data.memories||[],"kind"), entries=Object.entries(counts).sort((a,b)=>b[1]-a[1]), total=Math.max(1,entries.reduce((n,e)=>n+e[1],0));
       let cursor=0, stops=[];
@@ -2544,6 +2610,7 @@
       const kind = document.getElementById("graph-kind").value, state = document.getElementById("graph-state").value;
       const allEdges = graphAllEdges();
       let candidates = (app.data.memories || []).filter(row =>
+        (app.graphShowReference || memoryRole(row) === "canonical") &&
         (!kind || row.kind === kind) && (!state || row.state === state)
       );
       if (graph.focusId) {
@@ -3016,7 +3083,9 @@
     function updateGraphSummary() {
       const graph=app.graph,summary=document.getElementById("graph-summary");if(!summary)return;
       const focus=graph.focusId?" · neighborhood view":"",zoom=graph.rendererMode==="manual"?` · ${Math.round(graph.scale*100)}%`:graph.rendererMode==="matrix"?` · ${Math.round((graph.matrix.scale||1)*100)}%`:"",relation=relationFocus()?` · highlighting ${humanize(relationFocus())}`:"",cluster=["physics","constellation"].includes(graph.rendererMode)?` · ${graph.clusterMode==="none"?"natural layout":`clustered by ${graph.clusterMode}`}`:"";
-      summary.textContent=`${rendererDefinitions[graph.rendererMode]?.label||"Memory map"} · ${formatNum(graph.visibleNodes.length)} memories · ${formatNum(graph.visibleEdges.length)} links${cluster}${relation}${zoom}${focus}`;
+      const referenceTotal=Number(app.data?.refinery?.view_counts?.reference||0);
+      const roleNote=app.graphShowReference?" · readable + reference":referenceTotal?` · readable only (${formatNum(referenceTotal)} reference hidden)`:"";
+      summary.textContent=`${rendererDefinitions[graph.rendererMode]?.label||"Memory map"} · ${formatNum(graph.visibleNodes.length)} records · ${formatNum(graph.visibleEdges.length)} links${roleNote}${cluster}${relation}${zoom}${focus}`;
     }
 
     function renderTimeline() {
@@ -3055,6 +3124,14 @@
 
     function reviewItems(){const items=app.data?.review_inbox?.items||[],filter=app.review.filter||"all";return filter==="all"?items:items.filter(item=>item.category===filter);}
     function reviewReasonSuggestions(item,action){const kind=item.proposal_kind||"";
+      if(item.item_type==="clarity"){
+        if(action==="keep_canonical")return[["reads_clearly","It reads clearly as is"],["personally_confirmed","I know this is right"],["flag_wrong","The readability flag is wrong"]];
+        if(action==="keep_reference")return[["raw_material","It is raw technical material"],["lookup_only","Useful only for exact lookup"],["not_a_statement","It is not a memory statement"]];
+        if(action==="rewrite")return[["clearer_wording","Clearer wording"],["missing_context","It needed missing context"],["remove_noise","Removed surrounding noise"]];
+        if(action==="split")return[["mixed_claims","It mixed unrelated claims"],["one_idea_each","One idea per memory"],["partial_value","Only parts are worth keeping"]];
+        if(action==="archive")return[["not_needed_now","Not needed day to day"],["stale","It is outdated"],["history_only","Keep it only for history"]];
+        return[["duplicate","It is a duplicate"],["wrong","It is wrong"],["transient","It is temporary noise"],["not_durable","It is not worth remembering"]];
+      }
       if(item.item_type==="outcome")return action==="helpful"?[["memory_helped","Memory helped"],["answer_useful","The answer was useful"]]:action==="validated"?[["answer_verified","I checked it"],["source_confirmed","The source was right"]]:action==="harmful"?[["memory_misled","Memory misled Kaya"],["wrong_context","Wrong context"]]:[["answer_corrected","I corrected it"],["outdated_memory","The memory was outdated"]];
       if(["association","association_reinforcement"].includes(kind))return action==="approve"?[["meaningful_dependency","One explains the other"],["same_context","Useful in the same situation"],["useful_together","Kaya should recall them together"]]:[["unrelated","They are unrelated"],["co_occurrence_only","They only happened near each other"],["too_broad","The connection is too broad"],["confusing_link","This would confuse Kaya"]];
       if(item.item_type==="conflict"||kind==="interference_review")return action==="both_valid"?[["different_contexts","Different situations"],["different_times","Different times"],["both_can_be_true","Both can be true"]]:action==="trash_both"?[["both_wrong","Both are wrong"],["both_stale","Both are outdated"],["not_durable","Neither is worth keeping"]]:[["newer_is_current","This one is newer"],["correct_statement","This one is correct"],["other_context_only","The other applies elsewhere"]];
@@ -3066,6 +3143,7 @@
       return[];
     }
     function reviewActionDefinitions(item){const kind=item.proposal_kind||"";
+      if(item.item_type==="clarity")return[["keep_canonical","Keep as readable memory","Confirm it reads as one clear statement Kaya can use normally."],["keep_reference","Keep only as reference","File it as searchable raw evidence instead of a normal memory."],["rewrite","Rewrite clearly","Write the clear version yourself. The raw record stays as linked evidence."],["split","Split into separate memories","Break it into standalone statements, each linked to the raw record."],["archive","Archive it","Stop normal recall but keep its history."],["trash","Move to trash","Stop Kaya from recalling it. You can still restore it later."]];
       if(item.item_type==="outcome")return[["helpful","Helpful","The answer used relevant memory and the result was useful."],["validated","Validated","You independently verified the memory-backed result."],["harmful","Harmful","Recalled memory made the answer or task worse."],["corrected","Corrected","You had to correct the memory-backed answer."]];
       if(item.item_type==="inference")return[["confirm","Keep as true","Keep it available to Kaya and protect it from automatic cleanup."],["archive","Archive it","Stop normal recall but keep its history."],["trash","Move to trash","Stop Kaya from recalling it. You can still restore it later."]];
       if(item.item_type==="conflict"||kind==="interference_review")return[["keep_first","Memory A is current","Keep A available and archive B as superseded."],["keep_second","Memory B is current","Keep B available and archive A as superseded."],["both_valid","Both are valid","Keep both and record that the difference is contextual."],["trash_both","Trash both","Tombstone both statements while preserving their histories."]];
@@ -3085,17 +3163,80 @@
       const localLabel=item.item_type==="outcome"?"Only this answer":item.item_type==="conflict"||memories.length>1?"Only this review":"Only this memory";
       const localCopy="Make this one change. Kaya will not learn a general rule from it.";
       const options=[["item_only",localLabel,localCopy]];
-      if(singleMemory&&item.item_type==="proposal"&&duplicateCount>0)options.push(["exact_duplicates",`All ${formatNum(duplicateCount+1)} exact copies`,`Make the same change to every identical copy shown by Cortex. This will not teach a general rule.`]);
-      options.push(["policy_evidence","Teach Kaya from this","Make this change and save it as one example for similar memories in the future."]);
+      if(singleMemory&&["proposal","clarity"].includes(item.item_type)&&duplicateCount>0)options.push(["exact_duplicates",`All ${formatNum(duplicateCount+1)} exact copies`,`Make the same change to every identical copy shown by Cortex. This will not teach a general rule.`]);
+      options.push([
+        "policy_evidence",
+        "Teach Kaya from this",
+        item.item_type==="clarity"
+          ? "Save this as labeled evidence for the future role standard. It will not change similar memories or live recall now."
+          : "Make this change and save it as one example for similar memories in the future."
+      ]);
       return options;
     }
+    function updateScopeAvailability(action){
+      const input=document.querySelector('input[name="review-decision-scope"][value="exact_duplicates"]');
+      if(!input)return;
+      const disallowed=["rewrite","split"].includes(action);
+      input.disabled=disallowed;
+      const option=input.closest(".review-scope-option");
+      if(option)option.style.opacity=disallowed?".45":"";
+      if(disallowed&&input.checked){const local=document.querySelector('input[name="review-decision-scope"][value="item_only"]');if(local)local.checked=true;}
+    }
+    function clarityPreviewRecords(){
+      const preview=app.review.preview;
+      return preview?preview.records.map(record=>({content:String(record.content||"").trim(),kind:record.kind})).filter(record=>record.content):[];
+    }
+    async function loadClarityPreview(item,action){
+      const host=document.getElementById("review-clarity-preview");if(!host)return;
+      host.replaceChildren();app.review.preview=null;app.review.previewLoading=true;
+      const loading=el("div","clarity-preview");loading.append(el("h4","","Building deterministic preview…"),el("p","","No model call. The starting text is derived from the stored record; you edit and confirm."));host.append(loading);
+      updateReviewConfirmation(item);
+      try{
+        const response=await authRequest("/api/refinery/preview",{kind:action,memory_id:item.memories[0].id});
+        app.review.previewLoading=false;
+        app.review.preview={action,memoryId:item.memories[0].id,records:(response.preview?.proposed_records||[]).map(record=>({content:String(record.content||""),kind:record.kind}))};
+        renderClarityPreview(item,action);
+      }catch(error){
+        app.review.previewLoading=false;app.review.preview=null;host.replaceChildren();
+        const fail=el("div","clarity-preview");fail.append(el("h4","","Could not build the preview"),el("p","",error.message));host.append(fail);
+        updateReviewConfirmation(item);
+      }
+    }
+    function renderClarityPreview(item,action){
+      const host=document.getElementById("review-clarity-preview");if(!host||!app.review.preview)return;
+      host.replaceChildren();
+      const box=el("div","clarity-preview");
+      box.append(el("h4","",action==="rewrite"?"Editable rewrite preview":"Editable split preview"),el("p","",action==="rewrite"?"Edit the statement until it stands alone. Confirming stores it as your explicit memory; the raw record stays unchanged as linked reference evidence.":"Edit each part until it stands alone, and remove parts that should not become memories. Confirming stores them as your explicit memories; the raw record stays unchanged as linked reference evidence."));
+      app.review.preview.records.forEach((record,index)=>{
+        const area=document.createElement("textarea");area.value=record.content;area.setAttribute("aria-label",`Proposed memory ${index+1}`);
+        area.addEventListener("input",()=>{record.content=area.value;updateReviewConfirmation(item);});
+        box.append(area);
+        if(action==="split"&&app.review.preview.records.length>2){
+          const remove=el("button","ghost-btn clarity-part-remove","Remove this part");remove.type="button";
+          remove.addEventListener("click",()=>{app.review.preview.records.splice(index,1);renderClarityPreview(item,action);});
+          box.append(remove);
+        }
+      });
+      box.append(el("div","clarity-preview-deps",`Source dependency: every stored memory links back to raw record ${shortId(item.memories[0].id)}, which is kept as reference evidence.`));
+      host.append(box);
+      updateReviewConfirmation(item);
+    }
     function selectedReviewScope(){return document.querySelector('input[name="review-decision-scope"]:checked')?.value||"item_only";}
-    function reviewScopeImpact(item,scope){const duplicateCount=Number(item.exact_duplicate_count||0);if(scope==="exact_duplicates")return`All ${formatNum(duplicateCount+1)} exact copies will change. Kaya will not learn a rule.`;if(scope==="policy_evidence")return"Only this item changes now. Kaya saves it as one training example.";return"Only this item changes. Kaya will not learn a rule.";}
+    function reviewScopeImpact(item,scope){const duplicateCount=Number(item.exact_duplicate_count||0);if(scope==="exact_duplicates")return`All ${formatNum(duplicateCount+1)} exact copies will change. Kaya will not learn a rule.`;if(scope==="policy_evidence")return item.item_type==="clarity"?"Only this item changes now. The label is saved for the shadow-tested role standard; live recall does not change.":"Only this item changes now. Kaya saves it as one training example.";return"Only this item changes. Kaya will not learn a rule.";}
     function reviewActionLabel(item,action){return reviewActionDefinitions(item).find(([value])=>value===action)?.[1]||humanize(action);}
     function selectedReviewReason(){const panel=document.getElementById("review-decision-panel");return{code:panel?.dataset.reason||"",label:panel?.dataset.reasonLabel||""};}
     function renderReviewReasonSuggestions(item,action){const host=document.getElementById("review-reason-suggestions"),panel=document.getElementById("review-decision-panel");if(!host||!panel)return;host.replaceChildren();panel.dataset.reason="";panel.dataset.reasonLabel="";reviewReasonSuggestions(item,action).forEach(([code,label])=>{const button=el("button","review-reason-chip",label);button.type="button";button.dataset.reasonCode=code;button.setAttribute("aria-pressed","false");button.addEventListener("click",()=>{const selected=panel.dataset.reason===code;panel.dataset.reason=selected?"":code;panel.dataset.reasonLabel=selected?"":label;host.querySelectorAll(".review-reason-chip").forEach(chip=>chip.setAttribute("aria-pressed",String(!selected&&chip===button)));updateReviewConfirmation(item);});host.append(button);});}
-    function updateReviewConfirmation(item){const panel=document.getElementById("review-decision-panel"),summary=document.getElementById("review-final-summary"),button=document.getElementById("review-apply-decision");if(!panel||!summary||!button)return;const action=panel.dataset.action||"",reason=selectedReviewReason(),note=document.getElementById("review-reason-note")?.value.trim()||"";if(!action){summary.textContent="Choose what should happen first.";button.disabled=true;button.textContent="Choose an action";return;}const actionLabel=reviewActionLabel(item,action),scope=selectedReviewScope(),reasonCopy=reason.label?` Reason: ${reason.label}.`:note?" Your note will be saved.":" No reason is required.";summary.textContent=`${actionLabel}. ${reviewScopeImpact(item,scope)}${reasonCopy}`;button.disabled=app.review.busy||app.data?.review_writes_enabled!==true;button.textContent=`Confirm: ${actionLabel}`;}
-    function chooseReviewAction(item,action){const panel=document.getElementById("review-decision-panel"),followup=document.getElementById("review-decision-followup");if(!panel||!followup)return;panel.dataset.action=action;panel.querySelectorAll(".review-action-option").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.action===action)));followup.hidden=false;renderReviewReasonSuggestions(item,action);updateReviewConfirmation(item);requestAnimationFrame(()=>followup.scrollIntoView({behavior:"smooth",block:"nearest"}));}
+    function updateReviewConfirmation(item){const panel=document.getElementById("review-decision-panel"),summary=document.getElementById("review-final-summary"),button=document.getElementById("review-apply-decision");if(!panel||!summary||!button)return;const action=panel.dataset.action||"",reason=selectedReviewReason(),note=document.getElementById("review-reason-note")?.value.trim()||"";if(!action){summary.textContent="Choose what should happen first.";button.disabled=true;button.textContent="Choose an action";return;}
+      if(item.item_type==="clarity"&&["rewrite","split"].includes(action)){
+        const records=clarityPreviewRecords(),minimum=action==="split"?2:1;
+        const ready=app.review.preview&&app.review.preview.action===action&&records.length>=minimum&&records.every(record=>record.content.length>=8);
+        if(!ready){summary.textContent=app.review.previewLoading?"Building the editable preview…":action==="split"?"Edit the preview: keep at least two standalone parts.":"Edit the preview until the statement reads clearly.";button.disabled=true;button.textContent="Complete the preview first";return;}
+      }
+      const actionLabel=reviewActionLabel(item,action),scope=selectedReviewScope(),reasonCopy=reason.label?` Reason: ${reason.label}.`:note?" Your note will be saved.":" No reason is required.";summary.textContent=`${actionLabel}. ${reviewScopeImpact(item,scope)}${reasonCopy}`;button.disabled=app.review.busy||app.data?.review_writes_enabled!==true;button.textContent=`Confirm: ${actionLabel}`;}
+    function chooseReviewAction(item,action){const panel=document.getElementById("review-decision-panel"),followup=document.getElementById("review-decision-followup");if(!panel||!followup)return;panel.dataset.action=action;panel.querySelectorAll(".review-action-option").forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.action===action)));followup.hidden=false;renderReviewReasonSuggestions(item,action);updateScopeAvailability(action);
+      if(item.item_type==="clarity"&&["rewrite","split"].includes(action)){loadClarityPreview(item,action);}
+      else{app.review.preview=null;app.review.previewLoading=false;const previewHost=document.getElementById("review-clarity-preview");if(previewHost)previewHost.replaceChildren();}
+      updateReviewConfirmation(item);requestAnimationFrame(()=>followup.scrollIntoView({behavior:"smooth",block:"nearest"}));}
     function renderReviewFocus(item,index,total){
       const host=document.getElementById("review-focus"),head=el("div","review-focus-head"),copy=el("div",""),meta=el("div","review-sequence",`${index+1} of ${formatNum(total)}`);
       copy.append(el("div","eyebrow",`${humanize(item.category)} · ${humanize(item.proposal_kind||item.item_type)}`),el("h2","",item.title),el("p","",item.question));head.append(copy,meta);host.append(head);
@@ -3105,7 +3246,9 @@
       const evidenceSection=el("section","review-section");evidenceSection.append(el("h3","","Why Cortex surfaced this"));const explanation=el("div","review-witness-list"),proposal=el("div","review-witness",item.question);explanation.append(proposal);Object.entries(details).forEach(([key,value])=>explanation.append(el("div","review-witness",`${humanize(key)}: ${typeof value==="object"?JSON.stringify(value):value}`)));(item.evidence||[]).forEach((witness,witnessIndex)=>explanation.append(el("div","review-witness",`Witness ${witnessIndex+1}: ${humanize(witness.evidence_kind)} · score ${Number(witness.score||0).toFixed(3)}${witness.episode_id?` · episode ${witness.episode_id}`:""} · ${formatDate(witness.created_at)}`)));if(!(item.evidence||[]).length&&!Object.keys(details).length)explanation.append(el("div","review-witness","No additional supporting record was preserved. Treat that absence as evidence against a strong automatic action."));evidenceSection.append(explanation);host.append(evidenceSection);
       const decision=el("section","review-decision");decision.id="review-decision-panel";decision.dataset.action="";decision.dataset.reason="";decision.dataset.reasonLabel="";decision.append(el("h3","","Make one decision"),el("p","","Start with the result you want. Kaya will ask about reach and reason after that."));
       const actionStep=el("div","review-step"),actionHead=el("div","review-step-head");actionHead.append(el("span","review-step-number","1"),el("strong","","What should happen?"),el("span","","Pick the closest result."));const actionOptions=el("div","review-action-options");reviewActionDefinitions(item).forEach(([action,label,effect])=>{const button=el("button",`review-action-option ${action.includes("trash")||["harmful","corrected"].includes(action)?"danger":""}`);button.type="button";button.dataset.action=action;button.setAttribute("aria-pressed","false");button.append(el("strong","",label),el("span","",effect));button.addEventListener("click",()=>chooseReviewAction(item,action));actionOptions.append(button);});const skip=el("button","ghost-btn","Skip this memory for now");skip.type="button";skip.disabled=app.review.busy;skip.addEventListener("click",()=>{app.review.index=(app.review.index+1)%Math.max(1,reviewItems().length);renderReviewInbox();});actionStep.append(actionHead,actionOptions,skip);decision.append(actionStep);
+      app.review.preview=null;app.review.previewLoading=false;
       const followup=el("div","");followup.id="review-decision-followup";followup.hidden=true;
+      const previewHost=el("div","");previewHost.id="review-clarity-preview";followup.append(previewHost);
       const scope=el("fieldset","review-scope review-step"),legend=el("legend","","2 · Where should this apply?"),scopeOptions=el("div","review-scope-options"),impact=el("div","review-scope-impact",reviewScopeImpact(item,"item_only"));impact.id="review-scope-impact";scope.append(legend);reviewScopeOptions(item).forEach(([value,label,description],scopeIndex)=>{const option=el("label","review-scope-option"),input=document.createElement("input"),optionCopy=el("span","");input.type="radio";input.name="review-decision-scope";input.value=value;input.checked=scopeIndex===0;input.setAttribute("aria-label",label);input.addEventListener("change",()=>{impact.textContent=reviewScopeImpact(item,value);updateReviewConfirmation(item);});optionCopy.append(el("strong","",label),el("span","",description));option.append(input,optionCopy);scopeOptions.append(option);});scope.append(scopeOptions,impact);followup.append(scope);
       const reasonStep=el("div","review-step"),reasonHead=el("div","review-step-head");reasonHead.append(el("span","review-step-number","3"),el("strong","","Want to say why?"),el("span","","Optional. If none fit, leave this blank."));const reasonSuggestions=el("div","review-reason-suggestions");reasonSuggestions.id="review-reason-suggestions";const note=el("textarea","review-reason-note");note.id="review-reason-note";note.setAttribute("aria-label","Optional reason in your own words");note.placeholder="Your own reason, if you want to add one…";note.addEventListener("input",()=>updateReviewConfirmation(item));reasonStep.append(reasonHead,reasonSuggestions,note);followup.append(reasonStep);
       const final=el("div","review-final"),finalCopy=el("div","");finalCopy.append(el("strong","","Ready when you are"),el("span","", "Choose what should happen first."));finalCopy.lastChild.id="review-final-summary";const apply=el("button","primary-btn","Choose an action");apply.id="review-apply-decision";apply.type="button";apply.disabled=true;apply.addEventListener("click",()=>submitReviewDecision(item,decision.dataset.action));final.append(finalCopy,apply);followup.append(final);decision.append(followup);
@@ -3113,19 +3256,26 @@
     }
     async function submitReviewDecision(item,action){
       const reasonText=document.getElementById("review-reason-note")?.value.trim()||"",selected=selectedReviewReason(),reason=selected.code||(reasonText?"own_words":"operator_choice"),decisionScope=selectedReviewScope();
-      if(!action){showToast("Choose what should happen first.",true);return;}if(app.review.busy)return;app.review.busy=true;renderReviewInbox();
+      if(!action){showToast("Choose what should happen first.",true);return;}if(app.review.busy)return;
+      const proposedRecords=item.item_type==="clarity"&&["rewrite","split"].includes(action)?clarityPreviewRecords():[];
+      if(item.item_type==="clarity"&&["rewrite","split"].includes(action)&&!proposedRecords.length){showToast("Complete the editable preview before confirming.",true);return;}
+      app.review.busy=true;renderReviewInbox();
       try{
-        let path,payload;if(item.item_type==="proposal"){path="/api/review/proposal";payload={proposal_id:item.proposal_id,action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else if(item.item_type==="inference"){path="/api/review/inference";payload={memory_id:item.memories[0].id,resolution:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else if(item.item_type==="conflict"){path="/api/review/conflict";payload={first_id:item.memories[0].id,second_id:item.memories[1].id,resolution:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else{path="/api/outcome/label";payload={task_id:item.task.task_id,outcome:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}
-        const response=await authRequest(path,payload);app.review.busy=false;const affected=Number(response?.result?.affected_memory_ids?.length||0);if(decisionScope==="policy_evidence")showToast("Saved. Kaya will use this as one training example.");else if(decisionScope==="exact_duplicates")showToast(`Saved. ${formatNum(affected||Number(item.exact_duplicate_count||0)+1)} exact copies changed; no rule was learned.`);else showToast("Saved. Only this item changed; no rule was learned.");await load(true);
+        let path,payload;if(item.item_type==="proposal"){path="/api/review/proposal";payload={proposal_id:item.proposal_id,action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else if(item.item_type==="clarity"){path="/api/refinery/action";payload={action,memory_id:item.memories[0].id,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};if(proposedRecords.length)payload.proposed_records=proposedRecords;}else if(item.item_type==="inference"){path="/api/review/inference";payload={memory_id:item.memories[0].id,resolution:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else if(item.item_type==="conflict"){path="/api/review/conflict";payload={first_id:item.memories[0].id,second_id:item.memories[1].id,resolution:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}else{path="/api/outcome/label";payload={task_id:item.task.task_id,outcome:action,reason_code:reason,reason_text:reasonText,decision_scope:decisionScope};}
+        const response=await authRequest(path,payload);app.review.busy=false;const affected=Number(response?.result?.affected_memory_ids?.length||0),created=Number(response?.result?.created_memory_ids?.length||0);
+        const clarityTraining=decisionScope==="policy_evidence"?" The label was also saved for shadow-tested role training; live recall was not changed by the label.":"";
+        if(item.item_type==="clarity"&&created)showToast(`Saved. ${formatNum(created)} readable ${created===1?"memory":"memories"} created; the raw record stays as linked reference evidence.${clarityTraining} Undo is in the decision history.`);
+        else if(item.item_type==="clarity")showToast(`Saved. ${reviewActionLabel(item,action)} applied to ${formatNum(Math.max(1,affected))} record${affected>1?"s":""}.${clarityTraining} Undo is in the decision history.`);
+        else if(decisionScope==="policy_evidence")showToast("Saved. Kaya will use this as one training example.");else if(decisionScope==="exact_duplicates")showToast(`Saved. ${formatNum(affected||Number(item.exact_duplicate_count||0)+1)} exact copies changed; no rule was learned.`);else showToast("Saved. Only this item changed; no rule was learned.");await load(true);
       }catch(error){app.review.busy=false;showToast(`Could not save decision: ${error.message}`,true);renderReviewInbox();}
     }
     async function undoReviewDecision(reviewId){try{await authRequest("/api/review/undo",{review_id:reviewId});showToast("Decision reversed; the proposal is back in the inbox.");await load(true);}catch(error){showToast(`Could not reverse decision: ${error.message}`,true);}}
     function reviewReasonDisplay(value){return value==="operator_choice"?"No reason added":value==="own_words"?"Reason in your own words":humanize(value||"operator signal");}
     function renderReviewLearning(inbox){
       const signals=document.getElementById("review-learning-signals"),history=document.getElementById("review-history-list"),rows=inbox.recent_decisions||[],active=rows.filter(row=>!row.reversed_at),counts=app.data?.policy_training?.counts||{},training=Number(counts.decisions||0),oneOff=Number(counts.item_only_decisions||0)+Number(counts.exact_duplicate_decisions||0);document.getElementById("review-decision-total").textContent=`${formatNum(training)} training · ${formatNum(oneOff)} one-off`;signals.replaceChildren();history.replaceChildren();const learning=inbox.learning_signals||[];
-      if(!learning.length)signals.append(emptyState("No training examples yet","One-off and exact-duplicate decisions are still audited, but only reviews marked Teach Kaya appear here or count toward a proposed standard."));
-      learning.slice(0,6).forEach(item=>{const [type,action,reason]=String(item.signal||"").split(":"),card=el("article","review-learning-card");card.append(el("strong","",`${formatNum(item.count)} × ${reviewReasonDisplay(reason)}`),el("span","",`${humanize(type)} · ${humanize(action)}. Repetition makes this pattern eligible for standards review.`));signals.append(card);});
-      const scopeLabels={item_only:"This review only",exact_duplicates:"Exact duplicates",policy_evidence:"Teach Kaya"};active.slice(0,8).forEach(item=>{const row=el("div","review-history-row"),copy=el("div","");copy.append(el("strong","",`${humanize(item.action)} · ${reviewReasonDisplay(item.reason_code)}`),el("span","",` ${humanize(item.item_type)} · ${scopeLabels[item.decision_scope]||"Legacy training evidence"} · ${formatDate(item.created_at)}`));row.append(copy,el("span","",item.reason_text||"No additional note"));if(item.proposal_id){const undo=el("button","ghost-btn","Undo");undo.type="button";undo.addEventListener("click",()=>undoReviewDecision(item.review_id));row.append(undo);}else row.append(el("span","","Preserved in source workflow"));history.append(row);});
+      if(!learning.length)signals.append(emptyState("No training examples yet","One-off and exact-duplicate decisions are still audited. Reviews marked Teach Kaya appear here; Clarity labels stay shadow-only until the role policy passes evaluation."));
+      learning.slice(0,6).forEach(item=>{const [type,action,reason]=String(item.signal||"").split(":"),card=el("article","review-learning-card"),effect=type==="refinery"?"Saved as role-label evidence. Live role-aware recall remains shadow-only.":"Repetition makes this pattern eligible for standards review.";card.append(el("strong","",`${formatNum(item.count)} × ${reviewReasonDisplay(reason)}`),el("span","",`${humanize(type)} · ${humanize(action)}. ${effect}`));signals.append(card);});
+      const scopeLabels={item_only:"This review only",exact_duplicates:"Exact duplicates",policy_evidence:"Teach Kaya"};active.slice(0,8).forEach(item=>{const row=el("div","review-history-row"),copy=el("div","");copy.append(el("strong","",`${humanize(item.action)} · ${reviewReasonDisplay(item.reason_code)}`),el("span","",` ${humanize(item.item_type)} · ${scopeLabels[item.decision_scope]||"Legacy training evidence"} · ${formatDate(item.created_at)}`));row.append(copy,el("span","",item.reason_text||"No additional note"));if(item.proposal_id||item.item_type==="refinery"){const undo=el("button","ghost-btn","Undo");undo.type="button";undo.addEventListener("click",()=>undoReviewDecision(item.review_id));row.append(undo);}else row.append(el("span","","Preserved in source workflow"));history.append(row);});
     }
 
     function policySelectorText(selector){return Object.entries(selector||{}).map(([key,value])=>`${humanize(key)} = ${humanize(value)}`).join(" · ")||"All matching evidence";}
@@ -3620,26 +3770,123 @@
     function renderHealthConfirmation(item,kind){const action=app.healthReview.pending,box=el("div","health-review-confirm"),copy=kind==="contradictions"?(action==="keep_first"?"Cortex will keep Memory A active and archive Memory B as superseded.":action==="keep_second"?"Cortex will keep Memory B active and archive Memory A as superseded.":"Cortex will keep both memories active and mark the relationship as contextual, not contradictory."):(action==="confirm"?"Cortex will record this as explicitly confirmed by you and keep it in normal recall.":"Cortex will archive this inference. It remains in history and can be restored later.");box.append(el("strong","","Confirm this decision"),el("p","",`${copy} The original content and audit trail are preserved.`));const buttons=el("div","health-action-buttons"),confirm=el("button","primary-btn",app.healthReview.busy?"Saving…":"Confirm decision"),cancel=el("button","ghost-btn","Cancel");confirm.type="button";cancel.type="button";confirm.disabled=app.healthReview.busy;cancel.disabled=app.healthReview.busy;confirm.addEventListener("click",()=>submitHealthDecision(item,kind,action));cancel.addEventListener("click",()=>{app.healthReview.pending=null;renderHealthReviewer();});buttons.append(confirm,cancel);box.append(buttons);document.getElementById("health-review-body").append(box);}
     async function submitHealthDecision(item,kind,resolution){if(app.healthReview.busy)return;app.healthReview.busy=true;renderHealthReviewer();try{const path=kind==="contradictions"?"/api/review/conflict":"/api/review/inference",payload=kind==="contradictions"?{first_id:item.src_id,second_id:item.dst_id,resolution}:{memory_id:item.id,resolution};await authRequest(path,payload);app.healthReview.busy=false;app.healthReview.pending=null;showToast("Decision saved; memory history preserved");await load(true);}catch(error){app.healthReview.busy=false;showToast(`Could not save review: ${error.message}`,true);renderHealthReviewer();}}
 
+    function memoryRole(row){return String(row.record_role||"canonical");}
+    function roleLabel(role){return({canonical:"Readable memory",reference:"Reference evidence",event:"Event",claim:"Unconfirmed claim"})[role]||humanize(role);}
+    function roleViewMatches(row,view){
+      if(view==="readable")return memoryRole(row)==="canonical";
+      if(view==="reference")return memoryRole(row)==="reference";
+      if(view==="clarity")return row.needs_clarity===true;
+      return true;
+    }
+    function renderRoleViewBar(){
+      const counts=app.data?.refinery?.view_counts||{};
+      document.querySelectorAll("[data-role-view]").forEach(button=>{
+        const view=button.dataset.roleView,count=counts[view],active=view===app.explorerRole;
+        const badge=button.querySelector("span");if(badge)badge.textContent=count===undefined?"—":formatNum(count);
+        button.classList.toggle("active",active);button.setAttribute("aria-selected",String(active));
+      });
+      const notes={
+        readable:"Concise statements Kaya can act on. Counts cover the complete audited index; the list below stays bounded for speed.",
+        reference:"Documents, code, tables, configuration, and raw technical material. Raw content stays collapsed until you open it.",
+        clarity:"Unresolved, mixed, contextless, unsupported, or status-like records. Fix them in Train Kaya → Clarity.",
+        all:"The complete audited index, including events, claims, and archived history."
+      };
+      document.getElementById("role-view-note").textContent=notes[app.explorerRole]||notes.readable;
+    }
+    function usageEvidenceLine(memory){
+      const helpful=Number(memory.helpful_count||0)+Number(memory.validated_count||0),harmful=Number(memory.harmful_count||0)+Number(memory.correction_count||0);
+      let line=`${formatNum(memory.retrieved_count||0)} recalled · ${formatNum(memory.used_count||0)} used`;
+      if(helpful)line+=` · ${formatNum(helpful)} helpful`;
+      if(harmful)line+=` · ${formatNum(harmful)} harmful`;
+      return line;
+    }
+    function renderMemoryCard(memory){
+      const role=memoryRole(memory),card=el("article","memory-card");card.tabIndex=0;
+      const head=el("div","memory-card-head");
+      head.append(el("span",`role-chip role-${role}`,roleLabel(role)),el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("span","chip",humanize(memory.kind)));
+      head.append(el("span","card-date",shortDate(memory.observed_at)));
+      card.append(head);
+      const fallbackTitle=truncate(cleanMemory(memory.content),110);
+      card.append(el("h3","memory-card-title",memory.display_title||fallbackTitle));
+      const summary=memory.display_summary||truncate(cleanMemory(memory.content),300);
+      if(summary&&summary!==memory.display_title)card.append(el("p","memory-card-summary",summary));
+      const meta=el("div","memory-card-meta");
+      const applies=el("span","");applies.append(el("strong","","Applies:"),document.createTextNode(` ${memory.applies_when||"Applies everywhere"}`));
+      const source=el("span","");source.append(el("strong","","Source:"),document.createTextNode(` ${humanize(memory.source_category)} · ${sourceName(memory)}`));
+      const kept=el("span","");kept.append(el("strong","","Kept because:"),document.createTextNode(` ${memory.retention_reason||"Retained by the storage quality checks."}`));
+      const use=el("span","");use.append(el("strong","","Evidence:"),document.createTextNode(` ${usageEvidenceLine(memory)}`));
+      meta.append(applies,source,kept,use);card.append(meta);
+      const flags=(memory.readability_flags||[]).filter(flag=>flag!=="uncertain_language");
+      if(memory.needs_clarity&&flags.length){
+        const flagRow=el("div","memory-card-flags");
+        flags.slice(0,5).forEach(flag=>flagRow.append(el("span","flag-chip",humanize(flag))));
+        card.append(flagRow);
+      }
+      card.append(el("div","memory-mobile-meta",`${humanize(memory.kind)} · ${shortDate(memory.observed_at)} · tap for full memory`));
+      if(role==="reference"){
+        const raw=document.createElement("details");raw.className="raw-evidence";
+        const summaryEl=document.createElement("summary");summaryEl.textContent="View raw evidence";
+        const pre=document.createElement("pre");pre.textContent=String(memory.content||"");
+        raw.append(summaryEl,pre);raw.addEventListener("click",event=>event.stopPropagation());
+        raw.addEventListener("keydown",event=>event.stopPropagation());
+        card.append(raw);
+      }
+      card.addEventListener("click",()=>selectMemory(memory.id));
+      card.addEventListener("keydown",event=>{if(event.key==="Enter")selectMemory(memory.id);});
+      return card;
+    }
     function renderExplorer() {
       if(!app.data)return;
+      renderRoleViewBar();
       const query=document.getElementById("memory-search").value.trim().toLowerCase(),kind=document.getElementById("memory-kind").value,state=document.getElementById("memory-state").value,source=document.getElementById("memory-source").value,sort=document.getElementById("memory-sort").value;
-      let rows=(app.data.memories||[]).filter(row=>(!query||searchText(row).includes(query))&&(!kind||row.kind===kind)&&(!state||row.state===state)&&(!source||row.source_category===source));
+      let rows=(app.data.memories||[]).filter(row=>roleViewMatches(row,app.explorerRole)&&(!query||searchText(row).includes(query))&&(!kind||row.kind===kind)&&(!state||row.state===state)&&(!source||row.source_category===source));
       if(sort==="signal")rows.sort((a,b)=>signalScore(b)-signalScore(a));else if(sort==="used")rows.sort((a,b)=>Number(b.used_count||0)-Number(a.used_count||0));else if(sort==="confidence")rows.sort((a,b)=>Number(b.confidence||0)-Number(a.confidence||0));else rows.sort((a,b)=>Date.parse(b.observed_at)-Date.parse(a.observed_at));
       const pages=Math.max(1,Math.ceil(rows.length/app.pageSize));app.explorerPage=Math.min(app.explorerPage,pages);const start=(app.explorerPage-1)*app.pageSize,visible=rows.slice(start,start+app.pageSize),host=document.getElementById("memory-list");host.replaceChildren();
-      document.getElementById("result-count").textContent=`${formatNum(rows.length)} matching memories`;document.getElementById("page-label").textContent=`Page ${app.explorerPage} of ${pages}`;document.getElementById("page-prev").disabled=app.explorerPage<=1;document.getElementById("page-next").disabled=app.explorerPage>=pages;
-      if(!visible.length){host.append(emptyState("No memories found","Try a broader phrase or remove one of the filters."));return;}
-      visible.forEach(memory=>{const row=el("div","memory-row");row.tabIndex=0;const content=el("div","memory-content"),title=el("div","memory-title",truncate(cleanMemory(memory.content),320));title.title=cleanMemory(memory.content);content.append(title,el("div","memory-source",sourceName(memory)),el("div","memory-mobile-meta",`${humanize(memory.kind)} · ${shortDate(memory.observed_at)} · ${formatNum(memory.used_count)} uses · tap for full memory`));row.append(content,el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("div","row-date",shortDate(memory.observed_at)),scoreDots(memory.confidence),el("div","row-use",`${formatNum(memory.used_count)} uses`),el("div","row-arrow","›"));row.addEventListener("click",()=>selectMemory(memory.id));row.addEventListener("keydown",e=>{if(e.key==="Enter")selectMemory(memory.id)});host.append(row);});
+      const fullTotal=Number(app.data?.refinery?.view_counts?.[app.explorerRole]);
+      const totalNote=Number.isFinite(fullTotal)&&fullTotal>rows.length?` of ${formatNum(fullTotal)} total`:"";
+      document.getElementById("result-count").textContent=`${formatNum(rows.length)} matching${totalNote}`;document.getElementById("page-label").textContent=`Page ${app.explorerPage} of ${pages}`;document.getElementById("page-prev").disabled=app.explorerPage<=1;document.getElementById("page-next").disabled=app.explorerPage>=pages;
+      if(!visible.length){
+        const copy={
+          readable:"No readable memories match. New canonical statements appear here; raw material lives under Reference evidence.",
+          reference:"No reference evidence matches. Vault sections, code, tables, and logs are filed here automatically.",
+          clarity:"Nothing needs clarity right now. Flagged records arrive here until you review them in Train Kaya.",
+          all:"Try a broader phrase or remove one of the filters."
+        };
+        host.append(emptyState("No records in this view",copy[app.explorerRole]||copy.all));return;
+      }
+      visible.forEach(memory=>host.append(renderMemoryCard(memory)));
     }
 
     async function selectMemory(id) {
       app.selectedId=id; openDrawer(); const body=document.getElementById("drawer-body");body.replaceChildren();body.append(emptyState("Loading memory…","Fetching provenance and connections."));
-      try{const response=await fetch(`/api/memory?id=${encodeURIComponent(id)}`,{cache:"no-store"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const payload=await response.json(),memory=payload.memory;body.replaceChildren();
-        const chips=el("div","chip-row");chips.append(el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("span","chip",humanize(memory.kind)),el("span","chip",humanize(memory.source_category)));body.append(chips,el("div","drawer-content",cleanMemory(memory.content)));
-        const scoreSection=detailSection("Signal profile"),scores=el("div","score-grid");[["Confidence",memory.confidence],["Currentness",memory.currentness_confidence],["Importance",memory.importance],["Uniqueness",memory.uniqueness],["Trust",memory.trust],["Volatility",memory.volatility]].forEach(([name,value])=>scores.append(scoreBar(name,value)));scoreSection.append(scores);body.append(scoreSection);
-        const counterSection=detailSection("Memory activity"),counters=el("div","counter-grid");[["Retrieved",memory.retrieved_count],["Selected",memory.selected_count],["Used",memory.used_count],["Helpful",Number(memory.helpful_count||0)+Number(memory.validated_count||0)],["Harmful",Number(memory.harmful_count||0)+Number(memory.false_positive_count||0)],["Success",memory.success_count],["Versions",payload.versions.length],["Links",payload.edges.length]].forEach(([name,value])=>{const c=el("div","counter");c.append(el("strong","",formatNum(value)),el("span","",name));counters.append(c);});counterSection.append(counters);body.append(counterSection);
-        const provenance=detailSection("Provenance"),dl=el("dl","detail-grid");[["Source",`${humanize(memory.source_category)} · ${humanize(memory.source_type)}`],["Reference",memory.source_ref||"—"],["Observed",formatDate(memory.observed_at)],["Valid window",`${memory.valid_from||"open"} → ${memory.valid_to||"open"}`],["Extraction",humanize(memory.extraction_method)],["Claim",memory.subject?`${memory.subject} · ${memory.predicate} · ${memory.object_value}`:"Unstructured"],["Memory ID",memory.id],["Protected",memory.protected?"Yes":"No"],["Dirty",memory.dirty?(memory.dirty_reason||"Yes"):"No"]].forEach(([name,value])=>dl.append(el("dt","",name),el("dd","",value)));provenance.append(dl);body.append(provenance);
-        const applicability=detailSection("Applicability"),contextDl=el("dl","detail-grid"),formatMap=value=>Object.entries(value||{}).map(([key,item])=>`${humanize(key)}=${item}`).join(" · ")||"None",formatList=value=>(Array.isArray(value)?value:[]).join(", ")||"None";[["Mode",humanize(memory.context_mode||"standalone")],["Scope",formatMap(memory.scope)],["Entities",formatList(memory.entities)],["Preconditions",formatMap(memory.preconditions)],["Systems",formatList(memory.applicable_systems)],["Versions",formatList(memory.applicable_versions)],["Source context",memory.source_context||"None"],["Metadata complete",`${Math.round(Number(memory.metadata_completeness||0)*100)}%`]].forEach(([name,value])=>contextDl.append(el("dt","",name),el("dd","",value)));applicability.append(contextDl);body.append(applicability);
-        if(payload.edges.length||payload.dependencies.length){const connections=detailSection("Connections and why they exist");payload.edges.slice(0,12).forEach(edge=>{const peerId=edge.src_id===id?edge.dst_id:edge.src_id,item=el("div","connection"),evidenceCount=Number(edge.evidence_records||edge.evidence_count||0),legacy=edge.explainable===false||edge.evidence_type==="legacy_unattributed";item.append(el("strong","",`${humanize(edge.relation)} → ${truncate(cleanMemory(edge.peer_content||peerId),120)}`),el("p","",edge.explanation||"This legacy link predates preserved evidence."),el("span","",legacy?"Legacy link · supporting evidence was not preserved":`${humanize(edge.evidence_type)} · ${formatNum(evidenceCount)} evidence record${evidenceCount===1?"":"s"} · weight ${Number(edge.weight||0).toFixed(2)}`));item.tabIndex=0;item.addEventListener("click",()=>selectMemory(peerId));item.addEventListener("keydown",event=>{if(event.key==="Enter")selectMemory(peerId);});connections.append(item);});payload.dependencies.slice(0,8).forEach(dep=>{const item=el("div","connection");item.append(el("strong","",`${humanize(dep.relation)} → ${truncate(cleanMemory(dep.evidence_content||dep.evidence_id),120)}`),el("p","","This memory was derived from the linked evidence memory."),el("span","",`Recorded dependency · weight ${Number(dep.weight||0).toFixed(2)}`));item.tabIndex=0;item.addEventListener("click",()=>selectMemory(dep.evidence_id));item.addEventListener("keydown",event=>{if(event.key==="Enter")selectMemory(dep.evidence_id);});connections.append(item);});body.append(connections);}
+      try{const response=await fetch(`/api/memory?id=${encodeURIComponent(id)}`,{cache:"no-store"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const payload=await response.json(),memory=payload.memory,presentation=payload.presentation||{};body.replaceChildren();
+        const role=memoryRole(memory),chips=el("div","chip-row");chips.append(el("span",`role-chip role-${role}`,roleLabel(role)),el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("span","chip",humanize(memory.kind)),el("span","chip",humanize(memory.source_category)));body.append(chips);
+        const remember=detailSection(role==="reference"?"What this evidence contains":"What Kaya remembers");
+        remember.append(el("h3","memory-card-title",presentation.display_title||truncate(cleanMemory(memory.content),110)));
+        if(presentation.display_summary)remember.append(el("p","memory-card-summary",presentation.display_summary));
+        if(role==="claim")remember.append(el("p","small-meta","This is an unconfirmed inference, not an established user fact."));
+        body.append(remember);
+        const applies=detailSection("When this applies"),contextDl=el("dl","detail-grid"),formatMap=value=>Object.entries(value||{}).map(([key,item])=>`${humanize(key)}=${item}`).join(" · ")||"None",formatList=value=>(Array.isArray(value)?value:[]).join(", ")||"None";
+        applies.append(el("p","memory-card-summary",presentation.applies_when||"Applies everywhere"));
+        [["Mode",humanize(memory.context_mode||"standalone")],["Scope",formatMap(memory.scope)],["Entities",formatList(memory.entities)],["Preconditions",formatMap(memory.preconditions)],["Systems",formatList(memory.applicable_systems)],["Versions",formatList(memory.applicable_versions)],["Valid window",`${memory.valid_from||"open"} → ${memory.valid_to||"open"}`],["Metadata complete",`${Math.round(Number(memory.metadata_completeness||0)*100)}%`]].forEach(([name,value])=>contextDl.append(el("dt","",name),el("dd","",value)));
+        applies.append(contextDl);body.append(applies);
+        const retained=detailSection("Why it is retained");
+        retained.append(el("p","memory-card-summary",presentation.retention_reason||"Retained by the storage quality checks."));
+        const flags=presentation.readability_flags||[];
+        if(flags.length){const flagRow=el("div","memory-card-flags");flags.forEach(flag=>flagRow.append(el("span","flag-chip",humanize(flag))));retained.append(flagRow);}
+        const scores=el("div","score-grid");[["Confidence",memory.confidence],["Currentness",memory.currentness_confidence],["Importance",memory.importance],["Uniqueness",memory.uniqueness],["Trust",memory.trust],["Volatility",memory.volatility]].forEach(([name,value])=>scores.append(scoreBar(name,value)));retained.append(scores);
+        const counters=el("div","counter-grid");[["Retrieved",memory.retrieved_count],["Selected",memory.selected_count],["Used",memory.used_count],["Helpful",Number(memory.helpful_count||0)+Number(memory.validated_count||0)],["Harmful",Number(memory.harmful_count||0)+Number(memory.false_positive_count||0)],["Success",memory.success_count],["Versions",payload.versions.length],["Links",payload.edges.length]].forEach(([name,value])=>{const c=el("div","counter");c.append(el("strong","",formatNum(value)),el("span","",name));counters.append(c);});retained.append(counters);body.append(retained);
+        const provenance=detailSection("Source and evidence"),dl=el("dl","detail-grid");[["Source",`${humanize(memory.source_category)} · ${humanize(memory.source_type)}`],["Reference",memory.source_ref||"—"],["Observed",formatDate(memory.observed_at)],["Extraction",humanize(memory.extraction_method)],["Claim",memory.subject?`${memory.subject} · ${memory.predicate} · ${memory.object_value}`:"Unstructured"],["Source context",memory.source_context||"None"],["Memory ID",memory.id],["Role decided by",`${humanize(memory.role_method||"legacy_default")}${memory.role_reviewed_at?` · reviewed ${formatDate(memory.role_reviewed_at)}`:""}`],["Protected",memory.protected?"Yes":"No"],["Dirty",memory.dirty?(memory.dirty_reason||"Yes"):"No"]].forEach(([name,value])=>dl.append(el("dt","",name),el("dd","",value)));provenance.append(dl);body.append(provenance);
+        const rawSection=detailSection("Raw record");
+        const raw=document.createElement("details");raw.className="raw-evidence";if(role!=="reference")raw.open=false;
+        const rawSummary=document.createElement("summary");rawSummary.textContent="View raw stored content (unchanged evidence)";
+        const rawPre=document.createElement("pre");rawPre.textContent=String(memory.content||"");
+        raw.append(rawSummary,rawPre);rawSection.append(raw);body.append(rawSection);
+        const history=detailSection("History and connections");
+        history.append(el("p","small-meta",`${formatNum(payload.versions.length)} preserved version${payload.versions.length===1?"":"s"} · every change keeps the prior text.`));
+        if(payload.edges.length||payload.dependencies.length){payload.edges.slice(0,12).forEach(edge=>{const peerId=edge.src_id===id?edge.dst_id:edge.src_id,item=el("div","connection"),evidenceCount=Number(edge.evidence_records||edge.evidence_count||0),legacy=edge.explainable===false||edge.evidence_type==="legacy_unattributed";item.append(el("strong","",`${humanize(edge.relation)} → ${truncate(cleanMemory(edge.peer_content||peerId),120)}`),el("p","",edge.explanation||"This legacy link predates preserved evidence."),el("span","",legacy?"Legacy link · supporting evidence was not preserved":`${humanize(edge.evidence_type)} · ${formatNum(evidenceCount)} evidence record${evidenceCount===1?"":"s"} · weight ${Number(edge.weight||0).toFixed(2)}`));item.tabIndex=0;item.addEventListener("click",()=>selectMemory(peerId));item.addEventListener("keydown",event=>{if(event.key==="Enter")selectMemory(peerId);});history.append(item);});payload.dependencies.slice(0,8).forEach(dep=>{const item=el("div","connection");item.append(el("strong","",`${humanize(dep.relation)} → ${truncate(cleanMemory(dep.evidence_content||dep.evidence_id),120)}`),el("p","","This memory was derived from the linked evidence memory."),el("span","",`Recorded dependency · weight ${Number(dep.weight||0).toFixed(2)}`));item.tabIndex=0;item.addEventListener("click",()=>selectMemory(dep.evidence_id));item.addEventListener("keydown",event=>{if(event.key==="Enter")selectMemory(dep.evidence_id);});history.append(item);});}
+        else history.append(el("p","small-meta","No graph connections yet. Links appear here with their preserved evidence."));
+        body.append(history);
       }catch(error){body.replaceChildren();body.append(emptyState("Could not load this memory",error.message));}
     }
 

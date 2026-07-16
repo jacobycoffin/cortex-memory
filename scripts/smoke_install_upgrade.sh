@@ -40,6 +40,7 @@ for relative_path in \
   apple-touch-icon.png \
   metacognition.py \
   plugin.yaml \
+  refinery.py \
   sleep.py \
   store.py \
   benchmarks/core.py \

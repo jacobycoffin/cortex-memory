@@ -87,6 +87,19 @@ def main() -> int:
         "quality-report",
         help="Show retrieval precision, false positives, context failures, health, and Sleep evidence",
     )
+    sub.add_parser(
+        "refinery-report",
+        help="Dry-run role classification report: aggregate counts and redacted examples, no mutation",
+    )
+    sub.add_parser(
+        "refinery-summary",
+        help="Show record-role, readability-flag, presentation, and refinery-proposal aggregates",
+    )
+    refinery_shadow = sub.add_parser(
+        "refinery-shadow",
+        help="Compare live retrieval with the shadow role-tier policy for one query (no live effect)",
+    )
+    refinery_shadow.add_argument("query")
     dashboard = sub.add_parser("dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true")
@@ -239,6 +252,12 @@ def main() -> int:
             result = store.context_feedback_summary(limit=args.limit)
         elif args.command == "quality-report":
             result = store.memory_quality_report()
+        elif args.command == "refinery-report":
+            result = store.refinery_classification_report()
+        elif args.command == "refinery-summary":
+            result = store.refinery_summary()
+        elif args.command == "refinery-shadow":
+            result = MemoryRetriever(store).shadow_tiered_comparison(args.query)
         else:
             result = store.maintenance(dry_run=not args.apply)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
