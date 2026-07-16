@@ -2,6 +2,18 @@
 
 `cortex-memory` separates its framework-neutral memory core from harness adapters. The core has no runtime dependency on Hermes, LangGraph, CrewAI, the OpenAI Agents SDK, or another orchestration library. An adapter translates its harness lifecycle into a small evidence contract.
 
+## Cortex-first durable memory
+
+An integrated harness should treat Cortex as its durable store of record, not as an optional cache behind a second long-term memory. Harness-native memory remains useful for one small Cortex bootstrap pointer and temporary session scratch. Durable facts, preferences, decisions, corrections, and verified procedures go to Cortex so the same corpus, review evidence, connections, lifecycle, and outcome learning can follow the user across harnesses.
+
+Print the versioned, machine-readable contract for any adapter:
+
+```bash
+cortex-memory harness-contract --tool-name cortex_memory
+```
+
+The output includes the portable system-prompt block, bootstrap pointer, before-turn recall, prompt injection, after-turn evidence resolution, write routing, never-memory categories, and enforcement requirements. A harness should inject the system block and call the lifecycle hooks in code; it should not rely on the model remembering to invoke retrieval unaided. When the harness permits it, disable or intercept its competing durable-write tool. If it cannot be disabled, make Cortex's precedence explicit in the system prompt and mirror any legacy write into Cortex as a compatibility safety net.
+
 ## The five-event contract
 
 1. **Durable write:** call `remember` only for information worth carrying into future sessions. Label whether it came from the user, a tool, a document, or an agent inference.
@@ -42,6 +54,28 @@ def after_model(batch, used_memory_ids, outcome=None):
 def after_turn(session_id: str, user_text: str, assistant_text: str):
     memory.record_episode(user_text, assistant_text, session_id=session_id)
 ```
+
+For a ready-made Python lifecycle wrapper:
+
+```python
+from cortex import CortexHarnessAdapter
+
+with CortexHarnessAdapter("./state/cortex.db") as cortex:
+    system_prompt = cortex.system_prompt_block(tool_name="cortex_memory")
+    turn = cortex.before_turn(
+        user_text,
+        session_id=session_id,
+        active_project="Cortex",
+        scope={"project": "Cortex"},
+    )
+    # Inject turn.context as fallible evidence below system policy.
+    answer, used_ids = run_agent(system_prompt, turn.context, user_text)
+    turn.finish(used_ids, outcome="helpful" if user_confirmed else None)
+```
+
+The wrapper adaptively skips greetings and self-contained tasks, so “primary” does not mean blindly injecting memory into every turn. `force_recall=True` is available when a harness already knows the task must use durable history.
+
+Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and mirrors a successful legacy built-in write into Cortex. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search.
 
 The harness decides how it detects durable facts, which evidence the answer used, and when an outcome is known. Cortex deliberately does not infer success merely because a memory was retrieved.
 

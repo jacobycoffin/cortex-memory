@@ -37,10 +37,12 @@ for relative_path in \
   dashboard.html \
   favicon.svg \
   favicon.ico \
+  harness.py \
   apple-touch-icon.png \
   metacognition.py \
   plugin.yaml \
   refinery.py \
+  review_copilot.py \
   sleep.py \
   store.py \
   benchmarks/core.py \
@@ -53,6 +55,8 @@ for relative_path in \
 do
   [[ -f "$PLUGIN_DIR/$relative_path" ]] || fail "missing installed file: $relative_path"
 done
+
+PYTHONPATH="$HERMES_HOME/plugins" "$PYTHON_BIN" -m cortex harness-contract --tool-name cortex_memory >/dev/null
 
 for relative_path in \
   scripts/install_dashboard_service.sh \

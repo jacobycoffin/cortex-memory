@@ -100,6 +100,11 @@ def main() -> int:
         help="Compare live retrieval with the shadow role-tier policy for one query (no live effect)",
     )
     refinery_shadow.add_argument("query")
+    harness_contract = sub.add_parser(
+        "harness-contract",
+        help="Print the portable Cortex-first lifecycle and bootstrap pointer for any agent harness",
+    )
+    harness_contract.add_argument("--tool-name", default="cortex_memory")
     dashboard = sub.add_parser("dashboard")
     dashboard.add_argument("--port", type=int, default=8765)
     dashboard.add_argument("--no-open", action="store_true")
@@ -141,6 +146,11 @@ def main() -> int:
                 indent=2,
             )
         )
+        return 0
+    if args.command == "harness-contract":
+        from .harness import harness_contract_manifest
+
+        print(json.dumps(harness_contract_manifest(tool_name=args.tool_name), indent=2, ensure_ascii=False))
         return 0
 
     store = CortexStore(args.db)

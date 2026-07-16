@@ -23,6 +23,8 @@ The suite currently covers:
 - shadow versus applied lifecycle maintenance;
 - secret redaction and memory-injection quarantine;
 - provider recall, explanation, auto-capture, success feedback, and safe forget;
+- Cortex-first system-prompt behavior plus the harness-neutral before-turn recall and after-turn evidence-resolution contract;
+- Review Copilot clarification/recommendation validation, explicit broad-scope cues, confirmation binding, non-recallable audit storage, and provider transparency;
 - prompt-injection memories excluded from recall;
 - time-separated claims not treated as contradictions;
 - overlapping structured conflicts linked without deleting either claim;

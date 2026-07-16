@@ -259,6 +259,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("/api/review/conflict", html)
         self.assertIn("/api/review/inference", html)
         self.assertIn("/api/review/proposal", html)
+        self.assertIn("/api/review/copilot", html)
         self.assertIn("/api/review/undo", html)
         self.assertIn("function renderReviewInbox", html)
         self.assertIn("function renderConnectionBrief", html)
@@ -267,6 +268,11 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Same durable subject", html)
         self.assertIn("Memory A supports B", html)
         self.assertIn("Teach this connection pattern", html)
+        self.assertIn("Explain it naturally. Kaya will translate.", html)
+        self.assertIn("function renderReviewCopilot", html)
+        self.assertIn("function matchingCopilotInterpretation", html)
+        self.assertIn("Use this recommendation", html)
+        self.assertIn("It cannot apply anything.", html)
         self.assertIn("Show each approved connection on the memory map", html)
         self.assertIn("edgeMatchesHighlight", html)
         self.assertIn('typedPairs.has(pairKey(edge))', html)
@@ -416,6 +422,18 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("rollback_policy_version", server)
         self.assertIn('payload.get("decision_scope")', server)
         self.assertIn("dashboard Sleep is fixed to deterministic shadow mode", readme)
+
+    def test_review_copilot_is_authenticated_confirmed_and_provider_transparent(self) -> None:
+        server = (ROOT / "dashboard.py").read_text()
+        html = (ROOT / "dashboard.html").read_text()
+        readme = (ROOT / "README.md").read_text()
+        self.assertIn('"/api/review/copilot"', server)
+        self.assertIn("ReviewCopilotConfig.from_env()", server)
+        self.assertIn('snapshot["review_copilot"] = review_copilot.status()', server)
+        self.assertIn("record_review_copilot_interpretation", server)
+        self.assertIn("copilot_interpretation_id", server)
+        self.assertIn("Provider: ${config.provider} · Model: ${config.model}", html)
+        self.assertIn("You still confirm the final action below.", html)
 
 
 if __name__ == "__main__":

@@ -116,6 +116,66 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIsNone(edge)
         self.assertEqual(status, "proposed")
 
+    def test_copilot_interpretation_is_non_memory_audited_and_confirmation_bound(self) -> None:
+        first_id, _ = self.store.add_memory("The release checklist explains the production deploy.")
+        second_id, _ = self.store.add_memory("Production deploys must follow the release checklist.")
+        left, right = sorted((first_id, second_id))
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("copilot-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,dst_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,?,'proposed',0.72,2,?,'{}',?)""",
+                ("copilot-link", "copilot-run", "association", left, right, "Replay pair.", now),
+            )
+        response = {
+            "mode": "recommendation",
+            "message": "This is pair-specific.",
+            "question": None,
+            "recommendation": {
+                "action_key": "approve_a_supports_b",
+                "api_action": "approve",
+                "reason_code": "a_supports_b",
+                "decision_scope": "item_only",
+            },
+        }
+        interpretation_id = self.store.record_review_copilot_interpretation(
+            proposal_id="copilot-link",
+            operator_text="The first memory explains the second.",
+            conversation=[{"role": "user", "content": "This is specific."}],
+            response_mode="recommendation",
+            response=response,
+            provider="provider.test",
+            model="test-model",
+            usage={"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+        )
+        before = self.store.stats()["memories"]
+        with self.assertRaisesRegex(ValueError, "choices changed"):
+            self.store.decide_review_proposal(
+                "copilot-link",
+                "deny",
+                reason_code="unrelated",
+                copilot_interpretation_id=interpretation_id,
+            )
+        decision = self.store.decide_review_proposal(
+            "copilot-link",
+            "approve",
+            reason_code="a_supports_b",
+            decision_scope="item_only",
+            copilot_interpretation_id=interpretation_id,
+        )
+        audit = self.store.review_copilot_interpretation(interpretation_id)
+        self.assertEqual(self.store.stats()["memories"], before)
+        self.assertEqual(audit["confirmed_review_id"], decision["review_id"])
+        self.assertEqual(audit["operator_text"], "The first memory explains the second.")
+        self.assertEqual(audit["total_tokens"], 30)
+        self.assertEqual(audit["response"]["recommendation"]["reason_code"], "a_supports_b")
+
     def test_connection_policy_filters_weak_pending_pairs_and_rollback_restores_them(self) -> None:
         now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         proposals: list[str] = []

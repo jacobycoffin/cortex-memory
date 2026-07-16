@@ -41,6 +41,12 @@ from .research import (
     undo_sleep_apply_trial,
     update_prospective_item,
 )
+from .review_copilot import (
+    ReviewCopilot,
+    ReviewCopilotConfig,
+    ReviewCopilotError,
+    ReviewCopilotUnavailable,
+)
 from .retrieval import MemoryRetriever
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, utc_now
@@ -162,6 +168,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         "yes",
         "on",
     }
+    review_copilot = ReviewCopilot(ReviewCopilotConfig.from_env())
     failed_logins: dict[str, list[float]] = {}
     failed_logins_lock = threading.RLock()
     sleep_lock = threading.RLock()
@@ -395,6 +402,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if parsed.path == "/api/snapshot":
                 snapshot = store.dashboard_snapshot()
                 snapshot["review_writes_enabled"] = reviews_enabled
+                snapshot["review_copilot"] = review_copilot.status()
                 snapshot["sleep_runtime"] = sleep_status()
                 snapshot["sleep_schedule"] = sleep_schedule()
                 self._json(HTTPStatus.OK, snapshot)
@@ -454,6 +462,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/auth/logout",
                 "/api/review/conflict",
                 "/api/review/inference",
+                "/api/review/copilot",
                 "/api/review/proposal",
                 "/api/review/undo",
                 "/api/policy/action",
@@ -542,6 +551,59 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             try:
                 actor = auth.username() if auth_enabled else "local-operator"
+                if parsed.path == "/api/review/copilot":
+                    proposal_id = str(payload.get("proposal_id") or "")
+                    raw_conversation = payload.get("conversation")
+                    conversation = raw_conversation if isinstance(raw_conversation, list) else []
+                    item = next(
+                        (
+                            row
+                            for row in store.review_inbox_snapshot(limit=1000)["items"]
+                            if row.get("proposal_id") == proposal_id
+                        ),
+                        None,
+                    )
+                    if not item:
+                        raise ValueError("this proposal is no longer waiting for review")
+                    try:
+                        result = review_copilot.interpret(
+                            item,
+                            str(payload.get("operator_text") or ""),
+                            conversation=conversation,
+                        )
+                    except ReviewCopilotUnavailable as error:
+                        self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(error)})
+                        return
+                    except ReviewCopilotError as error:
+                        self._json(HTTPStatus.BAD_GATEWAY, {"error": str(error)})
+                        return
+                    audit_response = {
+                        "mode": result["mode"],
+                        "message": result.get("message"),
+                        "question": result.get("question"),
+                        "recommendation": result.get("recommendation"),
+                    }
+                    interpretation_id = store.record_review_copilot_interpretation(
+                        proposal_id=proposal_id,
+                        operator_text=str(result["operator_text"]),
+                        conversation=list(result["conversation"]),
+                        response_mode=str(result["mode"]),
+                        response=audit_response,
+                        provider=str(result["provider"]),
+                        model=str(result["model"]),
+                        usage=dict(result.get("usage") or {}),
+                    )
+                    self._json(
+                        HTTPStatus.OK,
+                        {
+                            "success": True,
+                            **audit_response,
+                            "interpretation_id": interpretation_id,
+                            "provider": result["provider"],
+                            "model": result["model"],
+                        },
+                    )
+                    return
                 if parsed.path == "/api/policy/action":
                     self._policy_action(payload, actor=actor)
                     return
@@ -602,6 +664,11 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         reason_text=str(payload.get("reason_text") or ""),
                         actor=actor,
                         decision_scope=str(payload.get("decision_scope") or "item_only"),
+                        copilot_interpretation_id=(
+                            str(payload.get("copilot_interpretation_id"))
+                            if payload.get("copilot_interpretation_id")
+                            else None
+                        ),
                     )
                     self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return

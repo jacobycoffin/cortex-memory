@@ -32,7 +32,7 @@ from .security import normalize_text
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
@@ -808,6 +808,28 @@ class CortexStore:
               ON operator_review_decisions(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_operator_review_item
               ON operator_review_decisions(item_type,item_key,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS review_copilot_interpretations (
+                interpretation_id TEXT PRIMARY KEY,
+                proposal_id TEXT REFERENCES sleep_proposals(proposal_id) ON DELETE SET NULL,
+                item_key TEXT NOT NULL,
+                operator_text TEXT NOT NULL,
+                conversation_json TEXT NOT NULL DEFAULT '[]',
+                response_mode TEXT NOT NULL CHECK(response_mode IN ('clarify','recommendation')),
+                response_json TEXT NOT NULL DEFAULT '{}',
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER,
+                created_at TEXT NOT NULL,
+                confirmed_review_id TEXT REFERENCES operator_review_decisions(review_id) ON DELETE SET NULL,
+                confirmed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_review_copilot_item
+              ON review_copilot_interpretations(item_key,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_review_copilot_confirmed
+              ON review_copilot_interpretations(confirmed_review_id,confirmed_at DESC);
 
             CREATE TABLE IF NOT EXISTS policy_candidates (
                 candidate_id TEXT PRIMARY KEY,
@@ -8177,6 +8199,85 @@ class CortexStore:
             },
         }
 
+    def record_review_copilot_interpretation(
+        self,
+        *,
+        proposal_id: str,
+        operator_text: str,
+        conversation: list[dict[str, Any]],
+        response_mode: str,
+        response: dict[str, Any],
+        provider: str,
+        model: str,
+        usage: dict[str, Any] | None = None,
+    ) -> str:
+        """Keep copilot dialogue in the audit ledger, never recallable memory."""
+
+        mode = normalize_text(response_mode).casefold()
+        if mode not in {"clarify", "recommendation"}:
+            raise ValueError("copilot response mode must be clarify or recommendation")
+        note = str(operator_text or "").replace("\x00", "").strip()[:2000]
+        if not note:
+            raise ValueError("copilot operator text is required")
+        with self._lock:
+            proposal = self._conn.execute(
+                "SELECT proposal_id FROM sleep_proposals WHERE proposal_id=? AND status='proposed'",
+                (proposal_id,),
+            ).fetchone()
+        if not proposal:
+            raise ValueError("this proposal is no longer waiting for review")
+        usage = usage or {}
+
+        def token_value(key: str) -> int | None:
+            try:
+                raw = usage.get(key)
+                return max(0, int(raw)) if raw is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        interpretation_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO review_copilot_interpretations(
+                   interpretation_id,proposal_id,item_key,operator_text,conversation_json,
+                   response_mode,response_json,provider,model,input_tokens,output_tokens,total_tokens,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    interpretation_id,
+                    proposal_id,
+                    f"proposal:{proposal_id}",
+                    note,
+                    json.dumps(conversation[-8:], sort_keys=True, ensure_ascii=False),
+                    mode,
+                    json.dumps(response, sort_keys=True, ensure_ascii=False),
+                    normalize_text(provider)[:200] or "configured provider",
+                    normalize_text(model)[:200] or "configured model",
+                    token_value("input_tokens"),
+                    token_value("output_tokens"),
+                    token_value("total_tokens"),
+                    utc_now(),
+                ),
+            )
+        return interpretation_id
+
+    def review_copilot_interpretation(self, interpretation_id: str) -> dict[str, Any] | None:
+        """Return one local audit record for tests and operator inspection."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM review_copilot_interpretations WHERE interpretation_id=?",
+                (interpretation_id,),
+            ).fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        for key in ("conversation_json", "response_json"):
+            try:
+                item[key.removesuffix("_json")] = json.loads(str(item.pop(key) or "{}"))
+            except json.JSONDecodeError:
+                item[key.removesuffix("_json")] = [] if key == "conversation_json" else {}
+        return item
+
     def record_operator_review(
         self,
         *,
@@ -8237,6 +8338,7 @@ class CortexStore:
         reason_text: str = "",
         actor: str = "dashboard-operator",
         decision_scope: str = "item_only",
+        copilot_interpretation_id: str | None = None,
     ) -> dict[str, Any]:
         """Apply or deny one Sleep proposal and preserve enough state to undo it."""
 
@@ -8251,6 +8353,33 @@ class CortexStore:
             ).fetchone()
             if not proposal:
                 raise ValueError("this proposal is no longer waiting for review")
+            copilot_row = None
+            if copilot_interpretation_id:
+                copilot_row = conn.execute(
+                    """SELECT * FROM review_copilot_interpretations
+                       WHERE interpretation_id=? AND confirmed_review_id IS NULL""",
+                    (copilot_interpretation_id,),
+                ).fetchone()
+                if not copilot_row or str(copilot_row["proposal_id"] or "") != proposal_id:
+                    raise ValueError("this copilot recommendation does not belong to the active review")
+                if str(copilot_row["response_mode"]) != "recommendation":
+                    raise ValueError("a clarifying question cannot be confirmed as a review decision")
+                try:
+                    copilot_response = json.loads(str(copilot_row["response_json"] or "{}"))
+                except json.JSONDecodeError as error:
+                    raise ValueError("the copilot recommendation audit record is invalid") from error
+                recommendation = copilot_response.get("recommendation") if isinstance(copilot_response, dict) else None
+                if not isinstance(recommendation, dict):
+                    raise ValueError("the copilot recommendation audit record is incomplete")
+                expected = (
+                    str(recommendation.get("api_action") or ""),
+                    str(recommendation.get("reason_code") or ""),
+                    str(recommendation.get("decision_scope") or ""),
+                )
+                if expected != (action_value, reason_value, scope_value):
+                    raise ValueError(
+                        "the review choices changed after the copilot preview; confirm manually or request a new preview"
+                    )
             kind = str(proposal["kind"])
             try:
                 details = json.loads(str(proposal["details_json"] or "{}"))
@@ -8533,6 +8662,13 @@ class CortexStore:
                     normalize_text(actor)[:80] or "dashboard-operator", now,
                 ),
             )
+            if copilot_row is not None:
+                conn.execute(
+                    """UPDATE review_copilot_interpretations
+                       SET confirmed_review_id=?,confirmed_at=?
+                       WHERE interpretation_id=? AND confirmed_review_id IS NULL""",
+                    (review_id, now, copilot_interpretation_id),
+                )
             self._compile_policy_candidates_tx(conn)
         affected_ids = sorted(
             set(effect.get("state_changes", {}))
@@ -8543,6 +8679,7 @@ class CortexStore:
             "proposal_id": proposal_id,
             "action": action_value,
             "decision_scope": scope_value,
+            "copilot_interpretation_id": copilot_interpretation_id,
             "affected_memory_ids": affected_ids,
             "edge": effect.get("edge") if isinstance(effect, dict) else None,
         }

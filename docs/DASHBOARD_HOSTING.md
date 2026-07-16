@@ -111,6 +111,20 @@ Restart the service after changing the environment. These controls require an ex
 
 The Cognition page also offers an authenticated **Start shadow Sleep** action. It is intentionally not controlled by `CORTEX_DASHBOARD_REVIEWS`: the dashboard endpoint always forces `mode=shadow`, disables provider reflection, rejects a second concurrent run, and shows phase-by-phase progress. A dashboard-started cycle may record replay evidence, its run report, and review proposals, but it cannot apply memory, connection, or lifecycle changes.
 
+### Optional Review Copilot
+
+Review Copilot is separately opt-in and requires guided review. Configure an OpenAI-compatible HTTPS endpoint, model, and the name of a credential variable in `dashboard.env`:
+
+```bash
+CORTEX_REVIEW_COPILOT_ENABLED=1
+CORTEX_REVIEW_COPILOT_ENDPOINT=https://provider.example/v1/chat/completions
+CORTEX_REVIEW_COPILOT_MODEL=provider/model
+CORTEX_REVIEW_COPILOT_API_KEY_ENV=PROVIDER_API_KEY
+PROVIDER_API_KEY=replace-through-your-secret-manager
+```
+
+Keep `dashboard.env` mode `0600` and restart the service. The dashboard discloses the active provider and model before use. Each request can send the two reviewed memories' readable summaries, bounded raw excerpts, proposal evidence metadata, and the operator's conversation to that provider, creating ordinary provider charges. The response is a recommendation only; the authenticated operator must still confirm the normal review action. Leave the enable flag absent when memory text must remain entirely local.
+
 ## 6. Verify the boundary
 
 The sign-in page itself is public, but the memory data must not be:
