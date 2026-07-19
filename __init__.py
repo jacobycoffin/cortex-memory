@@ -70,8 +70,24 @@ DEFAULTS: dict[str, Any] = {
 _POSITIVE_FEEDBACK = re.compile(
     r"\b(?:that worked|works now|perfect|exactly|great|thanks|thank you|solved|fixed it)\b", re.I
 )
+_STRONG_POSITIVE_FEEDBACK = re.compile(
+    r"\b(?:that worked perfectly|exactly what i wanted|this is perfect|you nailed it|"
+    r"nailed it|love this|couldn(?:'t| not) be better|best (?:answer|result|solution)|"
+    r"completely solved|worked flawlessly)\b",
+    re.I,
+)
+_CREATION_POSITIVE_FEEDBACK = re.compile(
+    r"\b(?:that worked|works now|this helped|very helpful|perfect solution|solved it|fixed it)\b",
+    re.I,
+)
 _NEGATIVE_FEEDBACK = re.compile(
     r"\b(?:that(?:'s| is) wrong|not right|outdated|incorrect|didn(?:'t| not) work|still broken|you forgot)\b", re.I
+)
+_AMBIGUOUS_FEEDBACK = re.compile(
+    r"\?|\b(?:wish|at first|initially|temporarily|maybe|might|unsure|uncertain)\b|"
+    r"\b(?:but|however|though|although)\b.{0,80}\b(?:not|didn(?:'t| not)|doesn(?:'t| not)|"
+    r"fail(?:s|ed)?|broken|worse|problem|issue)\b",
+    re.I,
 )
 _GREETING_ONLY = re.compile(r"^\s*(?:hi|hey|hello|thanks|thank you|good morning|good night)[.! ]*\s*$", re.I)
 
@@ -92,7 +108,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
         "Primary durable memory for this agent; prefer this tool over a generic built-in memory tool. Search "
         "Cortex for prior user or project context, and use remember to propose durable facts, preferences, "
         "decisions, and verified procedures instead of duplicating them in limited harness-native memory. A "
-        "remember proposal is not recallable until the operator approves it. Feedback after a "
+        "remember proposal is not recallable until an audited operator or automatic judge decision admits it. Feedback after a "
         "recalled memory helps or misleads; correct rather than overwriting history. Forget archives safely and "
         "never hard-deletes."
     ),
@@ -217,6 +233,7 @@ class CortexMemoryProvider(MemoryProvider):
         self._completed_task_by_session: dict[str, list[str]] = {}
         self._task_started_monotonic: dict[str, float] = {}
         self._memory_actions_by_session: dict[str, list[dict[str, Any]]] = {}
+        self._creation_proposals_by_session: dict[str, list[str]] = {}
 
     @property
     def name(self) -> str:
@@ -790,12 +807,36 @@ class CortexMemoryProvider(MemoryProvider):
             return
         sid = session_id or self._session_id or "default"
 
+        # Positive feedback about the preceding answer is also evidence that its
+        # still-staged creation candidates may be worth retaining. This signal
+        # never approves a candidate on its own; the background judge weighs it.
+        previous_creation_ids = self._creation_proposals_by_session.get(sid, [])
+        strong_creation_feedback = _STRONG_POSITIVE_FEEDBACK.search(user_content or "")
+        ordinary_creation_feedback = _CREATION_POSITIVE_FEEDBACK.search(user_content or "")
+        negative_feedback = _NEGATIVE_FEEDBACK.search(user_content or "")
+        ambiguous_feedback = _AMBIGUOUS_FEEDBACK.search(user_content or "")
+        if (
+            previous_creation_ids
+            and not negative_feedback
+            and not ambiguous_feedback
+            and (strong_creation_feedback or ordinary_creation_feedback)
+        ):
+            self._store.record_memory_creation_feedback(
+                previous_creation_ids,
+                session_id=sid,
+                strength="strong" if strong_creation_feedback else "positive",
+            )
+
         # Feedback applies to memories inferred as used in the preceding answer.
         previous_tasks = self._completed_task_by_session.get(sid, [])
         if previous_tasks and _NEGATIVE_FEEDBACK.search(user_content or ""):
             for previous_task in previous_tasks:
                 self._store.apply_task_outcome(previous_task, "harmful")
-        elif previous_tasks and _POSITIVE_FEEDBACK.search(user_content or ""):
+        elif (
+            previous_tasks
+            and not ambiguous_feedback
+            and _POSITIVE_FEEDBACK.search(user_content or "")
+        ):
             for previous_task in previous_tasks:
                 helped = self._store.apply_task_outcome(previous_task, "helpful")
                 self._reinforce_group(
@@ -822,6 +863,7 @@ class CortexMemoryProvider(MemoryProvider):
         ]
 
         created_ids: list[str] = []
+        assistant_created_ids: list[str] = []
         with self._cache_lock:
             memory_actions = self._memory_actions_by_session.pop(sid, [])
         if _as_bool(self._config.get("auto_capture", True)):
@@ -833,14 +875,14 @@ class CortexMemoryProvider(MemoryProvider):
                     action_sink=memory_actions,
                 )
             )
-            created_ids.extend(
-                self._capture(
-                    safe_assistant.text,
-                    role="assistant",
-                    session_id=sid,
-                    action_sink=memory_actions,
-                )
+            assistant_created_ids = self._capture(
+                safe_assistant.text,
+                role="assistant",
+                session_id=sid,
+                action_sink=memory_actions,
             )
+            created_ids.extend(assistant_created_ids)
+        self._creation_proposals_by_session[sid] = list(dict.fromkeys(assistant_created_ids))
         # Credit only memories with evidence of answer use. Structured values and
         # distinctive anchors dominate; conceptual similarity cannot win alone.
         current_ids, current_tasks = self._current_prefetches(sid)
@@ -963,6 +1005,7 @@ class CortexMemoryProvider(MemoryProvider):
         if reset or rewound:
             self._used_by_session.pop(new_session_id, None)
             self._completed_task_by_session.pop(new_session_id, None)
+            self._creation_proposals_by_session.pop(new_session_id, None)
             with self._cache_lock:
                 self._memory_actions_by_session.pop(new_session_id, None)
                 dropped = self._pending_prefetches.pop(new_session_id, None) or []

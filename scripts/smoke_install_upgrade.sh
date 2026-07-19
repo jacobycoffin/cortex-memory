@@ -11,6 +11,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 export HERMES_HOME="$TEMP_ROOT/hermes-home"
+export CORTEX_INSTALL_AUTO_JUDGE_TIMER=0
 PLUGIN_DIR="$HERMES_HOME/plugins/cortex"
 DB_PATH="$HERMES_HOME/cortex/cortex.db"
 LEGACY_DB_PATH="$HERMES_HOME/cortex/legacy.db"
@@ -29,6 +30,7 @@ printf 'Testing a clean install in %s\n' "$HERMES_HOME"
 for relative_path in \
   __init__.py \
   __main__.py \
+  autojudge.py \
   benchmarking.py \
   cli.py \
   client.py \
@@ -48,8 +50,11 @@ for relative_path in \
   benchmarks/core.py \
   scripts/cortex-sleep.service.in \
   scripts/cortex-sleep.timer \
+  scripts/cortex-auto-judge.service.in \
+  scripts/cortex-auto-judge.timer \
   scripts/install_dashboard_service.sh \
   scripts/install_sleep_timer.sh \
+  scripts/install_auto_judge_timer.sh \
   scripts/install_vault_timer.sh \
   docs/QUICKSTART.md
 do
@@ -61,6 +66,7 @@ PYTHONPATH="$HERMES_HOME/plugins" "$PYTHON_BIN" -m cortex harness-contract --too
 for relative_path in \
   scripts/install_dashboard_service.sh \
   scripts/install_sleep_timer.sh \
+  scripts/install_auto_judge_timer.sh \
   scripts/install_vault_timer.sh \
   scripts/uninstall_local.sh
 do

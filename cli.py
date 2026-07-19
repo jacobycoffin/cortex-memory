@@ -75,6 +75,15 @@ def main() -> int:
     )
     sleep_undo = sub.add_parser("sleep-undo", help="Undo reversible changes from an applied sleep run")
     sleep_undo.add_argument("run_id")
+    auto_judge = sub.add_parser(
+        "auto-judge",
+        help="Silently review a bounded batch of staged memory candidates with an LLM",
+    )
+    auto_judge.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress normal output for timer/service use",
+    )
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
     traces = sub.add_parser("traces", help="Inspect task-level memory decisions or export append-only JSONL")
     traces.add_argument("--limit", type=int, default=100)
@@ -263,6 +272,10 @@ def main() -> int:
             from .sleep import undo_sleep
 
             result = undo_sleep(store, args.run_id)
+        elif args.command == "auto-judge":
+            from .autojudge import AutoJudge, AutoJudgeConfig
+
+            result = AutoJudge(AutoJudgeConfig.from_env()).run(store)
         elif args.command == "recall-stats":
             snapshot = store.dashboard_snapshot(memory_limit=1)
             result = {
@@ -308,7 +321,8 @@ def main() -> int:
             result = MemoryRetriever(store).shadow_tiered_comparison(args.query)
         else:
             result = store.maintenance(dry_run=not args.apply)
-        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        if not (args.command == "auto-judge" and args.quiet):
+            print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0
     finally:
         store.close()

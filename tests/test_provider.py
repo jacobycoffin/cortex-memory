@@ -111,6 +111,102 @@ class CortexProviderTests(unittest.TestCase):
         self.assertGreaterEqual(stats["episodes"], 2)
         self.assertTrue(reviewed["memory_id"])
 
+    def test_strong_positive_feedback_reinforces_previous_turn_proposals(self) -> None:
+        self.provider.sync_turn(
+            "I prefer clock-aligned five-minute schedules. Please investigate the synthetic Acorn deployment procedure.",
+            "The root cause was stale metadata, and the fix requires a verified backup before deployment.",
+            session_id="session-feedback",
+        )
+        proposals = self.provider._store.list_memory_creation_proposals(status="pending")
+        prior_ids = {
+            item["proposal_id"]
+            for item in proposals
+            if item["session_id"] == "session-feedback"
+            and item["source_type"] == "assistant_turn"
+        }
+        unrelated_user_ids = {
+            item["proposal_id"]
+            for item in proposals
+            if item["session_id"] == "session-feedback"
+            and item["source_type"] == "user_turn"
+        }
+        self.assertTrue(prior_ids)
+
+        self.provider.sync_turn(
+            "That worked perfectly — this is exactly what I wanted.",
+            "Glad it helped.",
+            session_id="session-feedback",
+        )
+
+        reinforced = [
+            self.provider._store.get_memory_creation_proposal(proposal_id)
+            for proposal_id in prior_ids
+        ]
+        self.assertTrue(all(item["positive_feedback_count"] == 1 for item in reinforced))
+        self.assertTrue(all(item["strong_feedback_count"] == 1 for item in reinforced))
+        self.assertTrue(unrelated_user_ids)
+        unrelated = [
+            self.provider._store.get_memory_creation_proposal(proposal_id)
+            for proposal_id in unrelated_user_ids
+        ]
+        self.assertTrue(all(item["positive_feedback_count"] == 0 for item in unrelated))
+
+    def test_ordinary_thanks_does_not_reinforce_creation_proposals(self) -> None:
+        self.provider.sync_turn(
+            "Please investigate the synthetic Acorn deployment procedure.",
+            "The root cause was stale metadata, and the fix requires a verified backup before deployment.",
+            session_id="session-ordinary-thanks",
+        )
+        proposals = self.provider._store.list_memory_creation_proposals(status="pending")
+        prior_ids = {
+            item["proposal_id"]
+            for item in proposals
+            if item["session_id"] == "session-ordinary-thanks"
+        }
+        self.assertTrue(prior_ids)
+
+        self.provider.sync_turn(
+            "Thanks.",
+            "You're welcome.",
+            session_id="session-ordinary-thanks",
+        )
+
+        untouched = [
+            self.provider._store.get_memory_creation_proposal(proposal_id)
+            for proposal_id in prior_ids
+        ]
+        self.assertTrue(all(item["positive_feedback_count"] == 0 for item in untouched))
+        self.assertTrue(all(item["strong_feedback_count"] == 0 for item in untouched))
+
+    def test_ambiguous_or_negated_praise_does_not_reinforce_creation_proposals(self) -> None:
+        phrases = (
+            "That worked? No, it didn't.",
+            "I wish that worked, but it did not.",
+            "That worked at first but now fails.",
+        )
+        for index, phrase in enumerate(phrases):
+            session_id = f"session-ambiguous-feedback-{index}"
+            self.provider.sync_turn(
+                "Please investigate the synthetic Acorn deployment procedure.",
+                "The root cause was stale metadata, and the fix requires a verified backup before deployment.",
+                session_id=session_id,
+            )
+            prior_ids = {
+                item["proposal_id"]
+                for item in self.provider._store.list_memory_creation_proposals(status="pending")
+                if item["session_id"] == session_id and item["source_type"] == "assistant_turn"
+            }
+            self.assertTrue(prior_ids)
+
+            self.provider.sync_turn(phrase, "I will reassess it.", session_id=session_id)
+
+            untouched = [
+                self.provider._store.get_memory_creation_proposal(proposal_id)
+                for proposal_id in prior_ids
+            ]
+            self.assertTrue(all(item["positive_feedback_count"] == 0 for item in untouched))
+            self.assertTrue(all(item["strong_feedback_count"] == 0 for item in untouched))
+
     def test_task_trace_records_proposals_without_fake_memory_ids(self) -> None:
         self.provider.prefetch(
             "Please remember my launch checklist uses a verified backup.",

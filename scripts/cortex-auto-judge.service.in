@@ -1,0 +1,30 @@
+[Unit]
+Description=Cortex silent automatic memory judge
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=@@HERMES_HOME@@/plugins/cortex/__main__.py
+
+[Service]
+Type=oneshot
+Environment="PYTHONPATH=@@HERMES_HOME@@/plugins"
+Environment="CORTEX_DB=@@HERMES_HOME@@/cortex/cortex.db"
+EnvironmentFile=-@@AUTO_JUDGE_ENV@@
+ExecStart="@@PYTHON_BIN@@" -m cortex auto-judge --quiet
+StandardOutput=null
+StandardError=journal
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=25
+IOWeight=25
+UMask=0077
+TimeoutStartSec=3m
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="@@HERMES_HOME@@/cortex"
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

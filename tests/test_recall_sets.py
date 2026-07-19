@@ -7,7 +7,7 @@ from pathlib import Path
 from tests._bootstrap import ROOT
 
 from cortex.retrieval import MemoryRetriever
-from cortex.store import CortexStore
+from cortex.store import CortexStore, creation_proposal_revision
 
 
 class RecallSetTests(unittest.TestCase):
@@ -92,6 +92,64 @@ class RecallSetTests(unittest.TestCase):
         self.store.start_trained_recall_set(actor="test-operator")
         self.assertTrue(self.store.is_memory_recall_eligible(trusted_id))
 
+    def test_trained_set_preserves_automatic_membership_provenance(self) -> None:
+        proposals = [
+            self.store.propose_memory_creation(
+                "Project Cedar requires the verified deployment checklist.",
+                kind="procedure",
+                source_type="user_turn",
+                source_category="USER_STATED",
+            ),
+            self.store.propose_memory_creation(
+                "The Cedar deployment manual documents the checklist on page eight.",
+                kind="semantic",
+                source_type="document",
+                source_category="DOCUMENT_EXTRACTED",
+            ),
+        ]
+        decisions = [
+            self.store.review_memory_creation(
+                proposals[0]["proposal_id"],
+                "remember",
+                actor="cortex-auto-judge:synthetic",
+                approval_authority="automatic",
+                expected_revision=creation_proposal_revision(proposals[0]),
+            ),
+            self.store.review_memory_creation(
+                proposals[1]["proposal_id"],
+                "evidence_only",
+                actor="cortex-auto-judge:synthetic",
+                approval_authority="automatic",
+                expected_revision=creation_proposal_revision(proposals[1]),
+            ),
+        ]
+        memory_ids = {decision["memory_id"] for decision in decisions}
+        with self.store._lock:
+            before = {
+                row["memory_id"]: dict(row)
+                for row in self.store._conn.execute(
+                    """SELECT memory_id,eligibility,origin,review_id,actor
+                       FROM memory_recall_memberships WHERE revoked_at IS NULL"""
+                ).fetchall()
+                if row["memory_id"] in memory_ids
+            }
+
+        self.store.start_trained_recall_set(actor="test-operator")
+
+        with self.store._lock:
+            after = {
+                row["memory_id"]: dict(row)
+                for row in self.store._conn.execute(
+                    """SELECT memory_id,eligibility,origin,review_id,actor
+                       FROM memory_recall_memberships
+                       WHERE recall_set_id=(
+                         SELECT recall_set_id FROM memory_recall_sets WHERE status='active'
+                       ) AND revoked_at IS NULL"""
+                ).fetchall()
+                if row["memory_id"] in memory_ids
+            }
+        self.assertEqual(after, before)
+
     def test_dashboard_map_marks_active_recall_eligibility(self) -> None:
         legacy_id, _ = self.store.add_memory("Legacy-only map detail for Project Cedar.")
         trusted_id, _ = self.store.add_memory(
@@ -141,6 +199,7 @@ class RecallSetTests(unittest.TestCase):
     def test_exact_legacy_duplicate_requires_review_and_promotes_without_copying(self) -> None:
         content = "Project Cedar deploys through the verified blue gateway."
         legacy_id, _ = self.store.add_memory(content, kind="decision")
+        before = self.store.get_memory(legacy_id)
         self.store.start_trained_recall_set(actor="test-operator")
         proposal = self.store.propose_memory_creation(
             content,
@@ -162,6 +221,53 @@ class RecallSetTests(unittest.TestCase):
 
         self.assertTrue(self.store.undo_review_decision(result["review_id"]))
         self.assertFalse(self.store.is_memory_recall_eligible(legacy_id))
+        restored = self.store.get_memory(legacy_id)
+        self.assertEqual(restored["approval_state"], before["approval_state"])
+        self.assertEqual(
+            restored["origin_source_category"], before["origin_source_category"]
+        )
+        self.assertEqual(restored["updated_at"], before["updated_at"])
+
+    def test_exact_duplicate_primary_promotion_undo_restores_evidence_membership(self) -> None:
+        content = "The Cedar deployment manual documents the blue gateway."
+        memory_id, _ = self.store.add_memory(
+            content,
+            source_type="document",
+            record_role="reference",
+            recall_eligibility="evidence_only",
+        )
+        with self.store._lock:
+            prior = dict(
+                self.store._conn.execute(
+                    """SELECT * FROM memory_recall_memberships
+                       WHERE memory_id=? AND revoked_at IS NULL""",
+                    (memory_id,),
+                ).fetchone()
+            )
+        proposal = self.store.propose_memory_creation(
+            content,
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"], "remember", actor="test-operator"
+        )
+
+        self.assertTrue(result["memory_promoted"])
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.undo_review_decision(result["review_id"]))
+        with self.store._lock:
+            restored = dict(
+                self.store._conn.execute(
+                    """SELECT * FROM memory_recall_memberships
+                       WHERE recall_set_id=? AND memory_id=?""",
+                    (prior["recall_set_id"], memory_id),
+                ).fetchone()
+            )
+        self.assertEqual(restored, prior)
+        self.assertFalse(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
 
 
 if __name__ == "__main__":

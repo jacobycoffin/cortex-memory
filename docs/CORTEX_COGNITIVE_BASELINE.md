@@ -11,8 +11,8 @@ flowchart LR
     A[Conversation or tool observation] --> B[Selective admission check]
     B -->|temporary or low quality| C[Episode or ignored-decision ledger]
     B -->|possible durable memory| D[Creation review inbox]
-    D -->|operator approves| E[Recall-eligible memory]
-    D -->|reference only| F[Lookup-only evidence]
+    D -->|operator or automatic judge admits| E[Recall-eligible memory]
+    D -->|operator or automatic evidence-only decision| F[Lookup-only evidence]
     D -->|rejects or waits| G[Non-recallable audit record]
     E --> H[Semantic neighborhoods]
     E --> I[Bounded cue-based retrieval]
@@ -71,7 +71,8 @@ Candidates compete on relevance, currentness, reliability, outcome history, appl
 Remembering a statement is different from remembering where it came from. Every memory keeps two separate facts:
 
 - `origin_source_category`: user-stated, tool-verified, document-extracted, agent inference, and so on;
-- `approval_state`: whether an operator allowed it into recall.
+- `approval_state`: whether an operator, the bounded automatic judge, or a
+  controlled trusted import allowed it into recall.
 
 Approval is governance, not verification. Agent context therefore says both where a memory originated and whether it was reviewed. The Trust Monitor estimates reliability separately from retrieval relevance.
 

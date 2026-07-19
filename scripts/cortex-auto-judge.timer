@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Cortex automatic memory judgment every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=30s
+Unit=cortex-auto-judge.service
+
+[Install]
+WantedBy=timers.target

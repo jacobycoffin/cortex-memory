@@ -32,6 +32,7 @@ _SOURCE_RELIABILITY = {
     # Review is a useful governance signal, but it is not independent
     # verification of the underlying claim.
     "OPERATOR_APPROVED": 0.76,
+    "AUTOMATIC_APPROVED": 0.70,
     "REFLECTION": 0.62,
     "AGENT_INFERENCE": 0.52,
     "AGENT_PROPOSED": 0.48,

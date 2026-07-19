@@ -32,7 +32,7 @@ from .security import normalize_text, sanitize_memory
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
@@ -144,6 +144,10 @@ def content_hash(content: str) -> str:
 def query_tokens(text: str) -> list[str]:
     tokens = [t.casefold().strip("'-") for t in _TOKEN.findall(text or "")]
     return list(dict.fromkeys(t for t in tokens if t and t not in _STOP))[:24]
+
+
+class StaleCreationProposalError(ValueError):
+    """Raised when a creation proposal changed after a reviewer observed it."""
 
 
 class CortexStore:
@@ -538,6 +542,9 @@ class CortexStore:
                 quarantine_reason TEXT,
                 redacted INTEGER NOT NULL DEFAULT 0,
                 recurrence_count INTEGER NOT NULL DEFAULT 1,
+                positive_feedback_count INTEGER NOT NULL DEFAULT 0,
+                strong_feedback_count INTEGER NOT NULL DEFAULT 0,
+                last_feedback_at TEXT,
                 status TEXT NOT NULL DEFAULT 'pending'
                   CHECK(status IN ('pending','remembered','evidence_only','rejected','needs_context')),
                 decision_action TEXT,
@@ -556,6 +563,17 @@ class CortexStore:
               ON memory_creation_proposals(status,last_seen_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memory_creation_candidate
               ON memory_creation_proposals(candidate_hash,last_seen_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_creation_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL REFERENCES memory_creation_proposals(proposal_id) ON DELETE CASCADE,
+                session_id TEXT,
+                strength TEXT NOT NULL CHECK(strength IN ('positive','strong')),
+                source_type TEXT NOT NULL DEFAULT 'implicit_user_feedback',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_creation_feedback_proposal
+              ON memory_creation_feedback(proposal_id,created_at DESC);
 
             CREATE TABLE IF NOT EXISTS memory_experience_events (
                 event_id TEXT PRIMARY KEY,
@@ -1734,24 +1752,40 @@ class CortexStore:
                  ELSE origin_source_category END,
                    approval_state=CASE
                  WHEN approval_state IS NULL OR approval_state='' THEN
-                   CASE WHEN source_category='OPERATOR_APPROVED' THEN 'operator_approved' ELSE 'unreviewed' END
+                   CASE
+                     WHEN source_category='OPERATOR_APPROVED' THEN 'operator_approved'
+                     WHEN source_category='AUTOMATIC_APPROVED' THEN 'automatic_approved'
+                     ELSE 'unreviewed' END
                  WHEN approval_state='unreviewed' AND source_category='OPERATOR_APPROVED'
                    THEN 'operator_approved'
+                 WHEN approval_state='unreviewed' AND source_category='AUTOMATIC_APPROVED'
+                   THEN 'automatic_approved'
                  ELSE approval_state END"""
         )
+        # Schema 23 did not persist claim origin separately from review
+        # authority. Recover it only when the proposal decision proves that it
+        # created this memory; duplicate reviews must never rewrite an existing
+        # memory's provenance.
         self._conn.execute(
             """UPDATE memories
-               SET origin_source_category=COALESCE((
-                     SELECT p.source_category FROM memory_creation_proposals p
-                     WHERE p.result_memory_id=memories.id
-                       AND p.status IN ('remembered','evidence_only')
-                     ORDER BY p.decided_at DESC LIMIT 1
-                   ),origin_source_category),
-                   approval_state=CASE WHEN EXISTS(
-                     SELECT 1 FROM memory_creation_proposals p
-                     WHERE p.result_memory_id=memories.id
-                       AND p.status IN ('remembered','evidence_only')
-                   ) THEN 'operator_approved' ELSE approval_state END"""
+               SET origin_source_category=(
+                 SELECT p.source_category
+                 FROM memory_creation_proposals p
+                 JOIN operator_review_decisions d ON d.review_id=p.review_id
+                 WHERE p.result_memory_id=memories.id
+                   AND json_extract(d.effect_json,'$.memory_created')=1
+                 ORDER BY p.decided_at DESC LIMIT 1
+               )
+               WHERE origin_source_category IN (
+                 'AGENT_INFERENCE','OPERATOR_APPROVED','AUTOMATIC_APPROVED'
+               )
+                 AND EXISTS(
+                   SELECT 1
+                   FROM memory_creation_proposals p
+                   JOIN operator_review_decisions d ON d.review_id=p.review_id
+                   WHERE p.result_memory_id=memories.id
+                     AND json_extract(d.effect_json,'$.memory_created')=1
+                 )"""
         )
         self._conn.execute(
             """UPDATE memories SET context_mode='standalone',scope_json='{}',entities_json='[]',
@@ -1787,6 +1821,19 @@ class CortexStore:
             self._conn.execute(
                 "ALTER TABLE memory_write_decisions ADD COLUMN quality_flags_json TEXT NOT NULL DEFAULT '[]'"
             )
+        proposal_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(memory_creation_proposals)")
+        }
+        proposal_additions = {
+            "positive_feedback_count": "INTEGER NOT NULL DEFAULT 0",
+            "strong_feedback_count": "INTEGER NOT NULL DEFAULT 0",
+            "last_feedback_at": "TEXT",
+        }
+        for name, declaration in proposal_additions.items():
+            if name not in proposal_columns:
+                self._conn.execute(
+                    f"ALTER TABLE memory_creation_proposals ADD COLUMN {name} {declaration}"
+                )
         review_columns = {
             row[1] for row in self._conn.execute("PRAGMA table_info(operator_review_decisions)")
         }
@@ -2416,6 +2463,17 @@ class CortexStore:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
+            if self._conn.in_transaction:
+                savepoint = "cortex_" + uuid.uuid4().hex
+                self._conn.execute(f"SAVEPOINT {savepoint}")
+                try:
+                    yield self._conn
+                    self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                except Exception:
+                    self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    raise
+                return
             try:
                 self._conn.execute("BEGIN IMMEDIATE")
                 yield self._conn
@@ -2886,13 +2944,22 @@ class CortexStore:
         return _decode_creation_proposal(row) if row else None
 
     def list_memory_creation_proposals(
-        self, *, status: str | None = "pending", limit: int = 200, offset: int = 0
+        self,
+        *,
+        status: str | None = "pending",
+        limit: int = 200,
+        offset: int = 0,
+        oldest_first: bool = False,
     ) -> list[dict[str, Any]]:
         bounded = max(1, min(1000, int(limit)))
         start = max(0, int(offset))
+        order = "ASC" if oldest_first else "DESC"
         values: tuple[Any, ...]
         if status is None or normalize_text(status).casefold() == "all":
-            sql = "SELECT * FROM memory_creation_proposals ORDER BY last_seen_at DESC LIMIT ? OFFSET ?"
+            sql = (
+                "SELECT * FROM memory_creation_proposals "
+                f"ORDER BY last_seen_at {order}, proposal_id {order} LIMIT ? OFFSET ?"
+            )
             values = (bounded, start)
         else:
             status_value = normalize_text(status).casefold()
@@ -2900,12 +2967,76 @@ class CortexStore:
                 raise ValueError("invalid memory creation proposal status")
             sql = (
                 "SELECT * FROM memory_creation_proposals WHERE status=? "
-                "ORDER BY last_seen_at DESC LIMIT ? OFFSET ?"
+                f"ORDER BY last_seen_at {order}, proposal_id {order} LIMIT ? OFFSET ?"
             )
             values = (status_value, bounded, start)
         with self._lock:
             rows = self._conn.execute(sql, values).fetchall()
         return [_decode_creation_proposal(row) for row in rows]
+
+    def record_memory_creation_feedback(
+        self,
+        proposal_ids: Sequence[str],
+        *,
+        session_id: str | None = None,
+        strength: str = "positive",
+    ) -> int:
+        """Reinforce still-pending candidates after later positive user feedback.
+
+        Only a compact signal is retained: which candidate was reinforced,
+        whether the wording was strongly positive, and when it happened. Raw
+        feedback text is deliberately excluded from this ledger. Feedback can
+        influence a later judge, but it never makes a candidate recallable by
+        itself and cannot revive an already-decided proposal.
+        """
+
+        strength_value = normalize_text(strength).casefold()
+        if strength_value not in {"positive", "strong"}:
+            raise ValueError("creation feedback strength must be positive or strong")
+        ids = list(
+            dict.fromkeys(
+                normalize_text(str(proposal_id))[:100]
+                for proposal_id in proposal_ids
+                if normalize_text(str(proposal_id))
+            )
+        )[:50]
+        if not ids:
+            return 0
+        session_value = normalize_text(session_id or "")[:200] or None
+        now = utc_now()
+        recorded = 0
+        with self.transaction() as conn:
+            for proposal_id in ids:
+                waiting = conn.execute(
+                    """SELECT 1 FROM memory_creation_proposals
+                       WHERE proposal_id=? AND status IN ('pending','needs_context')""",
+                    (proposal_id,),
+                ).fetchone()
+                if not waiting:
+                    continue
+                conn.execute(
+                    """INSERT INTO memory_creation_feedback(
+                         feedback_id,proposal_id,session_id,strength,source_type,created_at
+                       ) VALUES(?,?,?,?,?,?)""",
+                    (
+                        str(uuid.uuid4()),
+                        proposal_id,
+                        session_value,
+                        strength_value,
+                        "implicit_user_feedback",
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """UPDATE memory_creation_proposals
+                       SET positive_feedback_count=positive_feedback_count+1,
+                           strong_feedback_count=strong_feedback_count+?,
+                           last_feedback_at=?
+                       WHERE proposal_id=?""",
+                    (int(strength_value == "strong"), now, proposal_id),
+                )
+                recorded += 1
+        return recorded
 
     def review_memory_creation(
         self,
@@ -2916,6 +3047,8 @@ class CortexStore:
         reason_text: str = "",
         actor: str = "dashboard-operator",
         decision_scope: str = "item_only",
+        approval_authority: str = "operator",
+        expected_revision: str | None = None,
     ) -> dict[str, Any]:
         """Decide one staged candidate and apply its explicit recall boundary."""
 
@@ -2936,25 +3069,39 @@ class CortexStore:
             )
         scope_value = _normalize_review_scope(decision_scope)
         actor_value = normalize_text(actor)[:80] or "dashboard-operator"
+        authority_value = normalize_text(approval_authority).casefold() or "operator"
+        if authority_value not in {"operator", "automatic"}:
+            raise ValueError("creation approval authority must be operator or automatic")
         note_value = normalize_text(reason_text)[:1000]
         review_id = str(uuid.uuid4())
         memory_id: str | None = None
         memory_created = False
         memory_promoted = False
+        promoted_memory_prior: dict[str, Any] | None = None
         remembered_content: str | None = None
 
-        # Keep the re-entrant store lock across the trusted write and audit
-        # finalization.  This prevents two reviewers from committing one
-        # proposal while allowing add_memory() to use its normal transaction.
-        with self._lock:
+        # Keep the trusted memory write and review ledger in one transaction.
+        # Nested store writes use savepoints, so any finalization failure rolls
+        # the entire admission back while the lock still serializes reviewers.
+        with self.transaction():
             row = self._conn.execute(
-                """SELECT * FROM memory_creation_proposals
-                   WHERE proposal_id=? AND status IN ('pending','needs_context')""",
+                "SELECT * FROM memory_creation_proposals WHERE proposal_id=?",
                 (normalize_text(proposal_id),),
             ).fetchone()
-            if not row:
-                raise ValueError("this memory creation proposal is no longer waiting for review")
+            if not row or str(row["status"]) not in {"pending", "needs_context"}:
+                raise StaleCreationProposalError(
+                    "this memory creation proposal is no longer waiting for review"
+                )
             proposal = _decode_creation_proposal(row)
+            if authority_value == "automatic":
+                if not expected_revision:
+                    raise ValueError("automatic creation review requires an expected revision")
+                if proposal["status"] != "pending" or creation_proposal_revision(
+                    proposal
+                ) != normalize_text(expected_revision):
+                    raise StaleCreationProposalError(
+                        "memory creation proposal changed while automatic review was in flight"
+                    )
             candidate = dict(proposal.get("candidate") or {})
             if action_value in {"remember", "remember_edited", "evidence_only"}:
                 remembered_content = str(proposal["content"])
@@ -2977,27 +3124,44 @@ class CortexStore:
                 )
                 duplicate_id = str((proposal.get("assessment") or {}).get("duplicate_memory_id") or "")
                 duplicate = self.get_memory(duplicate_id) if duplicate_id else None
-                if (
+                duplicate_memory = dict(duplicate or {})
+                exact_duplicate = bool(
                     duplicate
                     and action_value != "remember_edited"
-                    and content_hash(remembered_content) == str(duplicate.get("content_hash") or "")
-                    and not self.is_memory_recall_eligible(
+                    and str(duplicate_memory.get("state") or "") in {"active", "cold"}
+                    and content_hash(remembered_content)
+                    == str(duplicate_memory.get("content_hash") or "")
+                )
+                if exact_duplicate:
+                    memory_id = duplicate_id
+                    if not self.is_memory_recall_eligible(
                         duplicate_id,
                         evidence_lookup=requested_eligibility == "evidence_only",
-                    )
-                ):
-                    promotion = self.promote_memory_to_active_recall_set(
-                        duplicate_id,
-                        eligibility=requested_eligibility,
-                        actor=actor_value,
-                        reason="Creation review approved an exact preserved legacy memory.",
-                        review_id=review_id,
-                        origin_source_category=str(
-                            proposal.get("source_category") or "AGENT_INFERENCE"
-                        ),
-                    )
-                    memory_id = duplicate_id
-                    memory_promoted = bool(promotion["changed"])
+                    ):
+                        active_recall_set = self._active_recall_set_tx(self._conn)
+                        prior_membership = self._conn.execute(
+                            """SELECT * FROM memory_recall_memberships
+                               WHERE recall_set_id=? AND memory_id=?""",
+                            (active_recall_set["recall_set_id"], duplicate_id),
+                        ).fetchone()
+                        promoted_memory_prior = {
+                            "approval_state": duplicate_memory.get("approval_state"),
+                            "origin_source_category": duplicate_memory.get("origin_source_category"),
+                            "updated_at": duplicate_memory.get("updated_at"),
+                            "membership": dict(prior_membership) if prior_membership else None,
+                        }
+                        promotion = self.promote_memory_to_active_recall_set(
+                            duplicate_id,
+                            eligibility=requested_eligibility,
+                            actor=actor_value,
+                            reason="Creation review approved an exact preserved legacy memory.",
+                            review_id=review_id,
+                            approval_authority=authority_value,
+                            origin_source_category=str(
+                                proposal.get("source_category") or "AGENT_INFERENCE"
+                            ),
+                        )
+                        memory_promoted = bool(promotion["changed"])
                 else:
                     # This is the sole call that may create indexed storage.
                     # Recall-set membership makes the result ordinary memory or
@@ -3006,11 +3170,19 @@ class CortexStore:
                         remembered_content,
                         kind=str(proposal.get("kind") or "semantic"),
                         source_type=str(proposal.get("source_type") or "conversation"),
-                        source_category="OPERATOR_APPROVED",
+                        source_category=(
+                            "AUTOMATIC_APPROVED"
+                            if authority_value == "automatic"
+                            else "OPERATOR_APPROVED"
+                        ),
                         origin_source_category=str(
                             proposal.get("source_category") or "AGENT_INFERENCE"
                         ),
-                        approval_state="operator_approved",
+                        approval_state=(
+                            "automatic_approved"
+                            if authority_value == "automatic"
+                            else "operator_approved"
+                        ),
                         source_ref=proposal.get("source_ref"),
                         session_id=proposal.get("session_id"),
                         context_mode=str(proposal.get("context_mode") or "standalone"),
@@ -3036,10 +3208,43 @@ class CortexStore:
                         supersedes_id=candidate.get("supersedes_id"),
                         evidence_ids=list(candidate.get("evidence_ids") or []),
                         extraction_method=str(candidate.get("extraction_method") or "unknown"),
-                        storage_policy="operator_approved",
+                        storage_policy=(
+                            "automatic_approved"
+                            if authority_value == "automatic"
+                            else "operator_approved"
+                        ),
                         record_role="reference" if action_value == "evidence_only" else "canonical",
                         recall_eligibility=requested_eligibility,
+                        preserve_exact_duplicate=True,
                     )
+                    if memory_created:
+                        active_recall_set = self._active_recall_set_tx(self._conn)
+                        membership_updated = self._conn.execute(
+                            """UPDATE memory_recall_memberships
+                               SET origin=?,review_id=?,actor=?,reason=?
+                               WHERE recall_set_id=? AND memory_id=? AND revoked_at IS NULL""",
+                            (
+                                (
+                                    "automatic_judgment"
+                                    if authority_value == "automatic"
+                                    else "operator_creation_review"
+                                ),
+                                review_id,
+                                actor_value,
+                                "Memory created by an approved creation review.",
+                                active_recall_set["recall_set_id"],
+                                memory_id,
+                            ),
+                        )
+                        if membership_updated.rowcount != 1:
+                            raise RuntimeError("approved creation did not produce one active recall membership")
+                    if not self.is_memory_recall_eligible(
+                        memory_id,
+                        evidence_lookup=requested_eligibility == "evidence_only",
+                    ):
+                        raise StaleCreationProposalError(
+                            "approved creation resolved to a non-recallable exact duplicate"
+                        )
             status_value = {
                 "remember": "remembered",
                 "remember_edited": "remembered",
@@ -3058,6 +3263,7 @@ class CortexStore:
                 "kind": proposal["kind"],
                 "source_type": proposal["source_type"],
                 "source_category": proposal["source_category"],
+                "approval_authority": authority_value,
                 "quality_flags": list((proposal.get("assessment") or {}).get("quality_flags") or []),
             }
             signal = {
@@ -3068,8 +3274,12 @@ class CortexStore:
                 "kind": proposal["kind"],
                 "source_type": proposal["source_type"],
                 "source_category": proposal["source_category"],
+                "approval_authority": authority_value,
                 "quality_flags": effect["quality_flags"],
             }
+            prior = {"status": proposal["status"], "content": proposal["content"]}
+            if promoted_memory_prior:
+                prior["memory"] = promoted_memory_prior
             with self.transaction() as conn:
                 updated = conn.execute(
                     """UPDATE memory_creation_proposals
@@ -3104,7 +3314,7 @@ class CortexStore:
                         action_value,
                         action_value,
                         note_value or None,
-                        _trace_json({"status": proposal["status"], "content": proposal["content"]}),
+                        _trace_json(prior),
                         _trace_json(effect),
                         _trace_json(signal),
                         scope_value,
@@ -3121,6 +3331,7 @@ class CortexStore:
             "memory_id": memory_id,
             "memory_created": memory_created,
             "memory_promoted": memory_promoted,
+            "approval_authority": authority_value,
         }
 
     def decide_memory_creation(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -3204,6 +3415,7 @@ class CortexStore:
         storage_policy: str = "trusted",
         record_role: str | None = None,
         recall_eligibility: str | None = None,
+        preserve_exact_duplicate: bool = False,
     ) -> tuple[str, bool]:
         sanitized_content = sanitize_memory(str(content or ""))
         content = normalize_text(sanitized_content.text)
@@ -3234,10 +3446,24 @@ class CortexStore:
         ).upper()[:120] or "AGENT_INFERENCE"
         approval_state_value = normalize_text(
             approval_state
-            or ("operator_approved" if source_category == "OPERATOR_APPROVED" else "unreviewed")
+            or (
+                "operator_approved"
+                if source_category == "OPERATOR_APPROVED"
+                else "automatic_approved"
+                if source_category == "AUTOMATIC_APPROVED"
+                else "unreviewed"
+            )
         ).casefold()[:40]
-        if approval_state_value not in {"unreviewed", "operator_approved", "trusted_import"}:
-            raise ValueError("approval_state must be unreviewed, operator_approved, or trusted_import")
+        if approval_state_value not in {
+            "unreviewed",
+            "operator_approved",
+            "automatic_approved",
+            "trusted_import",
+        }:
+            raise ValueError(
+                "approval_state must be unreviewed, operator_approved, automatic_approved, "
+                "or trusted_import"
+            )
         if context_mode_value == "context_dependent" and not (
             scope_value or entity_values or precondition_values or system_values or version_values
         ):
@@ -3302,7 +3528,8 @@ class CortexStore:
                    JOIN memory_recall_memberships rm
                      ON rm.memory_id=m.id AND rm.recall_set_id=?
                     AND rm.revoked_at IS NULL AND rm.eligibility=?
-                   WHERE m.content_hash=? AND m.context_mode=? AND m.scope_json=? AND m.preconditions_json=?
+                   WHERE m.state IN ('active','cold')
+                     AND m.content_hash=? AND m.context_mode=? AND m.scope_json=? AND m.preconditions_json=?
                      AND applicable_systems_json=? AND applicable_versions_json=?
                    ORDER BY m.created_at LIMIT 1""",
                 (
@@ -3318,6 +3545,8 @@ class CortexStore:
             ).fetchone()
             if existing:
                 memory_id = str(existing["id"])
+                if preserve_exact_duplicate:
+                    return memory_id, False
                 assessment = {
                     **assessment,
                     "decision": "updated",
@@ -3334,11 +3563,22 @@ class CortexStore:
                            trust=MAX(trust, ?), uniqueness=MIN(uniqueness, ?),
                            entities_json=?,source_context=COALESCE(source_context,?),
                            metadata_completeness=MAX(metadata_completeness,?),
-                           source_category=CASE WHEN ?='USER_EXPLICIT' THEN 'USER_EXPLICIT' ELSE source_category END,
+                           source_category=CASE
+                             WHEN ?='USER_EXPLICIT' THEN 'USER_EXPLICIT'
+                             WHEN ?='OPERATOR_APPROVED' AND approval_state<>'operator_approved'
+                               THEN 'OPERATOR_APPROVED'
+                             WHEN ?='AUTOMATIC_APPROVED' AND approval_state='unreviewed'
+                               THEN 'AUTOMATIC_APPROVED'
+                             ELSE source_category END,
                            origin_source_category=CASE
-                             WHEN approval_state<>'operator_approved' THEN ? ELSE origin_source_category END,
+                             WHEN approval_state NOT IN
+                               ('operator_approved','automatic_approved','trusted_import')
+                               THEN ? ELSE origin_source_category END,
                            approval_state=CASE
-                             WHEN ?='operator_approved' THEN 'operator_approved' ELSE approval_state END
+                             WHEN ?='operator_approved' THEN 'operator_approved'
+                             WHEN ?='automatic_approved' AND approval_state='unreviewed'
+                               THEN 'automatic_approved'
+                             ELSE approval_state END
                        WHERE id=?""",
                     (
                         now,
@@ -3352,7 +3592,10 @@ class CortexStore:
                         source_context_value,
                         completeness,
                         source_category,
+                        source_category,
+                        source_category,
                         origin_source_category_value,
+                        approval_state_value,
                         approval_state_value,
                         memory_id,
                     ),
@@ -4195,19 +4438,34 @@ class CortexStore:
                     now,
                 ),
             )
-            # Operator-approved creations and trusted operator imports are the
-            # personal seed. References are deliberately handled below so they
-            # cannot enter ordinary recall through this branch.
+            # Reviewed creations and trusted imports are the personal seed.
+            # Carry the prior membership's authority instead of attributing an
+            # automatic judgment to the operator who activates this set.
             conn.execute(
                 """INSERT OR IGNORE INTO memory_recall_memberships(
                      recall_set_id,memory_id,eligibility,origin,review_id,actor,reason,created_at
                    )
-                   SELECT ?,m.id,'primary','operator_approval',(
+                   SELECT ?,m.id,'primary',
+                          COALESCE(prior_membership.origin,
+                            CASE WHEN m.approval_state='automatic_approved'
+                              THEN 'automatic_judgment' ELSE 'operator_approval' END),
+                          COALESCE(prior_membership.review_id,(
                             SELECT p.review_id FROM memory_creation_proposals p
                             WHERE p.result_memory_id=m.id AND p.status='remembered'
                             ORDER BY p.decided_at DESC LIMIT 1
-                          ),?,?,?
+                          )),
+                          COALESCE(prior_membership.actor,(
+                            SELECT p.actor FROM memory_creation_proposals p
+                            WHERE p.result_memory_id=m.id AND p.status='remembered'
+                            ORDER BY p.decided_at DESC LIMIT 1
+                          ),?),
+                          COALESCE(prior_membership.reason,
+                            'Carried into the trained set from Creation review.'),?
                    FROM memories m
+                   LEFT JOIN memory_recall_memberships prior_membership
+                     ON prior_membership.recall_set_id=?
+                    AND prior_membership.memory_id=m.id
+                    AND prior_membership.revoked_at IS NULL
                    WHERE m.state IN ('active','cold')
                      AND m.record_role<>'reference' AND m.source_type<>'vault_markdown'
                      AND (
@@ -4217,21 +4475,32 @@ class CortexStore:
                          WHERE p.result_memory_id=m.id AND p.status='remembered'
                        )
                      )""",
-                (recall_set_id, actor_value, "Carried into the trained set from Creation review.", now),
+                (recall_set_id, actor_value, now, prior["recall_set_id"]),
             )
-            # Raw documents remain available only when lookup is explicit.
+            # Raw documents remain explicit-lookup only while retaining the
+            # authority that admitted their prior membership.
             conn.execute(
                 """INSERT OR IGNORE INTO memory_recall_memberships(
-                     recall_set_id,memory_id,eligibility,origin,actor,reason,created_at
+                     recall_set_id,memory_id,eligibility,origin,review_id,actor,reason,created_at
                    )
-                   SELECT ?,id,'evidence_only','reference_carryover',?,?,?
-                   FROM memories WHERE state IN ('active','cold')
-                     AND (record_role='reference' OR source_type='vault_markdown')""",
+                   SELECT ?,m.id,'evidence_only',
+                          COALESCE(prior_membership.origin,'reference_carryover'),
+                          prior_membership.review_id,
+                          COALESCE(prior_membership.actor,?),
+                          COALESCE(prior_membership.reason,
+                            'Preserved as explicit lookup evidence, not ordinary personal recall.'),?
+                   FROM memories m
+                   LEFT JOIN memory_recall_memberships prior_membership
+                     ON prior_membership.recall_set_id=?
+                    AND prior_membership.memory_id=m.id
+                    AND prior_membership.revoked_at IS NULL
+                   WHERE m.state IN ('active','cold')
+                     AND (m.record_role='reference' OR m.source_type='vault_markdown')""",
                 (
                     recall_set_id,
                     actor_value,
-                    "Preserved as explicit lookup evidence, not ordinary personal recall.",
                     now,
+                    prior["recall_set_id"],
                 ),
             )
             conn.execute(
@@ -4309,10 +4578,20 @@ class CortexStore:
         reason: str = "Operator promoted this preserved memory into the active recall set.",
         review_id: str | None = None,
         origin_source_category: str | None = None,
+        approval_authority: str = "operator",
     ) -> dict[str, Any]:
         eligibility_value = normalize_text(eligibility).casefold()
         if eligibility_value not in {"primary", "evidence_only"}:
             raise ValueError("recall eligibility must be primary or evidence_only")
+        authority_value = normalize_text(approval_authority).casefold() or "operator"
+        if authority_value not in {"operator", "automatic"}:
+            raise ValueError("recall approval authority must be operator or automatic")
+        approval_state = (
+            "automatic_approved" if authority_value == "automatic" else "operator_approved"
+        )
+        membership_origin = (
+            "automatic_judgment" if authority_value == "automatic" else "operator_promotion"
+        )
         now = utc_now()
         with self.transaction() as conn:
             memory = conn.execute("SELECT id FROM memories WHERE id=?", (memory_id,)).fetchone()
@@ -4320,10 +4599,14 @@ class CortexStore:
                 raise ValueError("memory not found")
             origin_value = normalize_text(origin_source_category or "").upper()[:120]
             conn.execute(
-                """UPDATE memories SET approval_state='operator_approved',
+                """UPDATE memories SET approval_state=CASE
+                       WHEN ?='automatic_approved'
+                        AND approval_state IN ('operator_approved','trusted_import')
+                         THEN approval_state
+                       ELSE ? END,
                      origin_source_category=CASE WHEN ?<>'' THEN ? ELSE origin_source_category END,
                      updated_at=? WHERE id=?""",
-                (origin_value, origin_value, now, memory_id),
+                (approval_state, approval_state, origin_value, origin_value, now, memory_id),
             )
             active = self._active_recall_set_tx(conn)
             existing = conn.execute(
@@ -4335,7 +4618,7 @@ class CortexStore:
             conn.execute(
                 """INSERT INTO memory_recall_memberships(
                      recall_set_id,memory_id,eligibility,origin,review_id,actor,reason,created_at,revoked_at
-                   ) VALUES(?,?,?,'operator_promotion',?,?,?,?,NULL)
+                   ) VALUES(?,?,?,?,?,?,?,?,NULL)
                    ON CONFLICT(recall_set_id,memory_id) DO UPDATE SET
                      eligibility=excluded.eligibility,origin=excluded.origin,review_id=excluded.review_id,
                      actor=excluded.actor,reason=excluded.reason,revoked_at=NULL""",
@@ -4343,6 +4626,7 @@ class CortexStore:
                     active["recall_set_id"],
                     memory_id,
                     eligibility_value,
+                    membership_origin,
                     review_id,
                     normalize_text(actor)[:80] or "dashboard-operator",
                     normalize_text(reason)[:500],
@@ -11003,11 +11287,50 @@ class CortexStore:
                     return False
                 memory_id = str(effect.get("memory_id") or "")
                 if memory_id and bool(effect.get("memory_promoted")):
-                    conn.execute(
-                        """UPDATE memory_recall_memberships SET revoked_at=?
-                           WHERE memory_id=? AND review_id=? AND revoked_at IS NULL""",
-                        (now, memory_id, review_id),
-                    )
+                    memory_prior = dict(prior.get("memory") or {})
+                    membership_prior = memory_prior.get("membership")
+                    if isinstance(membership_prior, dict) and membership_prior.get(
+                        "recall_set_id"
+                    ):
+                        restored = conn.execute(
+                            """UPDATE memory_recall_memberships
+                               SET eligibility=?,origin=?,review_id=?,actor=?,reason=?,
+                                   created_at=?,revoked_at=?
+                               WHERE recall_set_id=? AND memory_id=?""",
+                            (
+                                membership_prior.get("eligibility"),
+                                membership_prior.get("origin"),
+                                membership_prior.get("review_id"),
+                                membership_prior.get("actor"),
+                                membership_prior.get("reason"),
+                                membership_prior.get("created_at"),
+                                membership_prior.get("revoked_at"),
+                                membership_prior.get("recall_set_id"),
+                                memory_id,
+                            ),
+                        )
+                        if restored.rowcount != 1:
+                            raise RuntimeError(
+                                "creation review undo could not restore prior recall membership"
+                            )
+                    else:
+                        conn.execute(
+                            """UPDATE memory_recall_memberships SET revoked_at=?
+                               WHERE memory_id=? AND review_id=? AND revoked_at IS NULL""",
+                            (now, memory_id, review_id),
+                        )
+                    if memory_prior:
+                        conn.execute(
+                            """UPDATE memories
+                               SET approval_state=?,origin_source_category=?,updated_at=?
+                               WHERE id=?""",
+                            (
+                                memory_prior.get("approval_state") or "unreviewed",
+                                memory_prior.get("origin_source_category") or "AGENT_INFERENCE",
+                                memory_prior.get("updated_at") or now,
+                                memory_id,
+                            ),
+                        )
                 if memory_id and bool(effect.get("memory_created")):
                     memory = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
                     if memory and str(memory["state"]) in {"active", "cold"}:
@@ -11952,7 +12275,8 @@ class CortexStore:
             invalid_provenance = self._conn.execute(
                 """SELECT COUNT(*) n FROM memories
                    WHERE origin_source_category IS NULL OR origin_source_category=''
-                      OR approval_state NOT IN ('unreviewed','operator_approved','trusted_import')"""
+                      OR approval_state NOT IN
+                        ('unreviewed','operator_approved','automatic_approved','trusted_import')"""
             ).fetchone()["n"]
             invalid_experience_events = self._conn.execute(
                 """SELECT COUNT(*) n FROM memory_experience_events
@@ -12486,7 +12810,34 @@ def _decode_creation_proposal(row: sqlite3.Row | dict[str, Any]) -> dict[str, An
     item["assessment"] = _trace_json_object(item.pop("assessment_json", "{}"))
     item["redacted"] = bool(item.get("redacted"))
     item["recurrence_count"] = int(item.get("recurrence_count") or 1)
+    item["positive_feedback_count"] = int(item.get("positive_feedback_count") or 0)
+    item["strong_feedback_count"] = int(item.get("strong_feedback_count") or 0)
     return item
+
+
+def creation_proposal_revision(proposal: dict[str, Any]) -> str:
+    """Return a stable token for every field that can change an automatic decision."""
+
+    value = {
+        "proposal_id": proposal.get("proposal_id"),
+        "candidate_hash": proposal.get("candidate_hash"),
+        "content": proposal.get("content"),
+        "kind": proposal.get("kind"),
+        "source_type": proposal.get("source_type"),
+        "source_category": proposal.get("source_category"),
+        "context_mode": proposal.get("context_mode"),
+        "candidate": proposal.get("candidate"),
+        "assessment": proposal.get("assessment"),
+        "quarantine_reason": proposal.get("quarantine_reason"),
+        "redacted": bool(proposal.get("redacted")),
+        "recurrence_count": int(proposal.get("recurrence_count") or 0),
+        "positive_feedback_count": int(proposal.get("positive_feedback_count") or 0),
+        "strong_feedback_count": int(proposal.get("strong_feedback_count") or 0),
+        "last_feedback_at": proposal.get("last_feedback_at"),
+        "status": proposal.get("status"),
+        "last_seen_at": proposal.get("last_seen_at"),
+    }
+    return hashlib.sha256(_trace_json(value).encode("utf-8")).hexdigest()
 
 
 def _creation_neighborhood_preview(

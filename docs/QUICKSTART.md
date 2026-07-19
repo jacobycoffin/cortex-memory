@@ -23,7 +23,23 @@ HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
 hermes memory setup
 ```
 
-Choose `cortex` and restart the Hermes agent process.
+Choose `cortex` and restart the Hermes agent process when you are ready to activate the provider. The installer itself never restarts Hermes.
+
+Remote automatic judging is off by default. On Linux with a user systemd session, explicitly approve provider data egress to enable `cortex-auto-judge.timer`, a silent clock-aligned five-minute LLM review of staged creation proposals:
+
+```bash
+CORTEX_INSTALL_AUTO_JUDGE_TIMER=1 \
+CORTEX_AUTO_JUDGE_DATA_EGRESS_CONSENT=1 \
+HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
+```
+
+It waits at least two minutes, sends at most 12 candidates, validates every decision, records automatic provenance, and fails closed. Strong positive feedback on the next user turn raises a candidate's later admission signal without creating memory by itself. Verify the timer with:
+
+```bash
+systemctl --user list-timers cortex-auto-judge.timer
+```
+
+Remote candidate review is privacy-sensitive and normally billable; read [Automatic memory judge](AUTO_JUDGE.md) before opting in or changing provider, model, credential-file, threshold, or feedback settings.
 
 ## 3. Import an Obsidian vault
 

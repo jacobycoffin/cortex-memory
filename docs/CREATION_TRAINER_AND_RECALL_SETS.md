@@ -14,7 +14,7 @@ Episode or source evidence
         v
 Creation candidate  -- not recallable
         |
-        | operator review
+        | audited operator or bounded automatic review
         v
 Approved memory     -- eligible for a recall set
         |
@@ -35,8 +35,8 @@ Cortex must not treat these objects as interchangeable:
   automatically something Kaya should inject into an unrelated answer.
 - A **creation candidate** is Cortex asking whether a statement is worth
   remembering. Candidates live outside the retrieval index.
-- An **approved memory** is a concise, reusable statement the operator has
-  allowed into a recall set.
+- An **approved memory** is a concise, reusable statement admitted into a recall
+  set by an audited operator or automatic-judge decision.
 - A **connection** is an explained relationship between two approved records.
   It must say what the relationship is and cite the evidence for it.
 
@@ -48,9 +48,13 @@ The system should use provenance labels literally:
 - `USER_EXPLICIT`: the user explicitly asked Cortex to remember it.
 - `AGENT_PROPOSED`: an agent or extractor believes it may be reusable.
 - `OPERATOR_APPROVED`: the dashboard operator confirmed it through review.
+- `AUTOMATIC_APPROVED`: the bounded background judge admitted the unchanged
+  staged text through the reversible review ledger.
 
 `USER_STATED` is not an alias for `USER_EXPLICIT`. Automatic capture must not
-upgrade either a user sentence or an agent summary into approved knowledge.
+upgrade either a user sentence or an agent summary directly into approved
+knowledge. A separate, delayed judge may admit only a sanitized staged candidate,
+with automatic provenance kept distinct from operator approval.
 
 ## Creation Trainer decisions
 
@@ -102,7 +106,10 @@ Starting a trained set must not edit or delete the legacy corpus. It creates a
 new set, changes one active-set pointer, and places automatic candidates in the
 Creation Inbox. Promoting a useful legacy memory adds membership to the trained
 set; it does not rewrite the original. Switching the active pointer back is the
-rollback.
+rollback. Carrying an existing primary or evidence-only membership into the new
+set preserves its original review ID, actor, and automatic/operator authority;
+the operator who activates the set is recorded on the set event, not substituted
+as the authority that admitted each memory.
 
 ## Order of training
 
@@ -139,10 +146,15 @@ projects, and active recall-set eligibility still applies.
 
 ## Non-negotiable safety rules
 
-- Automatic capture proposes; it does not silently approve.
+- Automatic capture proposes; it does not approve in the foreground. A separately
+  enabled delayed judge may decide only the unchanged staged candidate.
 - Pending candidates are stored outside the retrieval index.
 - Approval is one audited transaction and can be undone.
-- A legacy duplicate cannot silently update or promote itself.
+- A legacy duplicate cannot silently update or promote itself. Promotion undo
+  restores any prior evidence-only membership exactly, and archived duplicates
+  cannot satisfy a new approved creation as a non-recallable result.
+- Creation feedback is reinforced only for unambiguous praise; negation,
+  contradiction, failure, questions, and uncertainty fail closed.
 - Graph traversal cannot bypass recall-set eligibility.
 - Archived fallback cannot bypass recall-set eligibility.
 - Provider or copilot failure must leave manual review usable.

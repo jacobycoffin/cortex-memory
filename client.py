@@ -24,6 +24,7 @@ _SOURCE_LABELS = {
     # Approval may have replaced the original category in an older row. Do not
     # present it as if it identified or verified the source of the claim.
     "OPERATOR_APPROVED": "original source unavailable",
+    "AUTOMATIC_APPROVED": "original source unavailable",
 }
 
 
@@ -48,8 +49,12 @@ def _provenance_label(memory: dict[str, Any]) -> str:
     approval_state = str(memory.get("approval_state") or "").strip().casefold()
     if not approval_state and stored_category == "OPERATOR_APPROVED":
         approval_state = "operator_approved"
+    elif not approval_state and stored_category == "AUTOMATIC_APPROVED":
+        approval_state = "automatic_approved"
     if approval_state in {"approved", "operator_approved", "accepted"}:
         parts.append("review: approved, not independently verified")
+    elif approval_state == "automatic_approved":
+        parts.append("review: automatic LLM admission, not independently verified")
     elif approval_state:
         safe_state = " ".join(approval_state.replace("_", " ").split())[:32]
         parts.append(f"review: {safe_state}")

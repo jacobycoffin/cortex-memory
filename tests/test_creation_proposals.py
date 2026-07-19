@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from tests._bootstrap import ROOT
 
 from cortex.retrieval import MemoryRetriever
-from cortex.store import SCHEMA_VERSION, CortexStore
+from cortex.store import SCHEMA_VERSION, CortexStore, creation_proposal_revision
 
 
 class MemoryCreationProposalTests(unittest.TestCase):
@@ -115,6 +116,240 @@ class MemoryCreationProposalTests(unittest.TestCase):
         self.assertEqual(memory["source_ref"], "session:test")
         with self.assertRaisesRegex(ValueError, "no longer waiting"):
             self.store.review_memory_creation(proposal["proposal_id"], "remember")
+
+    def test_review_rolls_back_memory_when_audit_finalization_fails(self) -> None:
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            kind="procedure",
+        )
+
+        with (
+            patch.object(
+                self.store,
+                "_compile_policy_candidates_tx",
+                side_effect=RuntimeError("synthetic audit failure"),
+            ),
+            self.assertRaisesRegex(RuntimeError, "synthetic audit failure"),
+        ):
+            self.store.review_memory_creation(proposal["proposal_id"], "remember")
+
+        self.assertEqual(self.store.stats()["memories"], 0)
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+        with self.store._lock:
+            reviews = self.store._conn.execute(
+                "SELECT COUNT(*) AS count FROM operator_review_decisions WHERE item_type='creation'"
+            ).fetchone()
+        self.assertEqual(reviews["count"], 0)
+
+    def test_exact_duplicate_review_and_undo_leave_existing_memory_unchanged(self) -> None:
+        content = "Project Acorn deployments require a verified backup checklist."
+        memory_id, created = self.store.add_memory(
+            content,
+            source_category="USER_STATED",
+            approval_state="unreviewed",
+            confidence=0.61,
+            importance=0.62,
+        )
+        self.assertTrue(created)
+        before = self.store.get_memory(memory_id)
+        proposal = self.store.propose_memory_creation(
+            content,
+            source_type="assistant_turn",
+            source_category="AGENT_PROPOSED",
+            confidence=0.95,
+            importance=0.96,
+        )
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(proposal),
+        )
+
+        self.assertEqual(result["memory_id"], memory_id)
+        self.assertFalse(result["memory_created"])
+        self.assertFalse(result["memory_promoted"])
+        self.assertEqual(self.store.get_memory(memory_id), before)
+        self.assertTrue(self.store.undo_review_decision(result["review_id"]))
+        self.assertEqual(self.store.get_memory(memory_id), before)
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+
+    def test_evidence_only_promote_and_undo_restores_exact_membership(self) -> None:
+        """A primary promotion over an evidence-only membership must be reversible.
+
+        When the active recall set is trained, an add_memory with reference-like
+        provenance lands as evidence_only.  A later duplicate review that promotes
+        it to primary overwrites that membership.  Undoing the review must restore
+        the original eligibility, origin, actor, reason, and review state so
+        evidence-only recall continues to work.
+        """
+        content = "Project Acorn deployments require a verified backup checklist."
+        with self.store._lock:
+            self.store._conn.execute("UPDATE memory_recall_sets SET kind='trained' WHERE status='active'")
+            self.store._conn.commit()
+
+        memory_id, created = self.store.add_memory(
+            content,
+            source_category="AGENT_INFERENCE",
+            source_type="vault_markdown",
+            approval_state="trusted_import",
+        )
+        self.assertTrue(created)
+        self.assertFalse(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
+
+        with self.store._lock:
+            prior_row = self.store._conn.execute(
+                """SELECT eligibility,origin,review_id,actor,reason,created_at,revoked_at
+                   FROM memory_recall_memberships WHERE recall_set_id=? AND memory_id=?""",
+                (self.store.active_recall_set_id(), memory_id),
+            ).fetchone()
+        self.assertIsNotNone(prior_row)
+        self.assertEqual(prior_row["eligibility"], "evidence_only")
+
+        proposal = self.store.propose_memory_creation(
+            content,
+            source_type="assistant_turn",
+            source_category="AGENT_PROPOSED",
+        )
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="test-operator",
+        )
+        self.assertEqual(result["memory_id"], memory_id)
+        self.assertTrue(result["memory_promoted"])
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
+
+        self.assertTrue(self.store.undo_review_decision(result["review_id"]))
+        self.assertFalse(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
+
+        with self.store._lock:
+            restored_row = self.store._conn.execute(
+                """SELECT eligibility,origin,review_id,actor,reason,created_at,revoked_at
+                   FROM memory_recall_memberships WHERE recall_set_id=? AND memory_id=?""",
+                (self.store.active_recall_set_id(), memory_id),
+            ).fetchone()
+        self.assertIsNotNone(restored_row)
+        self.assertEqual(dict(restored_row), dict(prior_row))
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+
+    def test_automatic_review_preserves_exact_duplicate_created_after_assessment(self) -> None:
+        content = "Project Acorn deployments require the verified backup checklist."
+        proposal = self.store.propose_memory_creation(content)
+        memory_id, created = self.store.add_memory(
+            content,
+            source_category="USER_EXPLICIT",
+            approval_state="trusted_import",
+        )
+        self.assertTrue(created)
+        before = self.store.get_memory(memory_id)
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(proposal),
+        )
+
+        self.assertEqual(result["memory_id"], memory_id)
+        self.assertFalse(result["memory_created"])
+        self.assertEqual(self.store.get_memory(memory_id), before)
+        self.assertTrue(self.store.undo_review_decision(result["review_id"]))
+        self.assertEqual(self.store.get_memory(memory_id), before)
+
+    def test_stale_archived_duplicate_does_not_produce_nonrecallable_remembered_result(self) -> None:
+        content = "Project Acorn deployments require the verified rollback checklist."
+        proposal = self.store.propose_memory_creation(content)
+        archived_id, created = self.store.add_memory(content)
+        self.assertTrue(created)
+        self.assertTrue(self.store.set_state(archived_id, "archived", reason="test race"))
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(proposal),
+        )
+
+        self.assertTrue(result["memory_created"] or result["memory_promoted"])
+        self.assertNotEqual(result["memory_id"], archived_id)
+        self.assertTrue(self.store.is_memory_recall_eligible(result["memory_id"]))
+        self.assertEqual(self.store.get_memory(archived_id)["state"], "archived")
+
+    def test_reopen_does_not_rewrite_exact_active_duplicate_provenance(self) -> None:
+        content = "Project Acorn deployments require the verified backup checklist."
+        memory_id, created = self.store.add_memory(
+            content,
+            source_category="USER_EXPLICIT",
+            approval_state="trusted_import",
+        )
+        self.assertTrue(created)
+        before = self.store.get_memory(memory_id)
+        proposal = self.store.propose_memory_creation(content)
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(proposal),
+        )
+        self.assertEqual(self.store.get_memory(memory_id), before)
+
+        db_path = self.store.path
+        self.store.close()
+        self.store = CortexStore(db_path)
+
+        self.assertEqual(self.store.get_memory(memory_id), before)
+        self.assertTrue(self.store.undo_review_decision(result["review_id"]))
+        self.assertEqual(self.store.get_memory(memory_id), before)
+
+    def test_schema_23_upgrade_recovers_origin_for_created_proposal_memory(self) -> None:
+        proposal = self.store.propose_memory_creation(
+            "Jacoby prefers the compact deployment review.",
+            kind="preference",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+        decision = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="test-operator",
+        )
+        path = self.store.path
+        self.store.close()
+        conn = sqlite3.connect(path)
+        conn.execute(
+            """UPDATE memories
+               SET origin_source_category='AGENT_INFERENCE',approval_state='unreviewed'
+               WHERE id=?""",
+            (decision["memory_id"],),
+        )
+        conn.execute("UPDATE meta SET value='23' WHERE key='schema_version'")
+        conn.commit()
+        conn.close()
+
+        self.store = CortexStore(path)
+
+        migrated = self.store.get_memory(decision["memory_id"])
+        self.assertEqual(migrated["source_category"], "OPERATOR_APPROVED")
+        self.assertEqual(migrated["origin_source_category"], "USER_STATED")
+        self.assertEqual(migrated["approval_state"], "operator_approved")
 
     def test_needs_context_can_be_resolved_later(self) -> None:
         proposal = self.store.propose_memory_creation("It should use the other one.")

@@ -15,6 +15,8 @@ SOURCE_PRIORS = {
     "DOCUMENT_EXTRACTED": 0.80,
     # An operator can approve storage without independently verifying truth.
     "OPERATOR_APPROVED": 0.72,
+    # Automatic admission is auditable but carries no human verification.
+    "AUTOMATIC_APPROVED": 0.66,
     "REFLECTION": 0.62,
     "AGENT_INFERENCE": 0.52,
     "AGENT_PROPOSED": 0.48,
