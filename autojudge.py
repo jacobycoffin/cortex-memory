@@ -16,6 +16,7 @@ import logging
 import math
 import os
 import re
+import sqlite3
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -453,11 +454,11 @@ class AutoJudge:
             elif status == "needs_context":
                 report["needs_context"] += 1
 
-            # --- Link creation: apply LLM-suggested edges for remembered candidates ---
+            # --- Link creation: apply LLM-suggested edges for remembered/evidence_only candidates ---
             links = decision.get("links")
             if (
                 self.config.links_enabled
-                and status == "remembered"
+                and status in ("remembered", "evidence_only")
                 and links
                 and isinstance(links, list)
             ):
@@ -598,38 +599,45 @@ def _apply_links(
             continue
         if target_id == new_memory_id:
             continue  # would violate src_id != dst_id CHECK
-        # Normalise direction: place lower-alphanumeric id as src
-        src_id, dst_id = sorted((new_memory_id, target_id))
-        with store._lock:
-            existing = store._conn.execute(
-                "SELECT src_id, dst_id FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
-                (src_id, dst_id, relation),
-            ).fetchone()
-            store._conn.execute(
-                """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
-                   VALUES(?,?,?,?,1,?,?)
-                   ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
-                     weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
-                     evidence_count=edges.evidence_count+1,
-                     last_reinforced_at=excluded.last_reinforced_at""",
-                (src_id, dst_id, relation, _LINKS_EDGE_WEIGHT, now, now),
-            )
-            store._record_edge_evidence_tx(
-                store._conn, src_id, dst_id, relation,
-                evidence_type="auto_judge",
-                evidence_key=f"judge_link:{review_id}:{target_id}:{relation}",
-                summary=rationale or f"Auto-judge linked {relation}",
-                source_ref=f"review:{review_id}",
-                metadata={
-                    "proposal_id": proposal_id,
-                    "review_id": review_id,
-                    "actor": actor,
-                    "relation": relation,
-                    "new_memory_id": new_memory_id,
-                    "target_memory_id": target_id,
-                },
-                created_at=now,
-            )
+        # Normalise direction only for symmetric relations; preserve LLM-specified
+        # direction for directed relations (supports, extends, refines, etc.)
+        if relation == "contradicts":
+            src_id, dst_id = sorted((new_memory_id, target_id))
+        else:
+            src_id, dst_id = new_memory_id, target_id
+        with store.transaction() as conn:
+            try:
+                conn.execute(
+                    """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                       VALUES(?,?,?,?,1,?,?)
+                       ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                         weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
+                         evidence_count=edges.evidence_count+1,
+                         last_reinforced_at=excluded.last_reinforced_at""",
+                    (src_id, dst_id, relation, _LINKS_EDGE_WEIGHT, now, now),
+                )
+                store._record_edge_evidence_tx(
+                    conn, src_id, dst_id, relation,
+                    evidence_type="auto_judge",
+                    evidence_key=f"judge_link:{review_id}:{target_id}:{relation}",
+                    summary=rationale or f"Auto-judge linked {relation}",
+                    source_ref=f"review:{review_id}",
+                    metadata={
+                        "proposal_id": proposal_id,
+                        "review_id": review_id,
+                        "actor": actor,
+                        "relation": relation,
+                        "new_memory_id": new_memory_id,
+                        "target_memory_id": target_id,
+                    },
+                    created_at=now,
+                )
+            except sqlite3.IntegrityError:
+                logger.debug(
+                    "auto-judge link skipped: target %s not found in memories table",
+                    target_id,
+                )
+                continue
         created += 1
     return created
 
@@ -1073,32 +1081,39 @@ def _apply_contradiction_edges(
         if not target_id or target_id == new_memory_id:
             continue
         src_id, dst_id = sorted((new_memory_id, target_id))
-        with store._lock:
-            store._conn.execute(
-                """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
-                   VALUES(?,?,?,?,1,?,?)
-                   ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
-                     weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
-                     evidence_count=edges.evidence_count+1,
-                     last_reinforced_at=excluded.last_reinforced_at""",
-                (src_id, dst_id, "contradicts", _LINKS_EDGE_WEIGHT, now, now),
-            )
-            store._record_edge_evidence_tx(
-                store._conn, src_id, dst_id, "contradicts",
-                evidence_type="auto_judge",
-                evidence_key=f"judge_contradiction:{review_id}:{target_id}",
-                summary=f"Auto-judge contradiction: {new_memory_id[:12]} <-> {target_id[:12]}",
-                source_ref=f"review:{review_id}",
-                metadata={
-                    "proposal_id": proposal_id,
-                    "review_id": review_id,
-                    "actor": actor,
-                    "new_memory_id": new_memory_id,
-                    "target_memory_id": target_id,
-                    "reason": "contradiction_detected",
-                },
-                created_at=now,
-            )
+        with store.transaction() as conn:
+            try:
+                conn.execute(
+                    """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                       VALUES(?,?,?,?,1,?,?)
+                       ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                         weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
+                         evidence_count=edges.evidence_count+1,
+                         last_reinforced_at=excluded.last_reinforced_at""",
+                    (src_id, dst_id, "contradicts", _LINKS_EDGE_WEIGHT, now, now),
+                )
+                store._record_edge_evidence_tx(
+                    conn, src_id, dst_id, "contradicts",
+                    evidence_type="auto_judge",
+                    evidence_key=f"judge_contradiction:{review_id}:{target_id}",
+                    summary=f"Auto-judge contradiction: {new_memory_id[:12]} <-> {target_id[:12]}",
+                    source_ref=f"review:{review_id}",
+                    metadata={
+                        "proposal_id": proposal_id,
+                        "review_id": review_id,
+                        "actor": actor,
+                        "new_memory_id": new_memory_id,
+                        "target_memory_id": target_id,
+                        "reason": "contradiction_detected",
+                    },
+                    created_at=now,
+                )
+            except sqlite3.IntegrityError:
+                logger.debug(
+                    "auto-judge contradiction edge skipped: target %s not found in memories table",
+                    target_id,
+                )
+                continue
         created += 1
     return created
 
@@ -1204,16 +1219,17 @@ def link_orphan_memories(
     effective_provider = provider_call or _post_chat
 
     # Find orphan memories (no edges as src or dst) regardless of approval state
-    orphans = store._conn.execute(
-        """SELECT m.id, m.content, m.kind,
-                  m.subject, m.predicate, m.object_value
-           FROM memories m
-           WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
-           AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
-           ORDER BY m.created_at DESC
-           LIMIT ?""",
-        (max_orphans,),
-    ).fetchall()
+    with store._lock:
+        orphans = store._conn.execute(
+            """SELECT m.id, m.content, m.kind,
+                      m.subject, m.predicate, m.object_value
+               FROM memories m
+               WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
+               AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+               ORDER BY m.created_at DESC
+               LIMIT ?""",
+            (max_orphans,),
+        ).fetchall()
 
     report["orphans_found"] = len(orphans)
     if not orphans:
