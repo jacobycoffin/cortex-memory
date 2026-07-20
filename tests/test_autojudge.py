@@ -741,7 +741,7 @@ class AutoJudgeTests(unittest.TestCase):
             <= columns
         )
         self.assertIsNotNone(feedback_table)
-        self.assertEqual(self.store.stats()["schema_version"], 25)
+        self.assertEqual(self.store.stats()["schema_version"], 26)
 
     def test_concurrent_duplicate_creation_review_does_not_leave_pending_state(self) -> None:
         """If a duplicate memory exists but is not recall-eligible, review resolves it.
@@ -893,8 +893,8 @@ class AutoJudgeTests(unittest.TestCase):
         self.assertEqual(second["applied"], 0)
         self.assertEqual(len(provider_calls), 1)
 
-        # Re-creating the identical proposal after undo restores pending status,
-        # but the original non-reversed review ledger row still suppresses it.
+        # After undoing the review, the proposal is pending again and has no
+        # non-reversed ledger row.  The auto-judge should re-review it.
         review_id = self.store.get_memory_creation_proposal(
             proposal["proposal_id"]
         )["review_id"]
@@ -907,10 +907,9 @@ class AutoJudgeTests(unittest.TestCase):
         )
         third = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
         self.assertEqual(third["selected"], 1)
-        self.assertEqual(third["deferred"], 1)
-        self.assertEqual(third["applied"], 0)
-        # The duplicate-suppression path in AutoJudge defers the proposal before
-        # the provider call, so the provider should still be invoked only once.
+        self.assertEqual(third["applied"], 1)
+        self.assertEqual(third["remembered"], 1)
+        # The original review was reversed, so a new provider call is made.
         self.assertEqual(len(provider_calls), 2)
 
     def test_auto_judge_skips_already_reviewed_same_hash_and_proposal_id(self) -> None:

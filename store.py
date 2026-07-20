@@ -33,7 +33,7 @@ from .security import normalize_text, sanitize_memory
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 logger = logging.getLogger(__name__)
@@ -1003,9 +1003,9 @@ class CortexStore:
                 review_id TEXT PRIMARY KEY,
                 item_type TEXT NOT NULL,
                 item_key TEXT NOT NULL,
-                proposal_id TEXT REFERENCES memory_creation_proposals(proposal_id) ON DELETE SET NULL,
-                src_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
-                dst_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                proposal_id TEXT,
+                src_id TEXT,
+                dst_id TEXT,
                 action TEXT NOT NULL,
                 reason_code TEXT NOT NULL,
                 reason_text TEXT,
@@ -1868,6 +1868,47 @@ class CortexStore:
             self._conn.execute(
                 "UPDATE operator_review_decisions SET decision_scope='policy_evidence'"
             )
+        # Schema 26: Remove FK constraints from operator_review_decisions so that
+        # sleep-proposal reviews can be stored alongside creation-proposal reviews.
+        # SQLite does not support ALTER TABLE DROP CONSTRAINT, so we recreate the table.
+        if "proposal_id TEXT REFERENCES" in (
+            self._conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='operator_review_decisions'"
+            ).fetchone() or [""]
+        )[0]:
+            self._conn.execute("PRAGMA foreign_keys=OFF")
+            self._conn.executescript(
+                """CREATE TABLE IF NOT EXISTS operator_review_decisions_v26 (
+                    review_id TEXT PRIMARY KEY,
+                    item_type TEXT NOT NULL,
+                    item_key TEXT NOT NULL,
+                    proposal_id TEXT,
+                    src_id TEXT,
+                    dst_id TEXT,
+                    action TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    reason_text TEXT,
+                    prior_json TEXT NOT NULL DEFAULT '{}',
+                    effect_json TEXT NOT NULL DEFAULT '{}',
+                    learning_signal_json TEXT NOT NULL DEFAULT '{}',
+                    decision_scope TEXT NOT NULL DEFAULT 'item_only'
+                      CHECK(decision_scope IN ('item_only','exact_duplicates','policy_evidence')),
+                    actor TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    reversed_at TEXT
+                );
+                INSERT INTO operator_review_decisions_v26
+                    SELECT * FROM operator_review_decisions;
+                DROP TABLE operator_review_decisions;
+                ALTER TABLE operator_review_decisions_v26 RENAME TO operator_review_decisions;
+                CREATE INDEX IF NOT EXISTS idx_operator_review_created
+                  ON operator_review_decisions(created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_operator_review_item
+                  ON operator_review_decisions(item_type,item_key,created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_operator_review_proposal
+                  ON operator_review_decisions(proposal_id, reversed_at);"""
+            )
+            self._conn.execute("PRAGMA foreign_keys=ON")
 
     def _active_dependency_ids_tx(self, conn: sqlite3.Connection) -> set[str]:
         return {
@@ -2875,19 +2916,26 @@ class CortexStore:
         now = utc_now()
         with self.transaction() as conn:
             existing = conn.execute(
-                """SELECT proposal_id FROM memory_creation_proposals
-                   WHERE proposal_key=? AND status IN ('pending','needs_context')""",
+                """SELECT proposal_id, status FROM memory_creation_proposals
+                   WHERE proposal_key=? AND status IN ('pending','needs_context',
+                       'remembered','evidence_only','rejected')""",
                 (proposal_key,),
             ).fetchone()
             if existing:
                 proposal_id = str(existing["proposal_id"])
+                existing_status = str(existing["status"])
+                new_status = "pending" if existing_status in (
+                    "remembered", "evidence_only", "rejected"
+                ) else existing_status
                 conn.execute(
                     """UPDATE memory_creation_proposals
-                       SET recurrence_count=recurrence_count+1,last_seen_at=?,session_id=COALESCE(?,session_id),
+                       SET status=?,recurrence_count=recurrence_count+1,last_seen_at=?,
+                           session_id=COALESCE(?,session_id),
                            assessment_json=?,quarantine_reason=COALESCE(quarantine_reason,?),
-                           redacted=MAX(redacted,?)
+                           redacted=MAX(redacted,?),review_started_at=NULL
                        WHERE proposal_id=?""",
                     (
+                        new_status,
                         now,
                         session_value,
                         _trace_json(assessment_value),
@@ -11487,7 +11535,8 @@ class CortexStore:
                 conn.execute(
                     """UPDATE memory_creation_proposals
                        SET status='pending',decision_action=NULL,decision_note=NULL,
-                           result_memory_id=NULL,review_id=NULL,actor=NULL,decided_at=NULL
+                           result_memory_id=NULL,review_id=NULL,actor=NULL,decided_at=NULL,
+                           review_started_at=NULL
                        WHERE proposal_id=?""",
                     (proposal_id,),
                 )

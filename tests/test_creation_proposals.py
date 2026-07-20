@@ -138,14 +138,16 @@ class MemoryCreationProposalTests(unittest.TestCase):
             )
             self.store._conn.commit()
 
-        with self.assertRaisesRegex(StaleCreationProposalError, "already being reviewed"):
-            self.store.review_memory_creation(
+        with self.assertLogs("cortex.store", level=logging.WARNING) as logs:
+            result = self.store.review_memory_creation(
                 proposal_id,
                 "remember",
                 actor="cortex-auto-judge:synthetic",
                 approval_authority="automatic",
                 expected_revision=creation_proposal_revision(proposal),
             )
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("already being reviewed", " ".join(logs.output))
 
     def test_stale_creation_review_returns_skipped_fallback(self) -> None:
         """A review on an already-resolved proposal returns a graceful skipped result.
