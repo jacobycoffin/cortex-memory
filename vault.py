@@ -95,6 +95,11 @@ class VaultIndexer:
             if path.is_symlink() or any(part.startswith(".") or part in _SKIP_PARTS for part in relative.parts):
                 skipped += 1
                 continue
+            # Guard against a symlinked *directory* inside the vault leading rglob
+            # to files whose real location is outside the vault root.
+            if not path.resolve().is_relative_to(self.vault_path):
+                skipped += 1
+                continue
             stat = path.stat()
             if stat.st_size > self.max_file_bytes:
                 skipped += 1

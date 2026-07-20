@@ -171,6 +171,15 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     review_copilot = ReviewCopilot(ReviewCopilotConfig.from_env())
     failed_logins: dict[str, list[float]] = {}
     failed_logins_lock = threading.RLock()
+    # Client IPs supplied by a reverse proxy (X-Forwarded-For / CF-Connecting-IP)
+    # are only trusted when the direct peer is one of these configured proxies;
+    # otherwise those headers are attacker-spoofable and would defeat the login
+    # rate limiter. Empty by default -> always key on the real peer address.
+    trusted_proxies = {
+        ip.strip()
+        for ip in os.environ.get("CORTEX_DASHBOARD_TRUSTED_PROXIES", "").split(",")
+        if ip.strip()
+    }
     sleep_lock = threading.RLock()
     sleep_runtime: dict[str, object] = {
         "status": "idle",
@@ -394,7 +403,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                         "auth_enabled": auth_enabled,
                         "authenticated": authenticated,
                         "must_change_password": auth.must_change_password() if authenticated and auth_enabled else False,
-                        "username": auth.username() if auth_enabled else "",
+                        "username": auth.username() if authenticated and auth_enabled else "",
                     },
                 )
                 return
@@ -1034,26 +1043,19 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not auth_enabled:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "authentication is disabled"})
                 return
-            client = self._client_key()
-            now = time.monotonic()
-            with failed_logins_lock:
-                recent = [stamp for stamp in failed_logins.get(client, []) if now - stamp < 300]
-                failed_logins[client] = recent
-                if len(recent) >= 8:
-                    self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Too many attempts. Try again shortly."})
-                    return
+            if not self._throttle_ok():
+                self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Too many attempts. Try again shortly."})
+                return
             payload = self._read_json()
             if payload is None:
                 return
             username = str(payload.get("username") or "")
             password = str(payload.get("password") or "")
             if len(username) > 128 or len(password) > 256 or not auth.verify_password(username, password):
-                with failed_logins_lock:
-                    failed_logins.setdefault(client, []).append(now)
+                self._throttle_record()
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "Username or password is incorrect."})
                 return
-            with failed_logins_lock:
-                failed_logins.pop(client, None)
+            self._throttle_clear()
             self._json(
                 HTTPStatus.OK,
                 {
@@ -1089,7 +1091,14 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             authenticated = auth.session_from_cookie(self.headers.get("Cookie")) is not None
             if not authenticated:
                 credentials = _basic_credentials(self.headers.get("Authorization"))
-                authenticated = bool(credentials and auth.verify_password(*credentials))
+                # Throttle Basic-auth verification: each attempt runs an expensive
+                # PBKDF2, so an un-limited stream of them is a CPU-exhaustion vector.
+                if credentials and self._throttle_ok():
+                    if auth.verify_password(*credentials):
+                        authenticated = True
+                        self._throttle_clear()
+                    else:
+                        self._throttle_record()
             return authenticated and (not complete or not auth.must_change_password())
 
         def _require_auth(self, *, complete: bool) -> bool:
@@ -1116,8 +1125,33 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return None
 
         def _client_key(self) -> str:
-            forwarded = self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For") or ""
-            return forwarded.split(",", 1)[0].strip() or self.client_address[0]
+            peer = self.client_address[0]
+            # Only honor proxy-forwarded client IPs from a configured trusted
+            # proxy; otherwise the header is spoofable and defeats throttling.
+            if peer in trusted_proxies:
+                forwarded = self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For") or ""
+                client = forwarded.split(",", 1)[0].strip()
+                if client:
+                    return client
+            return peer
+
+        def _throttle_ok(self) -> bool:
+            """True if this client is under the failed-attempt limit (no record kept)."""
+            client = self._client_key()
+            now = time.monotonic()
+            with failed_logins_lock:
+                recent = [stamp for stamp in failed_logins.get(client, []) if now - stamp < 300]
+                failed_logins[client] = recent
+                return len(recent) < 8
+
+        def _throttle_record(self) -> None:
+            client = self._client_key()
+            with failed_logins_lock:
+                failed_logins.setdefault(client, []).append(time.monotonic())
+
+        def _throttle_clear(self) -> None:
+            with failed_logins_lock:
+                failed_logins.pop(self._client_key(), None)
 
         def _session_cookie(self, token: str) -> str:
             secure = self.headers.get("X-Forwarded-Proto", "").casefold() == "https"

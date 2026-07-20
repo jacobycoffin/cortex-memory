@@ -36,6 +36,11 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         ),
         r"\1 is [REDACTED]",
     ),
+    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36}\b"), "[REDACTED GITHUB TOKEN]"),
+    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}\b"), "[REDACTED GITHUB TOKEN]"),
+    (re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"), "[REDACTED SLACK TOKEN]"),
+    (re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"), "[REDACTED GOOGLE KEY]"),
+    (re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"), "[REDACTED JWT]"),
 )
 
 _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
