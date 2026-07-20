@@ -360,6 +360,114 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         except Exception as error:
             store.fail_evaluation_run(run_id, str(error))
 
+
+def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
+    """Query the Cortex DB for auto-judge analytics and decision history."""
+    conn = store._conn
+    now = utc_now()
+    data: dict[str, object] = {
+        "config": {},
+        "summary": {},
+        "recent_decisions": [],
+        "proposals": {},
+        "orphan_linking": {},
+        "edges": {},
+    }
+    try:
+        # Config from env
+        data["config"] = {
+            "enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_ENABLED", "0") in ("1", "true", "True")),
+            "model": os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
+            "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
+            "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
+        }
+        # Summary stats
+        summary = dict(conn.execute("""
+            SELECT
+                COUNT(CASE WHEN action='remember' THEN 1 END) AS remembered,
+                COUNT(CASE WHEN action='reject' THEN 1 END) AS rejected,
+                COUNT(CASE WHEN action='evidence_only' THEN 1 END) AS evidence_only,
+                COUNT(*) AS total
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+        """).fetchone())
+        summary["deferred"] = conn.execute("""
+            SELECT COUNT(*) FROM memory_creation_proposals
+            WHERE status='pending' OR status='needs_context'
+        """).fetchone()[0]
+        data["summary"] = dict(summary)
+
+        # Recent decisions
+        recent = conn.execute("""
+            SELECT review_id, item_type, action, decision_scope, created_at, reason_text
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+            ORDER BY created_at DESC LIMIT 20
+        """).fetchall()
+        data["recent_decisions"] = [
+            {
+                "review_id": r[0],
+                "item_type": r[1],
+                "action": r[2],
+                "scope": r[3],
+                "created_at": r[4],
+                "reason": (r[5] or "")[:120],
+            }
+            for r in recent
+        ]
+
+        # Proposal pipeline funnel
+        funnel = dict(conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
+                COUNT(CASE WHEN status='needs_context' THEN 1 END) AS needs_context,
+                COUNT(CASE WHEN status='remembered' THEN 1 END) AS remembered,
+                COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected,
+                COUNT(CASE WHEN status='evidence_only' THEN 1 END) AS evidence_only
+            FROM memory_creation_proposals
+        """).fetchone())
+        data["proposals"] = dict(funnel)
+
+        # Orphan linking stats
+        total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        total_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        orphans = conn.execute("""
+            SELECT COUNT(*) FROM memories m
+            WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
+            AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+        """).fetchone()[0]
+        data["orphan_linking"] = {
+            "total_memories": total_memories,
+            "total_edges": total_edges,
+            "orphan_memories": orphans,
+            "linked_percentage": round((total_memories - orphans) / max(total_memories, 1) * 100, 1),
+        }
+
+        # Edge type breakdown
+        edge_relations = conn.execute("""
+            SELECT relation, COUNT(*) AS cnt
+            FROM edges GROUP BY relation ORDER BY cnt DESC
+        """).fetchall()
+        data["edges"]["by_relation"] = {r[0]: r[1] for r in edge_relations}
+        data["edges"]["total"] = total_edges
+
+        # Daily decision counts (last 14 days)
+        daily = conn.execute("""
+            SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+              AND created_at >= DATE('now', '-14 days')
+            GROUP BY DATE(created_at), action
+            ORDER BY day
+        """).fetchall()
+        data["daily_decisions"] = daily
+
+    except Exception as exc:
+        data["_error"] = str(exc)
+    return data
+
+
     class Handler(BaseHTTPRequestHandler):
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
@@ -377,7 +485,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/snapshot", "/api/memory", "/api/sleep/status",
                 "/api/benchmark/status", "/api/evaluation/status",
                 "/api/refinery/summary", "/api/refinery/items", "/api/refinery/shadow",
-                "/api/recall-sets",
+                "/api/recall-sets", "/api/auto-judge",
             }:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
@@ -415,6 +523,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 snapshot["review_copilot"] = review_copilot.status()
                 snapshot["sleep_runtime"] = sleep_status()
                 snapshot["sleep_schedule"] = sleep_schedule()
+                snapshot["auto_judge"] = _auto_judge_snapshot(store)
                 self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/sleep/status":
@@ -464,6 +573,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             if parsed.path == "/api/recall-sets":
                 self._json(HTTPStatus.OK, {"recall_sets": store.recall_set_snapshot()})
+                return
+            if parsed.path == "/api/auto-judge":
+                self._json(HTTPStatus.OK, _auto_judge_snapshot(store))
                 return
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 

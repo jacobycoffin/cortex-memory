@@ -1677,6 +1677,38 @@
     .tool-evaluation-stat strong { display: block; font: 540 1.1rem/1 var(--display); }
     .tool-evaluation-stat span { display: block; margin-top: 6px; color: var(--muted); font-size: .57rem; line-height: 1.38; }
     .guidance-ledger { display: grid; gap: 0; margin-top: 10px; }
+
+    /* ── Auto-Judge page ──────────────────────────────── */
+    .funnel { padding: 14px 0; }
+    .funnel-bar { display: flex; height: 28px; border-radius: 6px; overflow: hidden; margin-bottom: 8px; }
+    .funnel-segment { transition: width .3s ease; min-width: 4px; }
+    .funnel-labels { display: flex; gap: 10px; flex-wrap: wrap; }
+    .funnel-label { display: flex; gap: 4px; align-items: center; font-size: .7rem; }
+    .funnel-label strong { font: 600 .8rem/1 var(--display); }
+    .funnel-label span { color: var(--muted); }
+    .orphan-stat-grid { display: grid; gap: 6px; padding: 8px 0; }
+    .orphan-stat-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .orphan-stat-row:last-child { border-bottom: none; }
+    .orphan-stat-label { font-size: .68rem; color: var(--muted); }
+    .edge-type-grid { display: flex; flex-wrap: wrap; gap: 5px; padding: 8px 0; }
+    .edge-type-tag { font-size: .62rem; background: var(--surface-2); padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border); font-family: ui-monospace, monospace; }
+    .panel-subtitle { font-size: .68rem; color: var(--muted); margin-bottom: 6px; }
+    .decision-table { display: grid; gap: 2px; }
+    .decision-row { display: grid; grid-template-columns: 90px 90px 120px 1fr; gap: 8px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: .68rem; }
+    .decision-row:last-child { border-bottom: none; }
+    .decision-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; font-size: .6rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: center; }
+    .decision-badge.remember { background: color-mix(in srgb, var(--mint) 25%, transparent); color: var(--mint); }
+    .decision-badge.reject { background: color-mix(in srgb, var(--red) 25%, transparent); color: var(--red); }
+    .decision-badge.evidence_only { background: color-mix(in srgb, var(--amber) 25%, transparent); color: var(--amber); }
+    .decision-type { color: var(--text-soft); font-family: ui-monospace, monospace; }
+    .decision-time { color: var(--muted); }
+    .decision-reason { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .aj-daily-chart svg { width: 100%; height: auto; }
+    .config-grid { display: grid; gap: 6px; padding: 8px 0; }
+    .config-row { display: flex; align-items: center; gap: 16px; padding: 4px 0; border-bottom: 1px solid var(--border); }
+    .config-row:last-child { border-bottom: none; }
+    .config-label { font-size: .68rem; color: var(--muted); min-width: 100px; }
+    .config-value { font-size: .75rem; font-family: ui-monospace, monospace; }
     .guidance-row { display: grid; grid-template-columns: minmax(0,1fr) repeat(3,minmax(75px,.35fr)); gap: 8px; padding: 9px 0; border-top: 1px solid var(--border); font-size: .58rem; }
     .guidance-row span { color: var(--muted); }
     .settings-shortcut { width: auto; padding: 0 11px; }
@@ -1788,7 +1820,7 @@
         <button class="nav-btn" data-view="overview" aria-selected="true"><span class="nav-icon">01</span><span class="nav-text">Overview</span></button>
         <button class="nav-btn" data-view="graph" aria-selected="false"><span class="nav-icon">02</span><span class="nav-text">Memory map</span></button>
         <button class="nav-btn" data-view="timeline" aria-selected="false"><span class="nav-icon">03</span><span class="nav-text">Timeline</span></button>
-        <button class="nav-btn" data-view="review" aria-selected="false"><span class="nav-icon">04</span><span class="nav-text">Train Kaya <small id="review-nav-count"></small></span></button>
+        <button class="nav-btn" data-view="auto-judge" aria-selected="false"><span class="nav-icon">04</span><span class="nav-text">Auto-Judge</span></button>
         <button class="nav-btn" data-view="insights" aria-selected="false"><span class="nav-icon">05</span><span class="nav-text">Insights</span></button>
         <button class="nav-btn" data-view="cognition" aria-selected="false"><span class="nav-icon">06</span><span class="nav-text">Cognition</span></button>
         <button class="nav-btn" data-view="trust" aria-selected="false"><span class="nav-icon">07</span><span class="nav-text">Trust</span></button>
@@ -1934,93 +1966,36 @@
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>What was captured</h2><p>Memory types within the selected period</p></div></div><div class="timeline-kind-list" id="timeline-kind-list"></div></div>
         </section>
 
-        <section class="view" id="view-review" aria-labelledby="review-heading">
-          <div class="page-heading"><div><div class="eyebrow">Notice → review → remember → test the pattern</div><h1 id="review-heading">Train Kaya</h1><p>Start by deciding what deserves to become a memory. Your one-off choices happen immediately; broader creation standards still require repeated evidence, testing, and your approval.</p></div></div>
-          <section class="panel training-overview" aria-labelledby="training-path-heading">
-            <div class="training-overview-head">
-              <div><div class="eyebrow">Your training path</div><h2 id="training-path-heading">Choose good memories first. Teach patterns second.</h2><p>New candidates wait outside recall until you decide. Teach the examples. Approve the standard. Cortex can group the examples you deliberately mark for teaching, replay a proposed rule, observe it in shadow mode, and return to you for final approval.</p></div>
-              <div class="training-progress-number"><strong id="training-progress-value">0%</strong><span>first policy journey</span></div>
-            </div>
-            <div class="training-progress-track" role="progressbar" aria-label="Kaya training progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="training-progress-track"><div class="training-progress-fill" id="training-progress-fill"></div></div>
-            <div class="training-steps" id="training-steps"></div>
-            <div class="training-next"><div><strong id="training-next-title">Review real Kaya examples</strong><span id="training-next-copy">Your choices create the evidence used by the policy compiler.</span></div><button class="primary-btn" id="training-next-action" type="button">Start reviewing</button></div>
-          </section>
-          <div class="panel review-hero">
-            <div><div class="eyebrow">Your attention is the scarce resource</div><h2>One clear decision at a time.</h2><p>Each item shows what happened, what Cortex proposes, why it noticed, and what Kaya could do with it. The result can stay specific to this candidate or count as one example toward a future tested standard.</p></div>
-            <div class="review-progress-large" id="review-inbox-total"><strong>—</strong><span>waiting</span></div>
-          </div>
-          <div class="review-filter-bar" id="review-filters" aria-label="Filter review inbox">
-            <button class="review-filter active" type="button" data-review-filter="creation">New memories</button>
-            <button class="review-filter" type="button" data-review-filter="all">All</button>
-            <button class="review-filter" type="button" data-review-filter="cleanup">Cleanup</button>
-            <button class="review-filter" type="button" data-review-filter="clarity">Clarity</button>
-            <button class="review-filter" type="button" data-review-filter="connections">Connections</button>
-            <button class="review-filter" type="button" data-review-filter="conflicts">Conflicts</button>
-            <button class="review-filter" type="button" data-review-filter="claims">Claims</button>
-            <button class="review-filter" type="button" data-review-filter="accuracy">Answer accuracy</button>
-          </div>
-          <section class="panel creation-review-guide" id="creation-review-guide">
-            <div class="eyebrow">Creation trainer · nothing here is a memory yet</div>
-            <h2>Decide what Kaya is allowed to learn.</h2>
-            <p>Cortex caught a possible memory and paused it here. Kaya cannot recall it until you choose “Remember it.” Your decision changes this one proposal now; it becomes a broader standard only if you choose to teach from the example and later approve the tested rule.</p>
-            <div class="creation-flow" aria-label="How creation training reaches Cortex">
-              <div class="creation-flow-step"><span>1 · Candidate</span><strong>Cortex notices</strong><p>Text waits outside recall.</p></div>
-              <div class="creation-flow-step"><span>2 · Your decision</span><strong>You choose</strong><p>Remember, edit, reference, reject, or wait.</p></div>
-              <div class="creation-flow-step"><span>3 · Evidence</span><strong>Patterns collect</strong><p>Only examples marked “Teach” count.</p></div>
-              <div class="creation-flow-step"><span>4 · Standard</span><strong>You approve again</strong><p>Tested policy can then affect Cortex-wide creation.</p></div>
-            </div>
-            <div class="recall-set-panel">
-              <div><div class="eyebrow">What Kaya can recall</div><h3 id="recall-set-title">Checking the active recall set…</h3><p id="recall-set-copy">Legacy keeps today’s eligible Cortex records. Trained starts with only memories approved for the clean set. Switching sets does not delete any memory content, and it never changes Hermes MEMORY.md or USER.md.</p><div class="recall-set-status" id="recall-set-status"></div></div>
-              <div class="recall-set-actions"><button class="primary-btn" id="recall-set-preview" type="button">Preview a clean start</button><button class="ghost-btn" id="recall-set-switch-back" type="button" hidden>Switch back to Legacy</button></div>
-            </div>
-            <div class="creation-receipt" id="creation-review-receipt" hidden><div><strong id="creation-review-receipt-title">Decision saved</strong><span id="creation-review-receipt-copy"></span></div><button class="ghost-btn" id="creation-review-receipt-undo" type="button">Undo decision</button></div>
-            <dialog class="recall-set-dialog" id="recall-set-dialog" aria-labelledby="recall-set-dialog-title">
-              <div class="recall-set-dialog-body"><div class="eyebrow">Clean-start preview</div><h2 id="recall-set-dialog-title">Review the exact impact</h2><p id="recall-set-dialog-copy">Loading the preview…</p><div class="recall-set-counts" id="recall-set-counts"></div><div class="recall-set-warning">This changes which Cortex records normal recall can use. It does not delete or rewrite memory content, and it does not touch Hermes MEMORY.md or USER.md. You can switch back to Legacy.</div><div class="recall-set-dialog-actions"><button class="ghost-btn" id="recall-set-dialog-cancel" type="button">Cancel</button><button class="primary-btn" id="recall-set-activate" type="button">Activate Trained set</button></div></div>
-            </dialog>
-          </section>
-          <section class="panel connection-review-guide" id="connection-review-guide" hidden>
-            <div class="connection-review-head">
-              <div><div class="eyebrow">Connection workshop</div><h2>Review a relationship, not two blobs of text.</h2><p>Cortex groups similar pairs so your decisions compound. Every approval creates one explained map edge immediately. Five consistent denials can propose a stricter evidence standard; it must pass replay, three new shadow reviews, and your approval before it filters future weak suggestions.</p></div>
-              <div class="connection-review-total"><strong id="connection-review-count">0</strong><span>connection pairs</span></div>
-            </div>
-            <div class="connection-patterns" id="connection-patterns" aria-label="Connection patterns"></div>
-            <label class="connection-auto-map"><input id="connection-auto-map" type="checkbox" checked> Show each approved connection on the memory map</label>
-            <div class="connection-map-receipt" id="connection-map-receipt" hidden><div><strong id="connection-map-receipt-title">Connection created</strong><span id="connection-map-receipt-copy"></span></div><button class="primary-btn" id="connection-map-receipt-open" type="button">Show on map</button></div>
-          </section>
-          <div class="review-workspace">
-            <aside class="panel review-queue" aria-label="Pending review items">
-              <div class="review-queue-head"><strong id="review-queue-title">All pending decisions</strong><span id="review-queue-count">Loading the queue…</span></div>
-              <div class="review-queue-list" id="review-queue-list"></div>
-            </aside>
-            <section class="panel review-focus" id="review-focus" aria-live="polite"></section>
-          </div>
-          <section class="panel panel-pad review-learning">
-            <div class="panel-heading"><div><h2>What Cortex is learning from you</h2><p>Operator decisions are evidence, not instant global rules. Repeated patterns become reviewable policy signals.</p></div><span class="chip" id="review-decision-total">0 decisions</span></div>
-            <div class="review-learning-grid" id="review-learning-signals"></div>
-            <div class="review-history-list" id="review-history-list"></div>
-          </section>
-          <div class="training-governance-grid">
-            <section class="panel panel-pad" aria-labelledby="schema-training-heading">
-              <div class="panel-heading"><div><h2 id="schema-training-heading">How Cortex groups memories</h2><p>Broad neighborhoods are immediate. Named projects and services must earn a permanent place on the map.</p></div><span class="chip" id="schema-training-total">0 evaluated</span></div>
-              <div class="schema-rule" id="schema-training-rule">Checking the evidence rule…</div>
-              <div class="schema-evaluation-list" id="schema-evaluation-list"></div>
+        <section class="view" id="view-auto-judge" aria-labelledby="auto-judge-heading">
+          <div class="page-heading"><div><div class="eyebrow">Automated memory governance</div><h1 id="auto-judge-heading">Auto-Judge</h1><p>Cortex's auto-judge reviews staged memory proposals, decides what to keep or reject, and links related memories — all without manual review. Inspect what it's been doing below.</p></div></div>
+
+          <div class="metric-grid" id="aj-summary-metrics"></div>
+
+          <div class="dashboard-grid equal">
+            <section class="panel panel-pad" aria-labelledby="aj-decision-funnel">
+              <div class="panel-heading"><div><h2 id="aj-decision-funnel">Decision funnel</h2><p>How far proposals progressed through the pipeline</p></div><span class="chip" id="aj-funnel-total">0 proposals</span></div>
+              <div class="funnel" id="aj-funnel"></div>
             </section>
-            <section class="panel panel-pad" aria-labelledby="experience-training-heading">
-              <div class="panel-heading"><div><h2 id="experience-training-heading">Learning experience dataset</h2><p>Cortex records decisions and outcomes without copying memory text into the training export by default.</p></div><span class="chip" id="experience-training-total">0 examples</span></div>
-              <div class="experience-stat-grid" id="experience-stat-grid"></div>
-              <div class="measurement-boundary" id="experience-claim-boundary">This dataset trains Cortex policies, not Kaya’s base model.</div>
+            <section class="panel panel-pad" aria-labelledby="aj-orphan-heading">
+              <div class="panel-heading"><div><h2 id="aj-orphan-heading">Knowledge graph health</h2><p>Edge coverage and orphan linking progress</p></div><span class="chip" id="aj-orphan-total">—</span></div>
+              <div class="orphan-stats" id="aj-orphan-stats"></div>
+              <div class="graph-edge-types" id="aj-edge-types"></div>
             </section>
           </div>
-          <section class="panel panel-pad decision-ledger" aria-labelledby="decision-ledger-heading">
-            <div class="panel-heading"><div><h2 id="decision-ledger-heading">Why Cortex did this</h2><p>One timeline for admission, your reviews, neighborhood changes, recall-set boundaries, policy versions, and lifecycle actions.</p></div><select class="control" id="decision-log-filter" aria-label="Filter Cortex decision log"><option value="all">All decisions</option><option value="operator_review">Your reviews</option><option value="admission">Admission</option><option value="neighborhood">Neighborhoods</option><option value="recall_set">Recall sets</option><option value="policy">Policies</option><option value="lifecycle">Lifecycle</option></select></div>
-            <div class="decision-ledger-list" id="decision-ledger-list"></div>
+
+          <section class="panel panel-pad" aria-labelledby="aj-recent-heading">
+            <div class="panel-heading"><div><h2 id="aj-recent-heading">Recent decisions</h2><p>The latest auto-judge reviews in order</p></div><span class="chip" id="aj-recent-count">0 decisions</span></div>
+            <div class="decision-list" id="aj-recent-list"></div>
           </section>
-          <section class="panel panel-pad policy-lab" aria-labelledby="policy-lab-heading">
-            <div class="panel-heading"><div><h2 id="policy-lab-heading">Proposed standards</h2><p>This is where repeated reviews become changes to Cortex’s admission, linking, retrieval, and retention core. Every proposal shows its rule, evidence gates, replay result, shadow progress, and rollback path.</p></div><button class="ghost-btn" id="policy-compile" type="button">Compile latest reviews</button></div>
-            <div class="policy-candidate-list" id="policy-candidate-list"></div>
-            <div class="panel-heading" style="margin-top:18px"><div><h2>Active policy versions</h2><p>Only policies listed here affect Kaya. Rollback removes the adjustment while preserving the evidence and audit trail.</p></div><span class="chip" id="active-policy-total">0 active</span></div>
-            <div class="active-policy-list" id="active-policy-list"></div>
-            <div class="measurement-boundary" id="policy-claim-boundary">Reviews generate proposals; explicit promotion is required before a policy can affect the core.</div>
+
+          <section class="panel panel-pad" aria-labelledby="aj-daily-heading">
+            <div class="panel-heading"><div><h2 id="aj-daily-heading">Daily activity</h2><p>Auto-judge decisions by day (last 14 days)</p></div></div>
+            <div class="aj-daily-chart" id="aj-daily-chart"><svg id="aj-daily-svg" viewBox="0 0 800 200" role="img" aria-label="Auto-judge decisions per day"></svg></div>
+          </section>
+
+          <section class="panel panel-pad" aria-labelledby="aj-config-heading">
+            <div class="panel-heading"><div><h2 id="aj-config-heading">Configuration</h2><p>How the auto-judge is currently set up</p></div></div>
+            <div class="config-display" id="aj-config-display"></div>
           </section>
         </section>
 
@@ -2670,7 +2645,7 @@
     }
 
     function renderAll({ preserveReviewDraft = false } = {}) {
-      renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderTrainingGovernance(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer();
+      renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderTrainingGovernance(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer(); renderAutoJudge();
       if (app.view === "graph") renderActiveGraph();
     }
 
@@ -2744,11 +2719,14 @@
       const structural=technicalIssueCount(d.audit||{}),status=structural?"Repair":"Ready",statusValue=structural?30:100;
       document.getElementById("hero-health").textContent = status;
       document.getElementById("health-orb").style.setProperty("--health-angle", `${statusValue}%`);
+      const aj = d.auto_judge || {};
+      const ajDecisions = aj.summary?.total || 0;
       metricCards("overview-metrics", [
         ["Active memories", active, `${formatNum(d.stats.memories)} stored`, "●"],
         ["Indexed notes", d.stats.documents, `${formatNum(d.stats.document_chunks)} sections`, "▤"],
         ["Connections", d.stats.edges, `${formatNum(d.contradiction_count)} contradictions`, "⌁"],
         ["Recall events", retrieved, `${formatNum(used)} confirmed used`, "↗"],
+        ["Auto-Judge decisions", ajDecisions, `${formatNum(aj.summary?.remembered||0)} remembered · ${formatNum(aj.summary?.rejected||0)} rejected`, "⚖"],
         ["Tool observations", d.stats.tool_executions, `${formatNum(d.stats.tool_strategies)} strategies`, "◇"]
       ]);
       renderActivityChart();
@@ -4034,6 +4012,162 @@
       [formatNum(Number(evaluation.positive_task_outcomes||0)+Number(evaluation.negative_task_outcomes||0)),`${formatNum(evaluation.positive_task_outcomes||0)} positive · ${formatNum(evaluation.negative_task_outcomes||0)} negative explicit task outcomes`]
     ].forEach(([value,label])=>{const card=el("div","tool-evaluation-stat");card.append(el("strong","",value),el("span","",label));host.append(card);});ledger.replaceChildren();const rows=Array.isArray(evaluation.recent)?evaluation.recent:[];if(!rows.length){ledger.append(emptyState("Instrumentation starts with the next guided task","Historical tool calls remain visible above, but Cortex will not pretend old calls were exposed to guidance it did not log."));}rows.slice(0,10).forEach(item=>{const row=el("div","guidance-row"),identity=el("div","");identity.append(el("strong","",`${humanize(item.task_type)} · ${humanize(item.guidance_type)}`),el("span","",item.recommended_tool||item.guidance_key||"Recorded guidance"));row.append(identity,el("span","",item.resolved_at?(Number(item.followed)?"followed":"not followed"):"pending"),el("span","",item.success===null||item.success===undefined?"outcome pending":Number(item.success)?"execution succeeded":"execution failed"),el("span","",item.task_outcome?humanize(item.task_outcome):timeAgo(new Date(item.created_at))));ledger.append(row);});document.getElementById("tool-evaluation-boundary").textContent=String(evaluation.claim_boundary||"Follow-through is observational and does not prove guidance caused the result.");document.getElementById("tool-evaluation-status").textContent=evaluation.ready_for_comparison?"Comparison-ready · observational":"Observational · learning";}
 
+    function renderAutoJudge() {
+      if (!app.data) return;
+      const d = app.data, aj = d.auto_judge || {};
+      // Summary metrics row
+      const metrics = document.getElementById("aj-summary-metrics");
+      metrics.replaceChildren();
+      const sum = aj.summary || {};
+      [
+        [`${sum.total || 0}`, "decisions made", "—"],
+        [`${sum.remembered || 0}`, "remembered", "var(--mint)"],
+        [`${sum.rejected || 0}`, "rejected", "var(--red)"],
+        [`${sum.deferred || 0}`, "deferred (pending)", "var(--amber)"],
+      ].forEach(([val, label, color]) => {
+        const card = el("article", "metric-card");
+        if (color !== "—") card.style.setProperty("--accent", color);
+        card.append(el("strong", "metric-value", val), el("span", "metric-label", label));
+        metrics.append(card);
+      });
+
+      // Decision funnel
+      const funnel = document.getElementById("aj-funnel");
+      funnel.replaceChildren();
+      const props = aj.proposals || {};
+      const funnelTotal = document.getElementById("aj-funnel-total");
+      funnelTotal.textContent = `${props.total || 0} proposals`;
+      const funnelStages = [
+        { label: "Proposals", count: props.total || 0, pct: 100 },
+        { label: "Remembered", count: props.remembered || 0, pct: props.total ? Math.round((props.remembered || 0) / props.total * 100) : 0 },
+        { label: "Rejected", count: props.rejected || 0, pct: props.total ? Math.round((props.rejected || 0) / props.total * 100) : 0 },
+        { label: "Pending review", count: props.pending || 0, pct: props.total ? Math.round((props.pending || 0) / props.total * 100) : 0 },
+      ];
+      const funnelBar = el("div", "funnel-bar");
+      const funnelLabels = el("div", "funnel-labels");
+      funnelStages.forEach((s) => {
+        const seg = el("div", "funnel-segment");
+        seg.style.width = `${s.pct}%`;
+        seg.style.background = s.label === "Remembered" ? "var(--mint)" : s.label === "Rejected" ? "var(--red)" : s.label === "Pending review" ? "var(--amber)" : "var(--blue)";
+        seg.title = `${s.label}: ${s.count}`;
+        funnelBar.append(seg);
+        const lab = el("div", "funnel-label");
+        lab.append(el("strong", "", `${s.count}`), el("span", "", s.label));
+        funnelLabels.append(lab);
+      });
+      funnel.append(funnelBar, funnelLabels);
+
+      // Orphan linking stats
+      const orphanEl = document.getElementById("aj-orphan-stats");
+      orphanEl.replaceChildren();
+      const orph = aj.orphan_linking || {};
+      document.getElementById("aj-orphan-total").textContent = orph.linked_percentage ? `${orph.linked_percentage}% linked` : "—";
+      const orphanGrid = el("div", "orphan-stat-grid");
+      [
+        ["Total memories", `${orph.total_memories || "—"}`],
+        ["Total edges", `${orph.total_edges || "—"}`],
+        ["Orphan memories", `${orph.orphan_memories || "—"}`],
+        ["Graph connected", orph.linked_percentage ? `${orph.linked_percentage}%` : "—"],
+      ].forEach(([label, val]) => {
+        const row = el("div", "orphan-stat-row");
+        row.append(el("span", "orphan-stat-label", label), el("strong", "", val));
+        orphanGrid.append(row);
+      });
+      orphanEl.append(orphanGrid);
+
+      // Edge type breakdown
+      const edgeTypes = document.getElementById("aj-edge-types");
+      edgeTypes.replaceChildren();
+      const edges = aj.edges || {};
+      const edgeTitle = el("div", "panel-subtitle", `Edge types (${edges.total || 0} total)`);
+      edgeTypes.append(edgeTitle);
+      const edgeGrid = el("div", "edge-type-grid");
+      const byRel = edges.by_relation || {};
+      Object.entries(byRel).forEach(([rel, cnt]) => {
+        const tag = el("span", "edge-type-tag");
+        tag.textContent = `${rel}: ${cnt}`;
+        edgeGrid.append(tag);
+      });
+      edgeTypes.append(edgeGrid);
+
+      // Recent decisions table
+      const recentList = document.getElementById("aj-recent-list");
+      recentList.replaceChildren();
+      const decisions = aj.recent_decisions || [];
+      document.getElementById("aj-recent-count").textContent = `${decisions.length} decisions`;
+      if (!decisions.length) {
+        recentList.append(emptyState("No decisions yet", "The auto-judge will populate this as it runs."));
+      } else {
+        const table = el("div", "decision-table");
+        decisions.forEach((dec) => {
+          const row = el("div", "decision-row");
+          const actionBadge = document.createElement("span");
+          actionBadge.className = `decision-badge ${dec.action}`;
+          actionBadge.textContent = dec.action;
+          row.append(
+            actionBadge,
+            el("span", "decision-type", dec.item_type || "—"),
+            el("span", "decision-time", timeAgo(new Date(dec.created_at))),
+            el("span", "decision-reason", dec.reason || "")
+          );
+          table.append(row);
+        });
+        recentList.append(table);
+      }
+
+      // Daily activity chart
+      const dailySvg = document.getElementById("aj-daily-svg");
+      const daily = aj.daily_decisions || [];
+      const W = 800, H = 200, PAD = 20;
+      const innerW = W - 2 * PAD, innerH = H - 2 * PAD;
+      const dayMap = {};
+      daily.forEach((d) => {
+        if (!dayMap[d[0]]) dayMap[d[0]] = { day: d[0], remember: 0, reject: 0 };
+        if (d[1] === "remember") dayMap[d[0]].remember += d[2];
+        else dayMap[d[0]].reject += d[2];
+      });
+      const days = Object.values(dayMap).sort((a, b) => a.day < b.day ? -1 : 1);
+      let svgContent = "";
+      if (days.length) {
+        const maxVal = Math.max(...days.map((d) => d.remember + d.reject), 1);
+        const barW = Math.max(10, Math.min(40, (innerW - days.length * 2) / days.length));
+        days.forEach((d, i) => {
+          const x = PAD + i * (barW + 3);
+          const hR = (d.remember / maxVal) * innerH;
+          const hJ = (d.reject / maxVal) * innerH;
+          const dateLabel = d.day.slice(5);
+          // remember bar (green)
+          svgContent += `<rect x="${x}" y="${H - PAD - hR - hJ}" width="${barW}" height="${hR}" fill="var(--mint)" opacity="0.85" rx="2" />`;
+          // reject bar (red) on top
+          svgContent += `<rect x="${x}" y="${H - PAD - hJ}" width="${barW}" height="${hJ}" fill="var(--red)" opacity="0.7" rx="2" />`;
+          // date label
+          svgContent += `<text x="${x + barW/2}" y="${H - 4}" text-anchor="middle" font-size="9" fill="var(--text-dim)">${dateLabel}</text>`;
+        });
+        // Legend
+        svgContent += `<rect x="${PAD}" y="${PAD}" width="10" height="10" fill="var(--mint)" rx="2" /><text x="${PAD + 14}" y="${PAD + 9}" font-size="10" fill="var(--text-main)">Remembered</text>`;
+        svgContent += `<rect x="${PAD + 90}" y="${PAD}" width="10" height="10" fill="var(--red)" rx="2" /><text x="${PAD + 104}" y="${PAD + 9}" font-size="10" fill="var(--text-main)">Rejected</text>`;
+      } else {
+        svgContent = `<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="var(--text-dim)">No decisions in the last 14 days</text>`;
+      }
+      dailySvg.innerHTML = svgContent;
+
+      // Config display
+      const configHost = document.getElementById("aj-config-display");
+      configHost.replaceChildren();
+      const cfg = aj.config || {};
+      const cfgGrid = el("div", "config-grid");
+      [
+        ["Enabled", cfg.enabled ? "✓ Yes" : "✗ No"],
+        ["Model", cfg.model || "—"],
+        ["Links enabled", cfg.links_enabled ? "✓ Yes" : "✗ No"],
+      ].forEach(([label, val]) => {
+        const row = el("div", "config-row");
+        row.append(el("span", "config-label", label), el("span", "config-value", val));
+        cfgGrid.append(row);
+      });
+      configHost.append(cfgGrid);
+    }
+
     function renderHealth() {
       if(!app.data)return;
       const d=app.data,a=d.audit||{},hygiene=d.memory_hygiene||{},memories=d.memories||[],agent=d.research?.agent_evaluation?.summary||{},experiment=d.research?.experiments||{},quarantined=Number(d.stats?.states?.quarantine ?? memories.filter(memory=>memory.state==="quarantine").length),dirty=Number(d.stats.dirty_memories||0),contradictions=Number(d.contradiction_count||0),unsupported=Number(a.unsupported_inferences||0),duplicates=Number(a.duplicate_groups||0),hygieneCandidates=Number(hygiene.candidate_count||0),pending=Number(d.stats.pending_usage||0),stuck=Number(a.stuck_pending_usage||0),structural=technicalIssueCount(a),decisionItems=dirty+contradictions+quarantined+unsupported+duplicates+hygieneCandidates,decisionTasks=[contradictions,quarantined,dirty,unsupported,duplicates,hygieneCandidates].filter(Boolean).length,maintenance=sleepHealthState(d),status=structural?"repair":"ready",hero=document.getElementById("health-hero");hero.replaceChildren();
@@ -4114,7 +4248,7 @@
       const notes={
         readable:"Concise statements Kaya can act on. Counts cover the complete audited index; the list below stays bounded for speed.",
         reference:"Documents, code, tables, configuration, and raw technical material. Raw content stays collapsed until you open it.",
-        clarity:"Unresolved, mixed, contextless, unsupported, or status-like records. Fix them in Train Kaya → Clarity.",
+        clarity:"Unresolved, mixed, contextless, unsupported, or status-like records. Review them in the Explorer or let the Auto-Judge handle them.",
         all:"The complete audited index, including events, claims, and archived history."
       };
       document.getElementById("role-view-note").textContent=notes[app.explorerRole]||notes.readable;
@@ -4175,7 +4309,7 @@
         const copy={
           readable:"No readable memories match. New canonical statements appear here; raw material lives under Reference evidence.",
           reference:"No reference evidence matches. Vault sections, code, tables, and logs are filed here automatically.",
-          clarity:"Nothing needs clarity right now. Flagged records arrive here until you review them in Train Kaya.",
+          clarity:"Nothing needs clarity right now. Flagged records arrive here until the Auto-Judge reviews them.",
           all:"Try a broader phrase or remove one of the filters."
         };
         host.append(emptyState("No records in this view",copy[app.explorerRole]||copy.all));return;

@@ -48,9 +48,9 @@ _LINKS_CONTENT_CHARS = 300
 # Weight assigned to auto-judge-created edges (lower than human/operator edges)
 _LINKS_EDGE_WEIGHT = 0.5
 # Max orphans to process in a single --link-orphans run
-_ORPHAN_LINK_MAX_DEFAULT = 100
+_ORPHAN_LINK_MAX_DEFAULT = 30
 # Orphans per LLM batch
-_ORPHAN_LINK_BATCH_SIZE = 10
+_ORPHAN_LINK_BATCH_SIZE = 3
 
 
 class AutoJudgeError(RuntimeError):
@@ -341,7 +341,6 @@ class AutoJudge:
             "model": self.config.model,
             "temperature": 0,
             "max_tokens": effective_max_tokens,
-            "response_format": {"type": "json_object"},
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {
@@ -900,7 +899,7 @@ def _first_content(response: dict[str, Any]) -> str:
 
 
 def _post_chat(endpoint: str, api_key: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": "cortex-auto-judge/1.0"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
@@ -1312,8 +1311,7 @@ def link_orphan_memories(
         payload = {
             "model": config.model,
             "temperature": 0,
-            "max_tokens": 1024,
-            "response_format": {"type": "json_object"},
+            "max_tokens": 8192,
             "messages": [
                 {"role": "system", "content": _ORPHAN_LINK_SYSTEM_PROMPT},
                 {"role": "user", "content": candidate_content},
@@ -1346,4 +1344,5 @@ def link_orphan_memories(
             )
             report["links_created"] += created
 
+    store._conn.commit()
     return report
