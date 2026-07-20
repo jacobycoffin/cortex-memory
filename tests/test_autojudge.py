@@ -21,9 +21,12 @@ from cortex.autojudge import (
     AutoJudgeConfig,
     AutoJudgeError,
     _LINKS_EDGE_WEIGHT,
+    _apply_contradiction_edges,
     _apply_links,
+    _parse_batch_links,
     _parse_decisions,
     _post_chat,
+    link_orphan_memories,
 )
 from cortex.cli import main as cli_main
 from cortex.store import CortexStore, StaleCreationProposalError, creation_proposal_revision
@@ -1345,6 +1348,195 @@ class AutoJudgeTests(unittest.TestCase):
         self.assertEqual(report["rejected"], 1)
         self.assertEqual(report["linked"], 0)
         self.assertEqual(report["links_created"], 0)
+
+    # --- Contradiction-aware linking tests ---
+
+    def test_apply_contradiction_edges_creates_contradicts_edge(self) -> None:
+        """_apply_contradiction_edges creates a contradicts edge with evidence."""
+        mem_a, _ = self.store.add_memory(
+            "The sky is blue.", kind="semantic",
+            source_type="test", source_category="USER_STATED",
+        )
+        mem_b, _ = self.store.add_memory(
+            "The sky is green.", kind="semantic",
+            source_type="test", source_category="USER_STATED",
+        )
+
+        count = _apply_contradiction_edges(
+            self.store,
+            new_memory_id=mem_a,
+            contradiction_ids=[mem_b],
+            review_id="test-review",
+            actor="test",
+            proposal_id="test-prop",
+        )
+        self.assertEqual(count, 1)
+
+        edge = self.store._conn.execute(
+            "SELECT * FROM edges WHERE relation='contradicts'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertEqual(edge["evidence_count"], 1)
+        self.assertEqual(edge["weight"], _LINKS_EDGE_WEIGHT)
+
+        evidence = self.store._conn.execute(
+            "SELECT * FROM edge_evidence WHERE evidence_type='auto_judge' AND evidence_key LIKE 'judge_contradiction:%'"
+        ).fetchone()
+        self.assertIsNotNone(evidence)
+        self.assertIn("contradiction", evidence["summary"])
+
+    def test_apply_contradiction_edges_skips_empty(self) -> None:
+        """No edges created for empty contradiction_ids list."""
+        count = _apply_contradiction_edges(
+            self.store,
+            new_memory_id="mem1",
+            contradiction_ids=[],
+            review_id="test", actor="test", proposal_id="test",
+        )
+        self.assertEqual(count, 0)
+
+    def test_apply_contradiction_edges_skips_self(self) -> None:
+        """Self-referencing contradiction_ids are skipped."""
+        count = _apply_contradiction_edges(
+            self.store,
+            new_memory_id="mem1",
+            contradiction_ids=["mem1"],
+            review_id="test", actor="test", proposal_id="test",
+        )
+        self.assertEqual(count, 0)
+
+    def test_contradiction_edges_integrated_in_run_report(self) -> None:
+        """The run() report includes the contradiction_edges_created field."""
+        # Proposals from a fresh DB won't have contradiction_ids, so the count
+        # stays 0. This tests that the field exists in the report at all.
+        proposal = self.store.propose_memory_creation(
+            "silver badger test contradiction report field",
+            kind="semantic", source_type="test", source_category="USER_STATED",
+        )
+        pid = proposal["proposal_id"]
+
+        def provider_returning_remember(endpoint, api_key, payload, timeout):
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "decisions": [
+                        {"proposal_id": pid, "action": "remember", "confidence": 0.92, "reason": "test"},
+                    ],
+                })}}],
+                "usage": {},
+            }
+
+        config = self.config(links_enabled=True)
+        judge = AutoJudge(config, provider_call=provider_returning_remember)
+        report = judge.run(self.store)
+        # contradiction_edges_created should be 0 (no contradictions)
+        self.assertIn("contradiction_edges_created", report)
+        self.assertEqual(report["contradiction_edges_created"], 0)
+
+    # --- Orphan linking tests ---
+
+    def test_parse_batch_links_empty_response(self) -> None:
+        """An empty or invalid response produces no links."""
+        result = _parse_batch_links({}, {"mid1"})
+        self.assertEqual(result, {"mid1": []})
+
+        result = _parse_batch_links({"choices": []}, {"mid1"})
+        self.assertEqual(result, {"mid1": []})
+
+    def test_parse_batch_links_valid_response(self) -> None:
+        """A valid response with batch_links is correctly parsed."""
+        response = {
+            "choices": [{"message": {"content": json.dumps({
+                "batch_links": {
+                    "mid1": [
+                        {"memory_id": "mid2", "relation": "supports", "rationale": "consistent"},
+                    ],
+                    "mid2": [],
+                },
+            })}}],
+        }
+        result = _parse_batch_links(response, {"mid1", "mid2"})
+        self.assertEqual(len(result["mid1"]), 1)
+        self.assertEqual(result["mid1"][0]["memory_id"], "mid2")
+        self.assertEqual(result["mid1"][0]["relation"], "supports")
+        self.assertEqual(result["mid2"], [])
+
+    def test_parse_batch_links_accepts_external_targets(self) -> None:
+        """Links to memory_ids outside the candidate set are kept (they may be
+        from the related_memories list supplied to the LLM)."""
+        response = {
+            "choices": [{"message": {"content": json.dumps({
+                "batch_links": {
+                    "mid1": [
+                        {"memory_id": "external-mem", "relation": "supports", "rationale": "test"},
+                    ],
+                },
+            })}}],
+        }
+        result = _parse_batch_links(response, {"mid1"})
+        self.assertEqual(len(result["mid1"]), 1)
+        self.assertEqual(result["mid1"][0]["memory_id"], "external-mem")
+
+    def test_link_orphan_memories_no_orphans(self) -> None:
+        """link_orphan_memories returns zero counts when no orphans exist."""
+        report = link_orphan_memories(
+            self.store, self.config(links_enabled=True),
+        )
+        self.assertEqual(report["orphans_found"], 0)
+
+    def test_link_orphan_memories_with_real_orphans(self) -> None:
+        """Orphan linking finds an orphan, detects contradictions, and creates edges."""
+        # Create two memories that contradict each other
+        mem_a_id, _ = self.store.add_memory(
+            "The server should use TLS 1.3 for all connections.",
+            kind="procedure", source_type="test", source_category="USER_STATED",
+        )
+        mem_b_id, _ = self.store.add_memory(
+            "The server should use TLS 1.3 for all connections.",
+            kind="procedure", source_type="test", source_category="USER_STATED",
+        )
+
+        # They have no edges yet, so both are orphans
+        report = link_orphan_memories(
+            self.store, self.config(links_enabled=True),
+        )
+
+        # At least one orphan should be found (two created, no edges)
+        self.assertGreaterEqual(report["orphans_found"], 1)
+
+    def test_link_orphan_memories_notices_contradiction(self) -> None:
+        """Contradiction detection pass creates contradicts edges for structured claims."""
+        # Create two memories via add_memory, then update subject/predicate/object_value
+        # so the contradiction detection engine can match them.
+        mem_a_id, _ = self.store.add_memory(
+            "The sky is blue during the day.",
+            kind="semantic", source_type="test", source_category="USER_STATED",
+        )
+        self.store._conn.execute(
+            "UPDATE memories SET subject=?, predicate=?, object_value=? WHERE id=?",
+            ("sky", "color", "blue", mem_a_id),
+        )
+        mem_b_id, _ = self.store.add_memory(
+            "The sky is green during the day.",
+            kind="semantic", source_type="test", source_category="USER_STATED",
+        )
+        self.store._conn.execute(
+            "UPDATE memories SET subject=?, predicate=?, object_value=? WHERE id=?",
+            ("sky", "color", "green", mem_b_id),
+        )
+
+        report = link_orphan_memories(
+            self.store, self.config(links_enabled=True),
+        )
+
+        # Should find at least one contradiction
+        self.assertGreaterEqual(report["contradictions_found"], 1)
+        self.assertGreaterEqual(report["contradiction_edges_created"], 1)
+
+        # Verify the edge exists
+        edge = self.store._conn.execute(
+            "SELECT * FROM edges WHERE relation='contradicts'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
 
 
 if __name__ == "__main__":

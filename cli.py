@@ -84,6 +84,11 @@ def main() -> int:
         action="store_true",
         help="Suppress normal output for timer/service use",
     )
+    auto_judge.add_argument(
+        "--link-orphans",
+        action="store_true",
+        help="Link existing memories with no edges (uses LLM + contradiction detection)",
+    )
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
     traces = sub.add_parser("traces", help="Inspect task-level memory decisions or export append-only JSONL")
     traces.add_argument("--limit", type=int, default=100)
@@ -273,9 +278,13 @@ def main() -> int:
 
             result = undo_sleep(store, args.run_id)
         elif args.command == "auto-judge":
-            from .autojudge import AutoJudge, AutoJudgeConfig
+            from .autojudge import AutoJudge, AutoJudgeConfig, link_orphan_memories
 
-            result = AutoJudge(AutoJudgeConfig.from_env()).run(store)
+            config = AutoJudgeConfig.from_env()
+            if args.link_orphans:
+                result = link_orphan_memories(store, config)
+            else:
+                result = AutoJudge(config).run(store)
         elif args.command == "recall-stats":
             snapshot = store.dashboard_snapshot(memory_limit=1)
             result = {

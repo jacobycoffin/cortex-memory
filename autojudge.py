@@ -37,6 +37,7 @@ _VALID_LINK_RELATIONS = frozenset({
     "example_of",
     "generalizes",
     "prerequisite",
+    "contradicts",
 })
 
 # Maximum number of related memories to inject per candidate
@@ -45,6 +46,10 @@ _LINKS_TOP_K_DEFAULT = 5
 _LINKS_CONTENT_CHARS = 300
 # Weight assigned to auto-judge-created edges (lower than human/operator edges)
 _LINKS_EDGE_WEIGHT = 0.5
+# Max orphans to process in a single --link-orphans run
+_ORPHAN_LINK_MAX_DEFAULT = 100
+# Orphans per LLM batch
+_ORPHAN_LINK_BATCH_SIZE = 10
 
 
 class AutoJudgeError(RuntimeError):
@@ -230,6 +235,7 @@ class AutoJudge:
             "linked": 0,
             "links_suggested": 0,
             "links_created": 0,
+            "contradiction_edges_created": 0,
         }
         if not self.config.enabled:
             return report
@@ -466,6 +472,26 @@ class AutoJudge:
                     proposal_id=proposal["proposal_id"],
                 )
                 report["links_created"] += created
+
+            # --- Contradiction-aware linking: if a remembered proposal had
+            #     known contradictions, create 'contradicts' edges even though
+            #     the guard normally forces needs_context.  This path is
+            #     forward-looking — it activates if the guard is relaxed or
+            #     bypassed.
+            if status == "remembered":
+                assessment = proposal.get("assessment") or {}
+                if isinstance(assessment, dict):
+                    cids = assessment.get("contradiction_ids") or []
+                    if cids:
+                        created_ct = _apply_contradiction_edges(
+                            store,
+                            new_memory_id=result.get("memory_id", ""),
+                            contradiction_ids=cids,
+                            review_id=result.get("review_id", ""),
+                            actor=actor,
+                            proposal_id=proposal["proposal_id"],
+                        )
+                        report["contradiction_edges_created"] += created_ct
 
         return report
 
@@ -1017,4 +1043,291 @@ def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
     except ValueError as exc:
-        raise AutoJudgeError(f"{name} must be numeric") from exc
+        raise AutoJudgeError(f"{name} must be a float") from exc
+
+
+# ── Contradiction-aware linking ────────────────────────────────────────────
+
+
+def _apply_contradiction_edges(
+    store: CortexStore,
+    *,
+    new_memory_id: str,
+    contradiction_ids: list[str],
+    review_id: str,
+    actor: str,
+    proposal_id: str,
+) -> int:
+    """Create 'contradicts' edges between *new_memory_id* and each contradiction.
+
+    Called after a memory is created despite known contradictions (forward-
+    looking — currently the guard forces ``needs_context``, so this path only
+    activates if the guard is relaxed or bypassed).
+    """
+    if not new_memory_id or not contradiction_ids:
+        return 0
+    now = str(datetime.now(timezone.utc))
+    created = 0
+    for raw_id in contradiction_ids:
+        target_id = str(raw_id or "").strip()
+        if not target_id or target_id == new_memory_id:
+            continue
+        src_id, dst_id = sorted((new_memory_id, target_id))
+        with store._lock:
+            store._conn.execute(
+                """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                   VALUES(?,?,?,?,1,?,?)
+                   ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                     weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
+                     evidence_count=edges.evidence_count+1,
+                     last_reinforced_at=excluded.last_reinforced_at""",
+                (src_id, dst_id, "contradicts", _LINKS_EDGE_WEIGHT, now, now),
+            )
+            store._record_edge_evidence_tx(
+                store._conn, src_id, dst_id, "contradicts",
+                evidence_type="auto_judge",
+                evidence_key=f"judge_contradiction:{review_id}:{target_id}",
+                summary=f"Auto-judge contradiction: {new_memory_id[:12]} <-> {target_id[:12]}",
+                source_ref=f"review:{review_id}",
+                metadata={
+                    "proposal_id": proposal_id,
+                    "review_id": review_id,
+                    "actor": actor,
+                    "new_memory_id": new_memory_id,
+                    "target_memory_id": target_id,
+                    "reason": "contradiction_detected",
+                },
+                created_at=now,
+            )
+        created += 1
+    return created
+
+
+# ── Orphan linking (--link-orphans) ────────────────────────────────────────
+
+
+_ORPHAN_LINK_SYSTEM_PROMPT = """You are Cortex's knowledge-graph linker.
+
+For each candidate memory below, suggest zero or more links to other related
+existing memories from its "related_memories" list (if provided).
+
+Verb: supports, extends, refines, example_of, generalizes, prerequisite
+- supports: reinforces the existing one
+- extends: adds detail, scope, or depth
+- refines: corrects or narrows the scope
+- example_of: concrete instance of a broader concept
+- generalizes: broader rule or pattern
+- prerequisite: should be understood first
+
+Return JSON only:
+{"batch_links":{"<memory_id>":[{"memory_id":"...","relation":"supports","rationale":"..."},...]}}
+Include at most one entry per target memory_id. Never invent memory_ids.
+Omit memory_ids with no links."""
+
+
+def _parse_batch_links(
+    response: dict[str, Any],
+    valid_memory_ids: set[str],
+) -> dict[str, list[dict[str, Any]]]:
+    """Parse batch_links from an orphan-linking LLM response."""
+    result: dict[str, list[dict[str, Any]]] = {mem_id: [] for mem_id in valid_memory_ids}
+    try:
+        choices = response.get("choices", [])
+        if not choices:
+            return result
+        content = choices[0].get("message", {}).get("content", "")
+        if not content:
+            return result
+        data = json.loads(content)
+    except (json.JSONDecodeError, TypeError, KeyError, IndexError):
+        return result
+
+    batch_links = data.get("batch_links") or {}
+    if not isinstance(batch_links, dict):
+        return result
+
+    for mem_id, links in batch_links.items():
+        if mem_id not in valid_memory_ids or not isinstance(links, list):
+            continue
+        parsed: list[dict[str, Any]] = []
+        for link in links:
+            if not isinstance(link, dict):
+                continue
+            target_id = str(link.get("memory_id") or "").strip()
+            relation = str(link.get("relation") or "").strip().casefold()
+            rationale = str(link.get("rationale") or "")[:_MAX_CANDIDATE_CONTENT_CHARS]
+            if not target_id or relation not in _VALID_LINK_RELATIONS:
+                continue
+            if target_id == mem_id:
+                continue
+            parsed.append({
+                "memory_id": target_id,
+                "relation": relation,
+                "rationale": rationale,
+            })
+        if parsed:
+            result[mem_id] = parsed
+    return result
+
+
+def link_orphan_memories(
+    store: CortexStore,
+    config: AutoJudgeConfig,
+    *,
+    provider_call: ProviderCall | None = None,
+    max_orphans: int = _ORPHAN_LINK_MAX_DEFAULT,
+    batch_size: int = _ORPHAN_LINK_BATCH_SIZE,
+    link_top_k: int = 5,
+) -> dict[str, Any]:
+    """Find memories with no edges and create links via the LLM + contradiction detection.
+
+    Two passes:
+      1. **Contradiction pass** — runs ``assess_storage_candidate`` on each
+         orphan and creates ``contradicts`` edges where found.
+      2. **LLM linking pass** — retrieves top-K related memories per orphan and
+         asks the LLM to suggest links.
+
+    Returns a report with counts of orphans_found, links_suggested,
+    links_created, contradictions_found, contradiction_edges_created.
+    """
+    report: dict[str, Any] = {
+        "orphans_found": 0,
+        "linked": 0,
+        "links_suggested": 0,
+        "links_created": 0,
+        "contradictions_found": 0,
+        "contradiction_edges_created": 0,
+    }
+    if not config.enabled:
+        return report
+
+    effective_provider = provider_call or _post_chat
+
+    # Find orphan memories (no edges as src or dst) regardless of approval state
+    orphans = store._conn.execute(
+        """SELECT m.id, m.content, m.kind,
+                  m.subject, m.predicate, m.object_value
+           FROM memories m
+           WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
+           AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+           ORDER BY m.created_at DESC
+           LIMIT ?""",
+        (max_orphans,),
+    ).fetchall()
+
+    report["orphans_found"] = len(orphans)
+    if not orphans:
+        return report
+
+    # Build retriever for finding related memories
+    try:
+        retriever = MemoryRetriever(store)
+    except Exception:
+        logger.warning("orphan-link: cannot create MemoryRetriever; LLM linking disabled")
+        retriever = None
+
+    # --- PASS 1: Contradiction detection ---
+    for row in orphans:
+        mem_id = str(row["id"])
+        content = str(row["content"] or "")
+        kind = str(row["kind"] or "semantic")
+        # sqlite3.Row doesn't support .get(); use direct index with fallback
+        _subj = row["subject"] if "subject" in row.keys() else None
+        _pred = row["predicate"] if "predicate" in row.keys() else None
+        _obj = row["object_value"] if "object_value" in row.keys() else None
+        if not content.strip():
+            continue
+        try:
+            assessment = store.assess_storage_candidate(
+                content, kind=kind,
+                subject=str(_subj) if _subj else None,
+                predicate=str(_pred) if _pred else None,
+                object_value=str(_obj) if _obj is not None else None,
+                source_type="conversation",
+                source_category="AGENT_INFERENCE",
+            )
+        except Exception:
+            continue
+        cids = assessment.get("contradiction_ids") or []
+        if cids:
+            report["contradictions_found"] += 1
+            created_ct = _apply_contradiction_edges(
+                store,
+                new_memory_id=mem_id,
+                contradiction_ids=cids,
+                review_id="orphan-link",
+                actor="cortex-auto-judge:orphan-link",
+                proposal_id="orphan-link",
+            )
+            report["contradiction_edges_created"] += created_ct
+
+    if retriever is None:
+        return report
+
+    # --- PASS 2: LLM linking ---
+    for batch_start in range(0, len(orphans), batch_size):
+        batch = orphans[batch_start:batch_start + batch_size]
+        batch_records: list[dict[str, Any]] = []
+        for row in batch:
+            mem_id = str(row["id"])
+            content = str(row["content"] or "")
+            if not content.strip():
+                continue
+            related = _find_related_memories(
+                store, retriever, content, top_k=link_top_k,
+            )
+            record: dict[str, Any] = {
+                "memory_id": mem_id,
+                "content": content[:_MAX_CANDIDATE_CONTENT_CHARS],
+                "kind": str(row["kind"] or "semantic"),
+            }
+            if related:
+                record["related_memories"] = related
+            batch_records.append(record)
+
+        if not batch_records:
+            continue
+
+        candidate_content = json.dumps(
+            {"candidates": batch_records},
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        payload = {
+            "model": config.model,
+            "temperature": 0,
+            "max_tokens": 1024,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": _ORPHAN_LINK_SYSTEM_PROMPT},
+                {"role": "user", "content": candidate_content},
+            ],
+        }
+        api_key = config.api_key()
+        try:
+            response = effective_provider(
+                config.endpoint, api_key, payload, config.timeout_seconds,
+            )
+        except Exception:
+            logger.debug("orphan-link: LLM call failed for batch %d", batch_start // batch_size)
+            continue
+
+        valid_ids: set[str] = {r["memory_id"] for r in batch_records}
+        link_map = _parse_batch_links(response, valid_ids)
+
+        for mem_id, links in link_map.items():
+            if not links:
+                continue
+            report["linked"] += 1
+            report["links_suggested"] += len(links)
+            created = _apply_links(
+                store,
+                new_memory_id=mem_id,
+                links=links,
+                review_id="orphan-link",
+                actor="cortex-auto-judge:orphan-link",
+                proposal_id="orphan-link",
+            )
+            report["links_created"] += created
+
+    return report

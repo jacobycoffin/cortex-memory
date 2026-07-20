@@ -409,6 +409,105 @@ For agents configuring linking autonomously:
 
 ---
 
+## Contradiction-aware linking
+
+When the auto-judge approves a memory despite detected contradictions (or when
+the **orphan linking pass** below runs), the judge automatically creates a
+`contradicts` edge to preserve the detected tension as a permanent graph
+relationship.
+
+### How it works
+
+1. The contradiction guard in `assess_storage_candidate()` flags proposals whose
+   content conflicts with existing structured claims (same subject/predicate,
+   different object_value).
+2. If the memory is still created (e.g., after operator override, or during
+   orphan linking), the judge adds a `contradicts` edge weighted 0.5 with
+   `evidence_type="auto_judge"` and key `judge_contradiction:<review_id>:<target_id>`.
+3. This edge is verifiable via the standard edge-evidence trail.
+
+### Configuration
+
+No additional configuration is needed. Contradiction links are always created
+when a contradiction is detected and the memory exists.
+
+### Verifying contradiction edges
+
+```sql
+SELECT * FROM edges WHERE relation='contradicts' AND weight=0.5;
+```
+
+```sql
+SELECT * FROM edge_evidence WHERE evidence_key LIKE 'judge_contradiction:%';
+```
+
+The report includes `contradiction_edges_created` for monitoring.
+
+---
+
+## Orphan linking pass (`--link-orphans`)
+
+Memories created before auto-judge or linking was enabled will have no semantic
+edges in the graph. The `--link-orphans` flag retroactively links these orphan
+memories in two passes:
+
+| Pass | Purpose |
+|------|---------|
+| 1. Contradiction detection | Runs `assess_storage_candidate` on each orphan and creates `contradicts` edges for structured contradictions |
+| 2. LLM linking | Retrieves top-5 related memories per orphan and asks the LLM to suggest `supports`, `extends`, `refines`, etc. edges |
+
+### Usage
+
+```bash
+# Normal auto-judge run (no orphan linking)
+python3 -m cortex.cli auto-judge --once
+
+# With orphan linking pass
+python3 -m cortex.cli auto-judge --once --link-orphans
+
+# Quiet mode (for cron/systemd)
+python3 -m cortex.cli auto-judge --once --link-orphans --quiet
+```
+
+### What it processes
+
+- **Orphans**: memories with zero edges — no outgoing (`src_id`) and no incoming
+  (`dst_id`) edges in the memory graph.
+- **Batch size**: up to 50 orphans per invocation, sorted newest-first.
+- **Contradiction pass**: reads each orphan's `subject`/`predicate`/`object_value`
+  (structured claims) and calls `assess_storage_candidate()` against the full
+  memory store to find contradictions.
+- **LLM pass**: batches 10 orphans per LLM call. Each orphan gets its top-5
+  related memories from the retriever. The LLM is asked to suggest links via a
+  simpler, linking-only prompt (`batch_links` JSON format).
+
+### Report fields
+
+```json
+{
+  "orphans_found": 42,
+  "linked": 3,
+  "links_suggested": 7,
+  "links_created": 7,
+  "contradictions_found": 2,
+  "contradiction_edges_created": 2
+}
+```
+
+### Limitations
+
+- Contradiction detection requires the memory to have non-null
+  `subject`, `predicate`, and `object_value` columns (structured claims).
+  Plain-text memories are skipped in the contradiction pass.
+- LLM linking requires a working `MemoryRetriever`. If retrieval is
+  unavailable, the LLM pass is skipped but contradiction detection still runs.
+- The orphan pass is **not** idempotent at the graph level — each run may
+  discover new links as more edges exist. It **is** safe to re-run:
+  `_apply_contradiction_edges` and `_apply_links` use `ON CONFLICT` to
+  reinforce (bump evidence_count) rather than duplicate.
+
+---
+
 ## Auditing and undoing decisions
 
 ### Via the dashboard
