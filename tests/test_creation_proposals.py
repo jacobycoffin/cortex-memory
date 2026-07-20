@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import logging
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from tests._bootstrap import ROOT
 
 from cortex.retrieval import MemoryRetriever
-from cortex.store import SCHEMA_VERSION, CortexStore, creation_proposal_revision
+from cortex.store import SCHEMA_VERSION, CortexStore, StaleCreationProposalError, creation_proposal_revision
 
 
 class MemoryCreationProposalTests(unittest.TestCase):
@@ -114,8 +116,59 @@ class MemoryCreationProposalTests(unittest.TestCase):
         memory = self.store.get_memory(str(result["memory_id"]))
         self.assertEqual(memory["content"], "The service uses port 8642 on the blue gateway.")
         self.assertEqual(memory["source_ref"], "session:test")
-        with self.assertRaisesRegex(ValueError, "no longer waiting"):
-            self.store.review_memory_creation(proposal["proposal_id"], "remember")
+        with self.assertLogs("cortex.store", level=logging.WARNING) as logs:
+            result = self.store.review_memory_creation(proposal["proposal_id"], "remember")
+        self.assertEqual(result["status"], "skipped")
+        self.assertIn("no longer waiting for review", " ".join(logs.output))
+
+    def test_review_started_at_block_makes_automatic_review_idempotent(self) -> None:
+        """If another auto-judge already set review_started_at, skip is raised."""
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            kind="procedure",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+        proposal_id = proposal["proposal_id"]
+        # Simulate a previous automatic review that set review_started_at but did not finish.
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE memory_creation_proposals SET review_started_at=? WHERE proposal_id=?",
+                (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), proposal_id),
+            )
+            self.store._conn.commit()
+
+        with self.assertRaisesRegex(StaleCreationProposalError, "already being reviewed"):
+            self.store.review_memory_creation(
+                proposal_id,
+                "remember",
+                actor="cortex-auto-judge:synthetic",
+                approval_authority="automatic",
+                expected_revision=creation_proposal_revision(proposal),
+            )
+
+    def test_stale_creation_review_returns_skipped_fallback(self) -> None:
+        """A review on an already-resolved proposal returns a graceful skipped result.
+
+        Previously, calling ``review_memory_creation`` on a proposal that was no
+        longer pending raised ``StaleCreationProposalError``.  The method should
+        now log a warning and return a valid result with status ``skipped``.
+        """
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            kind="procedure",
+        )
+        self.store.review_memory_creation(proposal["proposal_id"], "reject")
+
+        with self.assertLogs("cortex.store", level=logging.WARNING) as logs:
+            result = self.store.review_memory_creation(proposal["proposal_id"], "remember")
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["proposal_id"], proposal["proposal_id"])
+        self.assertIsNone(result["memory_id"])
+        self.assertFalse(result["memory_created"])
+        self.assertFalse(result["memory_promoted"])
+        self.assertIn("no longer waiting for review", " ".join(logs.output))
 
     def test_review_rolls_back_memory_when_audit_finalization_fails(self) -> None:
         proposal = self.store.propose_memory_creation(

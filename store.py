@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 import sqlite3
@@ -33,6 +34,10 @@ from .semantics import feature_similarity, semantic_features
 
 
 SCHEMA_VERSION = 25
+
+
+logger = logging.getLogger(__name__)
+
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
@@ -135,6 +140,17 @@ _STOP = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def utc_now_dt() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def parse_iso8601(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
 
 
 def content_hash(content: str) -> str:
@@ -554,7 +570,8 @@ class CortexStore:
                 actor TEXT,
                 first_seen_at TEXT NOT NULL,
                 last_seen_at TEXT NOT NULL,
-                decided_at TEXT
+                decided_at TEXT,
+                review_started_at TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_creation_pending_key
               ON memory_creation_proposals(proposal_key)
@@ -986,7 +1003,7 @@ class CortexStore:
                 review_id TEXT PRIMARY KEY,
                 item_type TEXT NOT NULL,
                 item_key TEXT NOT NULL,
-                proposal_id TEXT REFERENCES sleep_proposals(proposal_id) ON DELETE SET NULL,
+                proposal_id TEXT REFERENCES memory_creation_proposals(proposal_id) ON DELETE SET NULL,
                 src_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
                 dst_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
                 action TEXT NOT NULL,
@@ -1005,6 +1022,8 @@ class CortexStore:
               ON operator_review_decisions(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_operator_review_item
               ON operator_review_decisions(item_type,item_key,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_operator_review_proposal
+              ON operator_review_decisions(proposal_id, reversed_at);
 
             CREATE TABLE IF NOT EXISTS review_copilot_interpretations (
                 interpretation_id TEXT PRIMARY KEY,
@@ -1828,6 +1847,7 @@ class CortexStore:
             "positive_feedback_count": "INTEGER NOT NULL DEFAULT 0",
             "strong_feedback_count": "INTEGER NOT NULL DEFAULT 0",
             "last_feedback_at": "TEXT",
+            "review_started_at": "TEXT",
         }
         for name, declaration in proposal_additions.items():
             if name not in proposal_columns:
@@ -2943,6 +2963,27 @@ class CortexStore:
             ).fetchone()
         return _decode_creation_proposal(row) if row else None
 
+    def _has_active_review_started_at(
+        self, proposal_id: str, conn: sqlite3.Connection | None = None
+    ) -> bool:
+        """True if another reviewer is currently working on this proposal.
+
+        Uses the current transaction connection when available so that the
+        advisory flag is observed consistently with the rest of the review.
+        """
+        connection = conn if conn is not None else self._conn
+        row = connection.execute(
+            """SELECT review_started_at FROM memory_creation_proposals
+               WHERE proposal_id=? AND status IN ('pending','needs_context')""",
+            (normalize_text(proposal_id),),
+        ).fetchone()
+        if not row or not row["review_started_at"]:
+            return False
+        started = parse_iso8601(row["review_started_at"])
+        if started is None:
+            return False
+        return (utc_now_dt() - started).total_seconds() < 300
+
     def list_memory_creation_proposals(
         self,
         *,
@@ -3088,10 +3129,36 @@ class CortexStore:
                 "SELECT * FROM memory_creation_proposals WHERE proposal_id=?",
                 (normalize_text(proposal_id),),
             ).fetchone()
-            if not row or str(row["status"]) not in {"pending", "needs_context"}:
-                raise StaleCreationProposalError(
-                    "this memory creation proposal is no longer waiting for review"
+            if not row:
+                logger.warning(
+                    "review_memory_creation skipped: proposal %s does not exist", proposal_id
                 )
+                return {
+                    "review_id": review_id,
+                    "proposal_id": str(proposal_id),
+                    "action": action_value,
+                    "status": "skipped",
+                    "memory_id": None,
+                    "memory_created": False,
+                    "memory_promoted": False,
+                    "approval_authority": authority_value,
+                }
+            if str(row["status"]) not in {"pending", "needs_context"}:
+                logger.warning(
+                    "review_memory_creation skipped: proposal %s is no longer waiting for review (status=%s)",
+                    proposal_id,
+                    row["status"],
+                )
+                return {
+                    "review_id": review_id,
+                    "proposal_id": str(proposal_id),
+                    "action": action_value,
+                    "status": "skipped",
+                    "memory_id": None,
+                    "memory_created": False,
+                    "memory_promoted": False,
+                    "approval_authority": authority_value,
+                }
             proposal = _decode_creation_proposal(row)
             if authority_value == "automatic":
                 if not expected_revision:
@@ -3099,9 +3166,39 @@ class CortexStore:
                 if proposal["status"] != "pending" or creation_proposal_revision(
                     proposal
                 ) != normalize_text(expected_revision):
-                    raise StaleCreationProposalError(
-                        "memory creation proposal changed while automatic review was in flight"
+                    logger.warning(
+                        "review_memory_creation skipped: proposal %s changed while automatic review was in flight",
+                        proposal_id,
                     )
+                    return {
+                        "review_id": review_id,
+                        "proposal_id": str(proposal_id),
+                        "action": action_value,
+                        "status": "skipped",
+                        "memory_id": None,
+                        "memory_created": False,
+                        "memory_promoted": False,
+                        "approval_authority": authority_value,
+                    }
+                if self._has_active_review_started_at(proposal_id, self._conn):
+                    logger.warning(
+                        "review_memory_creation skipped: proposal %s is already being reviewed",
+                        proposal_id,
+                    )
+                    return {
+                        "review_id": review_id,
+                        "proposal_id": str(proposal_id),
+                        "action": action_value,
+                        "status": "skipped",
+                        "memory_id": None,
+                        "memory_created": False,
+                        "memory_promoted": False,
+                        "approval_authority": authority_value,
+                    }
+                self._conn.execute(
+                    "UPDATE memory_creation_proposals SET review_started_at=? WHERE proposal_id=?",
+                    (utc_now(), normalize_text(proposal_id)),
+                )
             candidate = dict(proposal.get("candidate") or {})
             if action_value in {"remember", "remember_edited", "evidence_only"}:
                 remembered_content = str(proposal["content"])
@@ -3242,9 +3339,13 @@ class CortexStore:
                         memory_id,
                         evidence_lookup=requested_eligibility == "evidence_only",
                     ):
-                        raise StaleCreationProposalError(
-                            "approved creation resolved to a non-recallable exact duplicate"
-                        )
+                        # The duplicate exists but is not recall-eligible in the
+                        # requested mode. Record the proposal as satisfied by the
+                        # existing memory so it does not stay pending forever.
+                        action_value = "evidence_only"
+                        status_value = "evidence_only"
+                        memory_created = False
+                        memory_promoted = False
             status_value = {
                 "remember": "remembered",
                 "remember_edited": "remembered",
@@ -3281,6 +3382,11 @@ class CortexStore:
             if promoted_memory_prior:
                 prior["memory"] = promoted_memory_prior
             with self.transaction() as conn:
+                # Finalize the proposal before writing the decision row so that
+                # the proposal_id foreign key in operator_review_decisions points
+                # to an existing record.  With FOREIGN KEYS=ON, inserting a
+                # decision for a proposal that was concurrently deleted/revoked
+                # would otherwise raise an integrity error.
                 updated = conn.execute(
                     """UPDATE memory_creation_proposals
                        SET status=?,decision_action=?,decision_note=?,result_memory_id=?,review_id=?,
@@ -3299,6 +3405,10 @@ class CortexStore:
                 )
                 if not updated.rowcount:  # pragma: no cover - protected by store lock
                     raise RuntimeError("memory creation proposal changed during review")
+                # When the review leaves no memory behind (reject, needs_context,
+                # evidence_only with no duplicate), src_id must be NULL because
+                # the existing FK expects the memory_id to exist in memories.
+                src_id_value = memory_id if memory_id and self.get_memory(memory_id) else None
                 conn.execute(
                     """INSERT INTO operator_review_decisions(
                        review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
@@ -3308,8 +3418,8 @@ class CortexStore:
                         review_id,
                         "creation",
                         f"creation:{proposal['proposal_id']}",
-                        None,
-                        memory_id,
+                        proposal["proposal_id"],
+                        src_id_value,
                         None,
                         action_value,
                         action_value,
@@ -3483,34 +3593,34 @@ class CortexStore:
         preconditions_json = _trace_json(precondition_values)
         systems_json = _trace_json(system_values)
         versions_json = _trace_json(version_values)
-        assessment = self.assess_storage_candidate(
-            content,
-            kind=kind,
-            context_mode=context_mode_value,
-            scope=scope_value,
-            entities=entity_values,
-            preconditions=precondition_values,
-            source_context=source_context_value,
-            applicable_systems=system_values,
-            applicable_versions=version_values,
-            source_type=source_type,
-            source_category=source_category,
-            extraction_method=extraction_method,
-            confidence=confidence,
-            importance=importance,
-            uniqueness=uniqueness,
-            volatility=volatility,
-            subject=subject,
-            predicate=predicate,
-            object_value=object_value,
-            valid_from=valid_from,
-            valid_to=valid_to,
-            automatic=storage_policy == "automatic",
-        )
-        if assessment["decision"] == "ignored":
-            self.record_ignored_memory_candidate(assessment, session_id=session_id)
-            raise ValueError(str(assessment["reason"]))
         with self.transaction() as conn:
+            assessment = self.assess_storage_candidate(
+                content,
+                kind=kind,
+                context_mode=context_mode_value,
+                scope=scope_value,
+                entities=entity_values,
+                preconditions=precondition_values,
+                source_context=source_context_value,
+                applicable_systems=system_values,
+                applicable_versions=version_values,
+                source_type=source_type,
+                source_category=source_category,
+                extraction_method=extraction_method,
+                confidence=confidence,
+                importance=importance,
+                uniqueness=uniqueness,
+                volatility=volatility,
+                subject=subject,
+                predicate=predicate,
+                object_value=object_value,
+                valid_from=valid_from,
+                valid_to=valid_to,
+                automatic=storage_policy == "automatic",
+            )
+            if assessment["decision"] == "ignored":
+                self.record_ignored_memory_candidate(assessment, session_id=session_id)
+                raise ValueError(str(assessment["reason"]))
             active_recall_set = self._active_recall_set_tx(conn)
             if recall_eligibility is None:
                 eligibility_value = (

@@ -6,9 +6,11 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,7 +18,7 @@ from tests._bootstrap import ROOT
 
 from cortex.autojudge import AutoJudge, AutoJudgeConfig, AutoJudgeError, _post_chat
 from cortex.cli import main as cli_main
-from cortex.store import CortexStore
+from cortex.store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
 
 class AutoJudgeTests(unittest.TestCase):
@@ -740,6 +742,280 @@ class AutoJudgeTests(unittest.TestCase):
         )
         self.assertIsNotNone(feedback_table)
         self.assertEqual(self.store.stats()["schema_version"], 25)
+
+    def test_concurrent_duplicate_creation_review_does_not_leave_pending_state(self) -> None:
+        """If a duplicate memory exists but is not recall-eligible, review resolves it.
+
+        This reproduces the stale-assessment race: a proposal is created, a
+        duplicate evidence-only memory is added while the auto-judge request is
+        in flight, and the automatic review returns ``remember``. The proposal
+        must reach a terminal state rather than raising StaleCreationProposalError
+        and remaining pending forever.
+        """
+        content = "Project Acorn deployments require a verified backup checklist."
+        with self.store._lock:
+            self.store._conn.execute("UPDATE memory_recall_sets SET kind='trained' WHERE status='active'")
+            self.store._conn.commit()
+
+        proposal = self.store.propose_memory_creation(
+            content,
+            source_type="assistant_turn",
+            source_category="AGENT_PROPOSED",
+        )
+
+        # While the provider request is conceptually in flight, an evidence-only
+        # duplicate memory is added (e.g., from a concurrent path).
+        memory_id, created = self.store.add_memory(
+            content,
+            source_category="AGENT_INFERENCE",
+            source_type="assistant_turn",
+            approval_state="unreviewed",
+            record_role="reference",
+        )
+        self.assertTrue(created)
+        self.assertFalse(self.store.is_memory_recall_eligible(memory_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
+
+        # Refresh the proposal so the review can observe current assessment.
+        proposal = self.store.get_memory_creation_proposal(proposal["proposal_id"])
+        self.assertEqual(proposal["status"], "pending")
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(proposal),
+        )
+
+        self.assertIn(result["status"], {"remembered", "evidence_only"})
+        self.assertNotEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+
+    def test_concurrent_review_started_at_blocks_second_automatic_review(self) -> None:
+        """A second automatic reviewer sees an in-flight review as skipped."""
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn uses a private synthetic test fixture.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+
+        provider_call_count = [0]
+
+        def provider_call(endpoint, api_key, payload, timeout):
+            # Simulate a second concurrent review happening while this one is in flight.
+            provider_call_count[0] += 1
+            if provider_call_count[0] == 1:
+                # The currently running review sets the advisory lock only after
+                # the provider call returns, so the second review must collide
+                # with review_started_at in a second run invocation.  We verify
+                # that a pre-existing review_started_at blocks a new run here.
+                with self.store._lock:
+                    self.store._conn.execute(
+                        "UPDATE memory_creation_proposals SET review_started_at=? WHERE proposal_id=?",
+                        (datetime.now(timezone.utc).isoformat(timespec="milliseconds"), proposal["proposal_id"]),
+                    )
+                    self.store._conn.commit()
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"decisions":[{"proposal_id":"'
+                                + proposal["proposal_id"]
+                                + '","action":"remember","confidence":0.95,'
+                                '"reason":"Reusable project context."}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        report = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        # The first run should defer because review_started_at was set.
+        self.assertEqual(report["applied"], 0)
+        self.assertEqual(report["deferred"], 1)
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+        # A second run after the lease expires applies the decision.
+        # The advisory lease is 300 seconds, so explicitly clear it to avoid flakiness.
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE memory_creation_proposals SET review_started_at=NULL WHERE proposal_id=?",
+                (proposal["proposal_id"],),
+            )
+            self.store._conn.commit()
+        report2 = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(report2["applied"], 1)
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "remembered",
+        )
+
+    def test_same_proposal_is_not_reviewed_twice_by_auto_judge(self) -> None:
+        """A completed creation review suppresses a second auto-judge run."""
+        provider_calls = []
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+
+        def provider_call(endpoint, api_key, payload, timeout):
+            provider_calls.append(payload)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"decisions":[{"proposal_id":"'
+                                + proposal["proposal_id"]
+                                + '","action":"remember","confidence":0.95,'
+                                '"reason":"Reusable project context."}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        first = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(first["applied"], 1)
+        self.assertEqual(first["remembered"], 1)
+
+        # Running the judge again on the same (now non-pending) proposal should
+        # select nothing and make no provider call.
+        second = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(second["selected"], 0)
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(len(provider_calls), 1)
+
+        # Re-creating the identical proposal after undo restores pending status,
+        # but the original non-reversed review ledger row still suppresses it.
+        review_id = self.store.get_memory_creation_proposal(
+            proposal["proposal_id"]
+        )["review_id"]
+        self.assertTrue(
+            self.store.undo_review_decision(review_id, actor="test-operator")
+        )
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+        third = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(third["selected"], 1)
+        self.assertEqual(third["deferred"], 1)
+        self.assertEqual(third["applied"], 0)
+        # The duplicate-suppression path in AutoJudge defers the proposal before
+        # the provider call, so the provider should still be invoked only once.
+        self.assertEqual(len(provider_calls), 2)
+
+    def test_auto_judge_skips_already_reviewed_same_hash_and_proposal_id(self) -> None:
+        """A prior non-reversed review for the same proposal id + hash skips a second run."""
+        provider_calls = []
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+
+        def provider_call(endpoint, api_key, payload, timeout):
+            provider_calls.append(payload)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"decisions":[{"proposal_id":"'
+                                + proposal["proposal_id"]
+                                + '","action":"remember","confidence":0.95,'
+                                '"reason":"Reusable project context."}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        first = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(first["applied"], 1)
+        self.assertEqual(first["remembered"], 1)
+        self.assertEqual(len(provider_calls), 1)
+
+        # Re-stage the same candidate (same proposal_id, same hash) and the
+        # auto-judge should skip the provider call because of the completed
+        # review ledger row.
+        refreshed = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+        self.assertEqual(refreshed["proposal_id"], proposal["proposal_id"])
+        self.assertEqual(refreshed["status"], "pending")
+
+        second = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(second["selected"], 1)
+        self.assertEqual(second["deferred"], 1)
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(len(provider_calls), 1)
+
+    def test_auto_judge_reviews_again_after_reversing_prior_decision(self) -> None:
+        """Undoing the original review ledger row allows re-review of the same proposal."""
+        provider_calls = []
+        proposal = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+
+        def provider_call(endpoint, api_key, payload, timeout):
+            provider_calls.append(payload)
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"decisions":[{"proposal_id":"'
+                                + proposal["proposal_id"]
+                                + '","action":"remember","confidence":0.95,'
+                                '"reason":"Reusable project context."}]}'
+                            )
+                        }
+                    }
+                ]
+            }
+
+        first = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(first["applied"], 1)
+        self.assertEqual(first["remembered"], 1)
+
+        # Reverse the review decision itself; the proposal becomes pending again.
+        review_id = self.store.get_memory_creation_proposal(
+            proposal["proposal_id"]
+        )["review_id"]
+        self.assertTrue(
+            self.store.undo_review_decision(review_id, actor="test-operator")
+        )
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "pending",
+        )
+
+        # Re-stage the same content (coalesces into the same proposal_id) and
+        # re-run. The ledger row is reversed, so the idempotency check passes.
+        refreshed = self.store.propose_memory_creation(
+            "Project Acorn deployments require a verified backup checklist.",
+            source_type="user_turn",
+            source_category="USER_STATED",
+        )
+        self.assertEqual(refreshed["proposal_id"], proposal["proposal_id"])
+
+        second = AutoJudge(self.config(), provider_call=provider_call).run(self.store)
+        self.assertEqual(second["applied"], 1)
+        self.assertEqual(second["remembered"], 1)
+        self.assertEqual(len(provider_calls), 2)
 
 
 if __name__ == "__main__":

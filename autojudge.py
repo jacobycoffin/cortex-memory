@@ -9,6 +9,7 @@ Every applied decision uses the existing reversible review ledger.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -21,6 +22,9 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
+
+
+logger = logging.getLogger(__name__)
 
 
 class AutoJudgeError(RuntimeError):
@@ -224,6 +228,30 @@ class AutoJudge:
             provider_candidates.append(proposal)
         if not candidate_records:
             return report
+
+        # Idempotency: if a completed review already exists for this exact
+        # proposal and candidate hash, skip the provider call entirely.
+        duplicates = _find_already_reviewed_candidates(store, provider_candidates)
+        if duplicates:
+            for proposal in provider_candidates:
+                if proposal["proposal_id"] in duplicates:
+                    logger.info(
+                        "auto-judge skipping already-reviewed proposal %s",
+                        proposal["proposal_id"],
+                    )
+                    report["deferred"] += 1
+            provider_candidates = [
+                proposal
+                for proposal in provider_candidates
+                if proposal["proposal_id"] not in duplicates
+            ]
+            candidate_records = [
+                record
+                for record in candidate_records
+                if record["proposal_id"] not in duplicates
+            ]
+        if not candidate_records:
+            return report
         candidate_content = json.dumps(
             {"candidates": candidate_records},
             ensure_ascii=True,
@@ -324,9 +352,15 @@ class AutoJudge:
                     expected_revision=creation_proposal_revision(proposal),
                 )
             except StaleCreationProposalError:
-                # An operator may decide the same proposal while the provider
-                # request is in flight, or the candidate may recur with changed
-                # assessment metadata. Both races fail closed as a defer.
+                # Legacy: kept only for callers using the old exception. All
+                # current paths return a graceful skipped result instead.
+                report["deferred"] += 1
+                continue
+            # An operator may decide the same proposal while the provider
+            # request is in flight, or the candidate may recur with changed
+            # assessment metadata. Both races now return a graceful skipped
+            # result, which the report counts as a defer.
+            if str(result["status"]) == "skipped":
                 report["deferred"] += 1
                 continue
             report["applied"] += 1
@@ -670,6 +704,58 @@ def _safe_usage(value: Any) -> dict[str, int]:
 def _actor_model(model: str) -> str:
     value = re.sub(r"[^A-Za-z0-9._/-]+", "-", model).strip("-")
     return value[:55] or "unknown-model"
+
+
+def _find_already_reviewed_candidates(
+    store: CortexStore,
+    candidates: list[dict[str, Any]],
+) -> set[str]:
+    """Return proposal ids that already have a completed review for the same hash.
+
+    Completed reviews are recorded in ``operator_review_decisions``.  Because
+    undoing a decision sets ``reversed_at`` without deleting the row, we only
+    treat non-reversed decisions as a duplicate.  This preserves the expectation
+    that a reversed review can be re-run.
+
+    A proposal that is currently pending but has a non-reversed review decision
+    row is also treated as already-reviewed.  This happens when an operator
+    undoes a review (the proposal reverts to pending) but the prior completed
+    decision still suppresses re-review until it is itself reversed.
+    """
+    if not candidates:
+        return set()
+    proposal_ids = {str(c["proposal_id"]) for c in candidates if c.get("proposal_id")}
+    if not proposal_ids:
+        return set()
+
+    # Map proposal_id -> candidate_hash from the live proposals.
+    hashes: dict[str, str] = {}
+    for proposal in candidates:
+        pid = str(proposal["proposal_id"])
+        candidate_hash = str(proposal.get("candidate_hash") or "")
+        if candidate_hash:
+            hashes[pid] = candidate_hash
+    if not hashes:
+        return set()
+
+    placeholders = ",".join("?" * len(proposal_ids))
+    query = (
+        f"SELECT proposal_id, effect_json FROM operator_review_decisions "
+        f"WHERE item_type='creation' AND proposal_id IN ({placeholders}) "
+        f"AND reversed_at IS NULL"
+    )
+    seen: set[str] = set()
+    with store._lock:
+        rows = store._conn.execute(query, tuple(proposal_ids)).fetchall()
+    for row in rows:
+        pid = str(row["proposal_id"])
+        try:
+            effect = json.loads(str(row["effect_json"] or "{}"))
+        except json.JSONDecodeError:
+            continue
+        if effect.get("candidate_hash") == hashes.get(pid):
+            seen.add(pid)
+    return seen
 
 
 def _env_bool(name: str, default: bool) -> bool:
