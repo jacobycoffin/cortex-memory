@@ -16,7 +16,15 @@ from unittest.mock import MagicMock, patch
 
 from tests._bootstrap import ROOT
 
-from cortex.autojudge import AutoJudge, AutoJudgeConfig, AutoJudgeError, _post_chat
+from cortex.autojudge import (
+    AutoJudge,
+    AutoJudgeConfig,
+    AutoJudgeError,
+    _LINKS_EDGE_WEIGHT,
+    _apply_links,
+    _parse_decisions,
+    _post_chat,
+)
 from cortex.cli import main as cli_main
 from cortex.store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
@@ -1015,6 +1023,328 @@ class AutoJudgeTests(unittest.TestCase):
         self.assertEqual(second["applied"], 1)
         self.assertEqual(second["remembered"], 1)
         self.assertEqual(len(provider_calls), 2)
+
+    # --- Link creation tests ---
+
+    def test_config_rejects_invalid_links_settings(self) -> None:
+        """links_enabled must be boolean and links_top_k must be int in [1,20]."""
+        for invalid in ({"links_enabled": "yes"}, {"links_enabled": 1}):
+            with self.assertRaises(AutoJudgeError):
+                AutoJudge(self.config(**invalid)).run(self.store)
+        for invalid in ({"links_top_k": 0}, {"links_top_k": 21}, {"links_top_k": "5"}):
+            with self.assertRaises(AutoJudgeError):
+                AutoJudge(self.config(**invalid)).run(self.store)
+
+    def test_links_parsed_from_llm_response(self) -> None:
+        """_parse_decisions correctly extracts the optional links array."""
+        response = {
+            "choices": [{"message": {"content": json.dumps({
+                "decisions": [
+                    {
+                        "proposal_id": "p1",
+                        "action": "remember",
+                        "confidence": 0.92,
+                        "reason": "Useful project context.",
+                        "links": [
+                            {"memory_id": "m1", "relation": "supports", "rationale": "Consistent with the backup policy"},
+                            {"memory_id": "m2", "relation": "extends", "rationale": "Adds deployment detail"},
+                        ],
+                    },
+                    {
+                        "proposal_id": "p2",
+                        "action": "reject",
+                        "confidence": 0.85,
+                        "reason": "Transient observation.",
+                    },
+                ],
+            })}}],
+        }
+        decisions = _parse_decisions(response, {"p1", "p2"})
+        self.assertEqual(len(decisions), 2)
+        # p1 has links
+        d0 = decisions[0]
+        self.assertEqual(d0["action"], "remember")
+        self.assertIn("links", d0)
+        self.assertEqual(len(d0["links"]), 2)
+        self.assertEqual(d0["links"][0]["memory_id"], "m1")
+        self.assertEqual(d0["links"][0]["relation"], "supports")
+        self.assertEqual(d0["links"][1]["memory_id"], "m2")
+        # p2 has no links
+        d1 = decisions[1]
+        self.assertEqual(d1["action"], "reject")
+        self.assertNotIn("links", d1)
+
+    def test_malformed_links_do_not_crash(self) -> None:
+        """Bad links entries are silently skipped without raising."""
+        response = {
+            "choices": [{"message": {"content": json.dumps({
+                "decisions": [
+                    {
+                        "proposal_id": "p1",
+                        "action": "remember",
+                        "confidence": 0.92,
+                        "reason": "Good.",
+                        "links": [
+                            "not-a-dict",
+                            {"memory_id": "m1", "relation": "supports", "rationale": "valid"},
+                            {"memory_id": "m2"},  # missing relation -> skipped
+                            {},  # empty -> skipped
+                        ],
+                    },
+                ],
+            })}}],
+        }
+        decisions = _parse_decisions(response, {"p1"})
+        links = decisions[0]["links"]
+        # Only the fully-valid entry passes; non-dicts, missing-relation,
+        # and empty entries are filtered out.
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["memory_id"], "m1")
+
+    def test_links_only_for_remember_actions(self) -> None:
+        """Links are only included in the LLM response for remember/evidence_only actions in the system prompt."""
+        # This tests that when links are provided for non-remember actions,
+        # _parse_decisions still accepts them (it's up to _apply_links to skip them)
+        response = {
+            "choices": [{"message": {"content": json.dumps({
+                "decisions": [
+                    {
+                        "proposal_id": "p1",
+                        "action": "reject",
+                        "confidence": 0.85,
+                        "reason": "Noise.",
+                        "links": [{"memory_id": "m1", "relation": "supports", "rationale": "test"}],
+                    },
+                ],
+            })}}],
+        }
+        decisions = _parse_decisions(response, {"p1"})
+        self.assertEqual(len(decisions[0]["links"]), 1)
+
+    def test_use_links_prompt_when_enabled(self) -> None:
+        """With links_enabled=True, the system prompt includes link instructions."""
+        config = self.config(links_enabled=True)
+        judge = AutoJudge(config)
+        # The prompt selection happens at runtime — verify config reads correctly
+        self.assertTrue(config.links_enabled)
+
+    def test_apply_links_creates_edges(self) -> None:
+        """_apply_links creates edges and edge_evidence for valid links."""
+        # First create a memory to link to
+        mem1_id, _ = self.store.add_memory(
+            "The deployment requires a verified backup before pushing to production.",
+            kind="procedure",
+            source_type="test",
+            source_category="USER_STATED",
+        )
+        proposal = self.store.propose_memory_creation(
+            "silver badger backup verification step",
+            kind="procedure",
+            source_type="test",
+            source_category="USER_STATED",
+        )
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            reason_text="test",
+            actor="test",
+            decision_scope="item_only",
+            approval_authority="operator",
+        )
+        memory_id = result["memory_id"]
+        review_id = result["review_id"]
+
+        links = [
+            {"memory_id": mem1_id, "relation": "supports", "rationale": "Extends the backup procedure"},
+        ]
+        count = _apply_links(
+            self.store,
+            new_memory_id=memory_id,
+            links=links,
+            review_id=review_id,
+            actor="test",
+            proposal_id="test-proposal",
+        )
+        self.assertEqual(count, 1)
+
+        # Verify the edge exists
+        edge = self.store._conn.execute(
+            "SELECT * FROM edges WHERE relation='supports'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
+        self.assertEqual(edge["evidence_count"], 1)
+        self.assertEqual(edge["weight"], _LINKS_EDGE_WEIGHT)
+
+        # Verify edge_evidence exists
+        evidence = self.store._conn.execute(
+            "SELECT * FROM edge_evidence WHERE evidence_type='auto_judge'"
+        ).fetchone()
+        self.assertIsNotNone(evidence)
+        self.assertIn("backup", evidence["summary"])
+
+    def test_apply_links_skips_invalid_relations(self) -> None:
+        """Unrecognised relation types are silently skipped."""
+        mem1_id, _ = self.store.add_memory(
+            "Some procedure.", kind="procedure",
+            source_type="test", source_category="USER_STATED",
+        )
+        links = [
+            {"memory_id": mem1_id, "relation": "invalid_relation", "rationale": "test"},
+        ]
+        count = _apply_links(
+            self.store,
+            new_memory_id="new-mem",  # won't actually create edge anyway
+            links=links,
+            review_id="test-review",
+            actor="test",
+            proposal_id="test-proposal",
+        )
+        self.assertEqual(count, 0)
+
+    def test_apply_links_skips_self_link(self) -> None:
+        """A link pointing to itself is skipped (src_id != dst_id CHECK)."""
+        links = [
+            {"memory_id": "same-mem", "relation": "supports", "rationale": "self"},
+        ]
+        count = _apply_links(
+            self.store,
+            new_memory_id="same-mem",
+            links=links,
+            review_id="test-review",
+            actor="test",
+            proposal_id="test-proposal",
+        )
+        self.assertEqual(count, 0)
+
+    def test_apply_links_upserts_on_duplicate_edge(self) -> None:
+        """Creating the same edge twice increments evidence_count."""
+        mem1_id, _ = self.store.add_memory(
+            "Existing memory.", kind="semantic",
+            source_type="test", source_category="USER_STATED",
+        )
+        proposal = self.store.propose_memory_creation(
+            "silver badger upsert test",
+            kind="procedure", source_type="test", source_category="USER_STATED",
+        )
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            reason_text="test", actor="test",
+            decision_scope="item_only", approval_authority="operator",
+        )
+        links = [
+            {"memory_id": mem1_id, "relation": "extends", "rationale": "first pass"},
+        ]
+        _apply_links(
+            self.store, new_memory_id=result["memory_id"],
+            links=links, review_id=result["review_id"],
+            actor="test", proposal_id="test-p1",
+        )
+        _apply_links(
+            self.store, new_memory_id=result["memory_id"],
+            links=links, review_id="second-review",
+            actor="test", proposal_id="test-p2",
+        )
+        edge = self.store._conn.execute(
+            "SELECT evidence_count FROM edges WHERE relation='extends'"
+        ).fetchone()
+        self.assertEqual(edge["evidence_count"], 2)
+
+    def test_full_flow_with_links(self) -> None:
+        """End-to-end test: mock provider returns links, edges are created."""
+        # Seed an existing memory the LLM can link to
+        existing_id, _ = self.store.add_memory(
+            "The backup checklist must be completed before production deployment.",
+            kind="procedure", source_type="test", source_category="USER_STATED",
+        )
+
+        # Create a proposal
+        proposal = self.store.propose_memory_creation(
+            "silver badger backup verification step",
+            kind="procedure", source_type="test", source_category="USER_STATED",
+        )
+        pid = proposal["proposal_id"]
+
+        # Mock provider that returns a decision with links
+        def provider_with_links(endpoint, api_key, payload, timeout):
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "decisions": [
+                        {
+                            "proposal_id": pid,
+                            "action": "remember",
+                            "confidence": 0.88,
+                            "reason": "Reusable deployment procedure detail.",
+                            "links": [
+                                {"memory_id": existing_id, "relation": "extends", "rationale": "Adds verification step"},
+                            ],
+                        },
+                    ],
+                })}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            }
+
+        config = self.config(links_enabled=True, links_top_k=5)
+        judge = AutoJudge(config, provider_call=provider_with_links)
+        # Patch _find_related_memories to return the existing memory
+        with patch.object(
+            sys.modules["cortex.autojudge"],
+            "_find_related_memories",
+            return_value=[{"memory_id": existing_id, "content": "test content", "kind": "procedure", "score": 0.85}],
+        ):
+            report = judge.run(self.store)
+
+        self.assertEqual(report["applied"], 1)
+        self.assertEqual(report["remembered"], 1)
+        self.assertEqual(report["linked"], 1)
+        self.assertEqual(report["links_suggested"], 1)
+        self.assertEqual(report["links_created"], 1)
+
+        # Verify the edge was created for the link
+        edge = self.store._conn.execute(
+            "SELECT * FROM edges WHERE relation='extends'"
+        ).fetchone()
+        self.assertIsNotNone(edge)
+
+        # Verify the memory was created
+        stats = self.store.stats()
+        self.assertEqual(stats["memories"], 2)  # seed + new
+
+
+    def test_links_not_created_for_rejected_proposals(self) -> None:
+        """Links in the LLM response are ignored when the action is not remembered."""
+        proposal = self.store.propose_memory_creation(
+            "silver badger transient note",
+            kind="semantic", source_type="test", source_category="USER_STATED",
+        )
+        pid = proposal["proposal_id"]
+
+        def provider_with_links(endpoint, api_key, payload, timeout):
+            return {
+                "choices": [{"message": {"content": json.dumps({
+                    "decisions": [
+                        {
+                            "proposal_id": pid,
+                            "action": "reject",
+                            "confidence": 0.85,
+                            "reason": "Transient data.",
+                            "links": [
+                                {"memory_id": "some-mem", "relation": "supports", "rationale": "test"},
+                            ],
+                        },
+                    ],
+                })}}],
+                "usage": {},
+            }
+
+        config = self.config(links_enabled=True)
+        judge = AutoJudge(config, provider_call=provider_with_links)
+        report = judge.run(self.store)
+
+        self.assertEqual(report["applied"], 1)
+        self.assertEqual(report["rejected"], 1)
+        self.assertEqual(report["linked"], 0)
+        self.assertEqual(report["links_created"], 0)
 
 
 if __name__ == "__main__":

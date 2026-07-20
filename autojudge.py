@@ -4,6 +4,9 @@ The judge is deliberately outside the synchronous Hermes turn path. It may
 approve or reject already-sanitized creation proposals, but it cannot edit
 candidate text, bypass quarantine/contradiction guards, or hard-delete data.
 Every applied decision uses the existing reversible review ledger.
+
+When enabled, the judge may also suggest semantic links to existing memories
+for approved candidates, creating a connected knowledge graph.
 """
 
 from __future__ import annotations
@@ -15,16 +18,33 @@ import os
 import re
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlparse
 
+from .retrieval import MemoryRetriever, RetrievalContext
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
 
 logger = logging.getLogger(__name__)
+
+_VALID_LINK_RELATIONS = frozenset({
+    "supports",
+    "extends",
+    "refines",
+    "example_of",
+    "generalizes",
+    "prerequisite",
+})
+
+# Maximum number of related memories to inject per candidate
+_LINKS_TOP_K_DEFAULT = 5
+# Max chars per related-memory content snippet sent to the LLM
+_LINKS_CONTENT_CHARS = 300
+# Weight assigned to auto-judge-created edges (lower than human/operator edges)
+_LINKS_EDGE_WEIGHT = 0.5
 
 
 class AutoJudgeError(RuntimeError):
@@ -61,6 +81,8 @@ class AutoJudgeConfig:
     decision_threshold: float = 0.72
     strong_feedback_boost: float = 0.08
     positive_feedback_boost: float = 0.02
+    links_enabled: bool = False
+    links_top_k: int = _LINKS_TOP_K_DEFAULT
 
     @classmethod
     def from_env(cls) -> "AutoJudgeConfig":
@@ -88,6 +110,8 @@ class AutoJudgeConfig:
             positive_feedback_boost=_env_float(
                 "CORTEX_AUTO_JUDGE_POSITIVE_FEEDBACK_BOOST", 0.02
             ),
+            links_enabled=_env_bool("CORTEX_AUTO_JUDGE_LINKS_ENABLED", False),
+            links_top_k=_env_int("CORTEX_AUTO_JUDGE_LINKS_TOP_K", _LINKS_TOP_K_DEFAULT),
         )
 
     def validate(self) -> None:
@@ -157,6 +181,14 @@ class AutoJudgeConfig:
                 or not 0.0 <= value <= 0.25
             ):
                 raise AutoJudgeError(f"auto-judge {label} must be between 0.0 and 0.25")
+        if not isinstance(self.links_enabled, bool):
+            raise AutoJudgeError("auto-judge links_enabled must be a boolean")
+        if (
+            isinstance(self.links_top_k, bool)
+            or not isinstance(self.links_top_k, int)
+            or not 1 <= self.links_top_k <= 20
+        ):
+            raise AutoJudgeError("auto-judge links_top_k must be between 1 and 20")
 
     def api_key(self) -> str:
         if self.api_key_env:
@@ -193,6 +225,11 @@ class AutoJudge:
             "guarded": 0,
             "model": self.config.model,
             "usage": {},
+            # Link reporting
+            "links_enabled": self.config.links_enabled,
+            "linked": 0,
+            "links_suggested": 0,
+            "links_created": 0,
         }
         if not self.config.enabled:
             return report
@@ -212,10 +249,38 @@ class AutoJudge:
         if not candidates:
             return report
 
+        # Pre-compute related memories for all candidates if linking is enabled
+        link_context: dict[str, list[dict[str, Any]]] = {}
+        if self.config.links_enabled:
+            try:
+                retriever = MemoryRetriever(store)
+            except Exception:
+                logger.warning("auto-judge cannot create MemoryRetriever; links disabled for this run")
+                retriever = None
+            if retriever is not None:
+                for proposal in candidates:
+                    content = str(proposal.get("content") or "")
+                    if content.strip():
+                        try:
+                            related = _find_related_memories(
+                                store, retriever, content, top_k=self.config.links_top_k,
+                            )
+                            if related:
+                                link_context[str(proposal["proposal_id"])] = related
+                        except Exception as exc:
+                            logger.debug(
+                                "auto-judge link retrieval failed for %s: %s",
+                                proposal["proposal_id"], exc,
+                            )
+
         candidate_records: list[dict[str, Any]] = []
         provider_candidates: list[dict[str, Any]] = []
         for proposal in candidates:
             record = _provider_candidate(proposal)
+            # Attach related memories for connection-aware judging
+            pid = str(proposal["proposal_id"])
+            if pid in link_context:
+                record["related_memories"] = link_context[pid]
             transport_guarded = bool(record.pop("_transport_guarded", False))
             record_size = len(
                 json.dumps(record, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
@@ -252,18 +317,26 @@ class AutoJudge:
             ]
         if not candidate_records:
             return report
+
+        # Calculate dynamic max_tokens: base + extra room for links
+        link_extra = 500 if self.config.links_enabled else 0
+        effective_max_tokens = min(4096, self.config.max_output_tokens + link_extra)
+
         candidate_content = json.dumps(
             {"candidates": candidate_records},
             ensure_ascii=True,
             separators=(",", ":"),
         )
+        system_prompt = (
+            _SYSTEM_PROMPT_LINKS if self.config.links_enabled else _SYSTEM_PROMPT
+        )
         payload = {
             "model": self.config.model,
             "temperature": 0,
-            "max_tokens": self.config.max_output_tokens,
+            "max_tokens": effective_max_tokens,
             "response_format": {"type": "json_object"},
             "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {
                     "role": "user",
                     "content": candidate_content,
@@ -373,6 +446,27 @@ class AutoJudge:
                 report["rejected"] += 1
             elif status == "needs_context":
                 report["needs_context"] += 1
+
+            # --- Link creation: apply LLM-suggested edges for remembered candidates ---
+            links = decision.get("links")
+            if (
+                self.config.links_enabled
+                and status == "remembered"
+                and links
+                and isinstance(links, list)
+            ):
+                report["linked"] += 1
+                report["links_suggested"] += len(links)
+                created = _apply_links(
+                    store,
+                    new_memory_id=result.get("memory_id", ""),
+                    links=links,
+                    review_id=result.get("review_id", ""),
+                    actor=actor,
+                    proposal_id=proposal["proposal_id"],
+                )
+                report["links_created"] += created
+
         return report
 
 
@@ -387,6 +481,131 @@ context not safe for broad recall; reject for transient/noisy/non-durable items;
 needs_context when a missing scope or contradiction prevents safe use; defer when
 uncertain. Include at most one decision per supplied proposal and no unknown IDs.
 """
+
+_SYSTEM_PROMPT_LINKS = """You are Cortex's conservative memory-admission judge and knowledge-graph linker.
+
+Your job has two parts for each candidate:
+1. Decide whether to remember, reject, defer, or flag needing context
+2. FOR CANDIDATES YOU REMEMBER: suggest zero or more links to existing related memories
+
+Each candidate may include a "related_memories" array showing existing memories
+that are semantically similar. Use these to ground your link suggestions. Do NOT
+invent memory_ids that aren't in the related_memories list.
+
+Verb: supports, extends, refines, example_of, generalizes, prerequisite
+- supports: this new memory reinforces or is consistent with the existing one
+- extends: adds detail, scope, or depth to the existing one
+- refines: corrects or narrows the existing one
+- example_of: concrete instance of a broader concept in the existing one
+- generalizes: broader rule or pattern that covers the existing one
+- prerequisite: should be understood before the existing one
+
+Return JSON only: {"decisions":[{"proposal_id":"...","action":"remember|evidence_only|reject|needs_context|defer","confidence":0.0,"reason":"...", "links":[{"memory_id":"...","relation":"supports","rationale":"..."}]}]}
+Include links ONLY for remember/evidence_only decisions. At most one entry per memory_id in links. No unknown memory_ids.
+"""
+
+
+def _find_related_memories(
+    store: CortexStore,
+    retriever: MemoryRetriever,
+    content: str,
+    *,
+    top_k: int = 5,
+) -> list[dict[str, Any]]:
+    """Find top-K existing memories semantically related to *content*.
+
+    Returns a compact list suitable for injecting into the LLM prompt.
+    Results are ordered by descending relevance score.
+    """
+    try:
+        results = retriever.search(
+            content,
+            limit=top_k,
+            include_archived=False,
+            graph_depth=0,            # no graph expansion — pure semantic match
+        )
+    except Exception:
+        return []
+    related: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for r in results:
+        mem_id = str(r.memory.get("id", ""))
+        if mem_id in seen_ids:
+            continue
+        seen_ids.add(mem_id)
+        summary = str(r.memory.get("content", ""))[:_LINKS_CONTENT_CHARS]
+        if not summary.strip():
+            continue
+        related.append({
+            "memory_id": mem_id,
+            "content": summary,
+            "kind": r.memory.get("kind", "semantic"),
+            "score": round(r.score, 3) if r.score is not None else None,
+        })
+    return related
+
+
+def _apply_links(
+    store: CortexStore,
+    *,
+    new_memory_id: str,
+    links: list[dict[str, Any]],
+    review_id: str,
+    actor: str,
+    proposal_id: str,
+) -> int:
+    """Create edges for auto-judge-suggested links after a remembered decision.
+
+    Returns the number of edges actually created/updated.
+    """
+    if not new_memory_id or not links:
+        return 0
+    now = str(datetime.now(timezone.utc))
+    created = 0
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        target_id = str(link.get("memory_id") or "").strip()
+        relation = str(link.get("relation") or "").strip().casefold()
+        rationale = str(link.get("rationale") or "")[:_MAX_CANDIDATE_CONTENT_CHARS]
+        if not target_id or relation not in _VALID_LINK_RELATIONS:
+            continue
+        if target_id == new_memory_id:
+            continue  # would violate src_id != dst_id CHECK
+        # Normalise direction: place lower-alphanumeric id as src
+        src_id, dst_id = sorted((new_memory_id, target_id))
+        with store._lock:
+            existing = store._conn.execute(
+                "SELECT src_id, dst_id FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                (src_id, dst_id, relation),
+            ).fetchone()
+            store._conn.execute(
+                """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,last_reinforced_at)
+                   VALUES(?,?,?,?,1,?,?)
+                   ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                     weight=MIN(1.0,MAX(edges.weight,excluded.weight)),
+                     evidence_count=edges.evidence_count+1,
+                     last_reinforced_at=excluded.last_reinforced_at""",
+                (src_id, dst_id, relation, _LINKS_EDGE_WEIGHT, now, now),
+            )
+            store._record_edge_evidence_tx(
+                store._conn, src_id, dst_id, relation,
+                evidence_type="auto_judge",
+                evidence_key=f"judge_link:{review_id}:{target_id}:{relation}",
+                summary=rationale or f"Auto-judge linked {relation}",
+                source_ref=f"review:{review_id}",
+                metadata={
+                    "proposal_id": proposal_id,
+                    "review_id": review_id,
+                    "actor": actor,
+                    "relation": relation,
+                    "new_memory_id": new_memory_id,
+                    "target_memory_id": target_id,
+                },
+                created_at=now,
+            )
+        created += 1
+    return created
 
 
 def _bounded_provider_text(
@@ -504,7 +723,7 @@ def _provider_candidate(proposal: dict[str, Any]) -> dict[str, Any]:
             quality_flags_guarded,
         )
     )
-    return {
+    result = {
         "proposal_id": proposal_id,
         "content": content[:_MAX_CANDIDATE_CONTENT_CHARS],
         "content_truncated": len(content) > _MAX_CANDIDATE_CONTENT_CHARS,
@@ -534,6 +753,7 @@ def _provider_candidate(proposal: dict[str, Any]) -> dict[str, Any]:
         "strong_feedback_count": int(proposal.get("strong_feedback_count") or 0),
         "_transport_guarded": transport_guarded,
     }
+    return result
 
 
 def _guarded_reason(proposal: dict[str, Any], action: str) -> str:
@@ -584,6 +804,7 @@ def _parse_decisions(response: dict[str, Any], allowed_ids: set[str]) -> list[di
         action_raw = item.get("action")
         reason_raw = item.get("reason")
         confidence_raw = item.get("confidence")
+        links_raw = item.get("links")
         if not isinstance(proposal_id_raw, str) or not proposal_id_raw.strip():
             raise AutoJudgeError("auto-judge proposal_id must be a non-empty string")
         if not isinstance(action_raw, str):
@@ -603,14 +824,34 @@ def _parse_decisions(response: dict[str, Any], allowed_ids: set[str]) -> list[di
         if not reason or not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
             raise AutoJudgeError("auto-judge decision is missing bounded fields")
         seen.add(proposal_id)
-        decisions.append(
-            {
-                "proposal_id": proposal_id,
-                "action": action,
-                "confidence": confidence,
-                "reason": reason,
-            }
-        )
+        entry: dict[str, Any] = {
+            "proposal_id": proposal_id,
+            "action": action,
+            "confidence": confidence,
+            "reason": reason,
+        }
+        # Parse optional links array
+        if links_raw is not None:
+            if not isinstance(links_raw, list):
+                raise AutoJudgeError("auto-judge links must be an array")
+            parsed_links: list[dict[str, Any]] = []
+            for link_item in links_raw:
+                if not isinstance(link_item, dict):
+                    continue  # skip malformed entries gracefully
+                mid = link_item.get("memory_id")
+                rel = link_item.get("relation")
+                rat = link_item.get("rationale")
+                if not isinstance(mid, str) or not isinstance(rel, str):
+                    continue
+                if not isinstance(rat, str):
+                    rat = ""
+                parsed_links.append({
+                    "memory_id": mid.strip(),
+                    "relation": rel.strip().casefold(),
+                    "rationale": rat.strip()[:500],
+                })
+            entry["links"] = parsed_links
+        decisions.append(entry)
     return decisions
 
 

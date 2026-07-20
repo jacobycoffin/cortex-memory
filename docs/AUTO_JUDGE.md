@@ -146,6 +146,13 @@ one-shot runs).
 | `CORTEX_AUTO_JUDGE_STRONG_FEEDBACK_BOOST` | `0.08` | Confidence boost per strong feedback signal |
 | `CORTEX_AUTO_JUDGE_POSITIVE_FEEDBACK_BOOST` | `0.02` | Confidence boost per ordinary feedback signal |
 
+### Linking (knowledge-graph building)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORTEX_AUTO_JUDGE_LINKS_ENABLED` | `false` | Set to `true` to enable semantic linking |
+| `CORTEX_AUTO_JUDGE_LINKS_TOP_K` | `5` | How many related memories to retrieve per candidate |
+
 ### How thresholds work
 
 The LLM returns a `confidence` score (0.0–1.0) with each decision. The judge
@@ -281,6 +288,124 @@ judge = AutoJudge(config)
 report = judge.run(store)
 print(report)  # {"enabled": true, "selected": 3, "applied": 2, ...}
 ```
+
+---
+
+## Semantic linking
+
+When enabled, the judge retrieves the top-K existing memories most semantically
+similar to each candidate and asks the LLM to suggest **links** between the new
+memory and existing ones. These links create a connected knowledge graph so
+recall naturally surfaces related context.
+
+**Linking never prevents a memory from being stored** — it is purely additive.
+If the LLM suggests no links for a remembered candidate, the memory is still
+saved; only the linking step is skipped.
+
+### How it works
+
+```
+proposal → retriever finds top-K related memories → LLM evaluates
+  → if "remember": LLM returns links → edges created in the knowledge graph
+```
+
+1. **Before** the LLM call, the judge runs Cortex's own semantic retriever
+   against the candidate text to find related existing memories (up to
+   `LINKS_TOP_K`, default 5).
+2. **During** the LLM call, the related memories are injected into the
+   candidate's data as a `related_memories` array with memory_id, content,
+   kind, and relevance score.
+3. **After** a successful `remember` decision, the judge creates edges in the
+   `edges` table for each suggested link using the existing edge creation
+   path (same as operator-approved sleep proposals).
+
+### Relation types
+
+| Relation | Meaning |
+|----------|---------|
+| `supports` | New memory reinforces / is consistent with existing |
+| `extends` | Adds detail, scope, or depth to existing |
+| `refines` | Corrects or narrows the existing scope |
+| `example_of` | Concrete instance of a broader concept |
+| `generalizes` | Broader rule or pattern covering the existing |
+| `prerequisite` | Should be understood before the existing |
+
+### Edge properties
+
+- **Weight**: `0.5` (deliberately lower than human/operator edges at ~0.8,
+  so automatic links carry less influence in recall scoring)
+- **Evidence type**: `auto_judge` in `edge_evidence` table
+- **Provenance**: every link is traceable to the exact review_id, proposal_id,
+  and LLM model that created it, stored in edge_evidence metadata_json
+- **Upsert**: if the same edge already exists, evidence_count is incremented
+  and weight is set to `max(existing, 0.5)`
+
+### Safety
+
+- Links are only created for `remember` actions — rejected, deferred, and
+  needs_context proposals never produce edges
+- Self-links (src_id == dst_id) are rejected at the DB CHECK constraint level
+- Invalid relation types are silently skipped
+- The LLM cannot invent memory_ids — it must use IDs from the
+  `related_memories` array that was retrieved from the real DB
+- All edges are reversible: deleting the edge or its evidence row removes the
+  link without affecting either memory
+
+### Example LLM response with links
+
+```json
+{
+  "decisions": [
+    {
+      "proposal_id": "abc-123",
+      "action": "remember",
+      "confidence": 0.88,
+      "reason": "Reusable deployment procedure detail.",
+      "links": [
+        {"memory_id": "mem-uuid-1", "relation": "extends", "rationale": "Adds verification step to existing backup procedure"},
+        {"memory_id": "mem-uuid-2", "relation": "supports", "rationale": "Consistent with the deployment checklist policy"}
+      ]
+    }
+  ]
+}
+```
+
+### Auditing links
+
+Links are stored in the standard `edges` and `edge_evidence` tables. Query
+them alongside review decisions:
+
+```bash
+# List auto-judge edges
+python3 -c "
+from cortex.store import CortexStore; from pathlib import Path
+store = CortexStore(Path.home() / '.hermes' / 'cortex' / 'cortex.db')
+rows = store._conn.execute('''
+    SELECT e.src_id, e.dst_id, e.relation, e.weight, e.evidence_count, e.last_reinforced_at
+    FROM edges e
+    JOIN edge_evidence ev ON ev.src_id=e.src_id AND ev.dst_id=e.dst_id AND ev.relation=e.relation
+    WHERE ev.evidence_type='auto_judge'
+    ORDER BY e.last_reinforced_at DESC LIMIT 10
+''').fetchall()
+for r in rows:
+    print(f'{r[0][:8]:8s} -> {r[1][:8]:8s}  relation={r[2]:15s}  weight={r[3]:.2f}  count={r[4]}')
+store.close()
+"
+```
+
+### Agent setup
+
+For agents configuring linking autonomously:
+
+1. Set `CORTEX_AUTO_JUDGE_LINKS_ENABLED=true` alongside the other auto-judge
+   env vars
+2. Optionally adjust `CORTEX_AUTO_JUDGE_LINKS_TOP_K` (1–20, default 5)
+3. Run a one-shot invocation and check the report:
+   - `report["linked"]` — count of remembered candidates that had link suggestions
+   - `report["links_suggested"]` — total link suggestions from the LLM
+   - `report["links_created"]` — edges actually created (may differ from
+     suggested if some target memory_ids don't exist or relations are invalid)
+4. Verify edges via the query above
 
 ---
 
