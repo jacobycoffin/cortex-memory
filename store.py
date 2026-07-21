@@ -3641,34 +3641,37 @@ class CortexStore:
         preconditions_json = _trace_json(precondition_values)
         systems_json = _trace_json(system_values)
         versions_json = _trace_json(version_values)
+        assessment = self.assess_storage_candidate(
+            content,
+            kind=kind,
+            context_mode=context_mode_value,
+            scope=scope_value,
+            entities=entity_values,
+            preconditions=precondition_values,
+            source_context=source_context_value,
+            applicable_systems=system_values,
+            applicable_versions=version_values,
+            source_type=source_type,
+            source_category=source_category,
+            extraction_method=extraction_method,
+            confidence=confidence,
+            importance=importance,
+            uniqueness=uniqueness,
+            volatility=volatility,
+            subject=subject,
+            predicate=predicate,
+            object_value=object_value,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            automatic=storage_policy == "automatic",
+        )
+        if assessment["decision"] == "ignored":
+            # Record the rejection in its own committed transaction. Doing this
+            # inside the creation transaction below would let the ValueError roll
+            # back the very decision row we just wrote (the ledger would be empty).
+            self.record_ignored_memory_candidate(assessment, session_id=session_id)
+            raise ValueError(str(assessment["reason"]))
         with self.transaction() as conn:
-            assessment = self.assess_storage_candidate(
-                content,
-                kind=kind,
-                context_mode=context_mode_value,
-                scope=scope_value,
-                entities=entity_values,
-                preconditions=precondition_values,
-                source_context=source_context_value,
-                applicable_systems=system_values,
-                applicable_versions=version_values,
-                source_type=source_type,
-                source_category=source_category,
-                extraction_method=extraction_method,
-                confidence=confidence,
-                importance=importance,
-                uniqueness=uniqueness,
-                volatility=volatility,
-                subject=subject,
-                predicate=predicate,
-                object_value=object_value,
-                valid_from=valid_from,
-                valid_to=valid_to,
-                automatic=storage_policy == "automatic",
-            )
-            if assessment["decision"] == "ignored":
-                self.record_ignored_memory_candidate(assessment, session_id=session_id)
-                raise ValueError(str(assessment["reason"]))
             active_recall_set = self._active_recall_set_tx(conn)
             if recall_eligibility is None:
                 eligibility_value = (
