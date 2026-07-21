@@ -72,28 +72,12 @@ class DashboardInterfaceTests(unittest.TestCase):
             "timeline-svg",
             "timeline-trail",
             "view-insights",
-            "view-review",
-            "review-inbox-total",
-            "review-filters",
-            "review-queue-list",
-            "review-focus",
-            "connection-review-guide",
-            "connection-review-count",
-            "connection-patterns",
-            "connection-auto-map",
-            "connection-map-receipt",
-            "connection-map-receipt-open",
-            "review-learning-signals",
-            "review-history-list",
-            "training-progress-value",
-            "training-progress-track",
-            "training-steps",
-            "training-next-action",
-            "policy-lab-heading",
-            "policy-compile",
-            "policy-candidate-list",
-            "active-policy-list",
-            "active-policy-total",
+            "view-auto-judge",
+            "aj-summary-metrics",
+            "aj-funnel",
+            "aj-decision-funnel",
+            "aj-recent-list",
+            "aj-edge-types",
             "recall-funnel",
             "view-cognition",
             "cognition-metrics",
@@ -230,7 +214,6 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("outcome-backed memory accuracy proxy", html)
         self.assertIn("function renderMetacognition", html)
         self.assertIn("function renderCalibrationChart", html)
-        self.assertIn("One clear decision at a time.", html)
         self.assertIn("Label real answers; Cortex handles the calibration.", html)
         self.assertIn("Use, verify, or abstain", html)
         self.assertIn("function renderKindGuide", html)
@@ -273,18 +256,13 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function matchingCopilotInterpretation", html)
         self.assertIn("Use this recommendation", html)
         self.assertIn("It cannot apply anything.", html)
-        self.assertIn("Show each approved connection on the memory map", html)
         self.assertIn("edgeMatchesHighlight", html)
         self.assertIn('typedPairs.has(pairKey(edge))', html)
         self.assertIn("Give this replay-supported pair a meaningful type", html)
         self.assertIn("function renderPolicyTraining", html)
         self.assertIn("function runPolicyAction", html)
         self.assertIn("/api/policy/action", html)
-        self.assertIn("Teach the examples. Approve the standard.", html)
-        self.assertIn("Proposed standards", html)
-        self.assertIn("Active policy versions", html)
         self.assertIn("What should happen?", html)
-        self.assertIn("What Cortex is learning from you", html)
         self.assertIn("Where should this apply?", html)
         self.assertIn("Only this memory", html)
         self.assertIn("exact_duplicates", html)
@@ -354,7 +332,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Source and evidence", html)
         self.assertIn("Raw record", html)
         self.assertIn("History and connections", html)
-        self.assertIn('data-review-filter="clarity"', html)
+        self.assertIn('"[data-review-filter]"', html)
         self.assertIn("Keep as readable memory", html)
         self.assertIn("Keep only as reference", html)
         self.assertIn("Rewrite clearly", html)
