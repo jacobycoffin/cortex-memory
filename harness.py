@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
+from .attribution import format_memory_receipt
 from .client import CortexMemory, RecallBatch
 from .cognition import plan_recall
 
@@ -34,15 +35,17 @@ def cortex_primary_system_prompt(
     memory_count: int | None = None,
     edge_count: int | None = None,
     memory_receipts: bool = True,
+    memory_receipt_url: str = "",
 ) -> str:
     """Return the portable policy block every Cortex-enabled harness should inject."""
 
     inventory = ""
     if memory_count is not None and edge_count is not None:
         inventory = f" Current Cortex inventory: {memory_count} memories and {edge_count} explained associations."
+    receipt_example = format_memory_receipt(["1234abcd"], memory_receipt_url)
     receipt_policy = (
         "- When Cortex evidence materially influences the answer, append exactly one final receipt line in this "
-        "format: `Cortex memory: M:1234abcd` (or up to three comma-separated current-turn IDs). List only memories "
+        f"format: `{receipt_example}` (or up to three comma-separated current-turn IDs). List only memories "
         "actually used; omit the line when none influenced the answer. The receipt is transparency, not proof, and "
         "must remain a single quiet line.\n"
         "- An automatically injected `Cortex evidence` block means Cortex was already checked for that turn, even "
@@ -151,10 +154,12 @@ class CortexHarnessAdapter:
         *,
         top_k: int = 6,
         token_budget: int = 700,
+        memory_receipt_url: str = "",
     ) -> None:
         self.memory = CortexMemory(db_path)
         self.top_k = max(1, min(20, int(top_k)))
         self.token_budget = max(120, min(4000, int(token_budget)))
+        self.memory_receipt_url = memory_receipt_url
 
     def system_prompt_block(self, *, tool_name: str = "cortex_memory") -> str:
         stats = self.memory.stats()
@@ -162,6 +167,7 @@ class CortexHarnessAdapter:
             tool_name=tool_name,
             memory_count=int(stats.get("memories", 0)),
             edge_count=int(stats.get("edges", 0)),
+            memory_receipt_url=self.memory_receipt_url,
         )
 
     def before_turn(

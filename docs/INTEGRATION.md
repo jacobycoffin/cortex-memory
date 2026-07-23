@@ -151,7 +151,10 @@ An immediate response such as `M:1234abcd was wrong` or `M:1234abcd was not
 relevant` applies individual feedback only to that listed memory. When several
 IDs are referenced ambiguously, Cortex does not guess. Replacement content still
 uses the version-preserving `correct` action. Set `memory_receipts: false` in the
-Cortex plugin configuration to disable the user-visible line.
+Cortex plugin configuration to disable the user-visible line. Set
+`memory_receipt_url` to the HTTPS Brain dashboard base URL to render each `M:…`
+label as a hyperlink. The authenticated dashboard preserves the requested memory
+through sign-in and opens its detail drawer directly.
 
 ## Tool and workflow integration
 

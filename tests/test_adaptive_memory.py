@@ -11,6 +11,7 @@ from tests._bootstrap import ROOT
 from cortex import CortexMemoryProvider
 from cortex.attribution import (
     attribution_score,
+    format_memory_receipt,
     memory_receipt_prefixes,
     referenced_memory_prefixes,
     strip_memory_receipt,
@@ -172,6 +173,41 @@ class AttributionAndWorkflowTests(unittest.TestCase):
                 "Cortex memory: M:12ab34cd, M:98ef76ab, M:11111111, M:22222222"
             ),
             [],
+        )
+
+    def test_linked_memory_receipts_remain_parseable_and_removable(self) -> None:
+        response = (
+            "The deployment uses the verified route.\n\n"
+            "Cortex memory: "
+            "[M:12ab34cd](https://brain.example/?memory=12ab34cd), "
+            "[M:98ef76ab](https://brain.example/?memory=98ef76ab)"
+        )
+        self.assertEqual(
+            memory_receipt_prefixes(response),
+            ["12ab34cd", "98ef76ab"],
+        )
+        self.assertEqual(
+            strip_memory_receipt(response),
+            "The deployment uses the verified route.",
+        )
+
+    def test_memory_receipt_formatter_builds_only_safe_https_links(self) -> None:
+        self.assertEqual(
+            format_memory_receipt(
+                ["12AB34CD00000000", "98ef76ab"],
+                "https://brain.example/dashboard?view=index",
+            ),
+            "Cortex memory: "
+            "[M:12ab34cd](https://brain.example/dashboard?view=index&memory=12ab34cd), "
+            "[M:98ef76ab](https://brain.example/dashboard?view=index&memory=98ef76ab)",
+        )
+        self.assertEqual(
+            format_memory_receipt(["12ab34cd"], "http://brain.example/"),
+            "Cortex memory: M:12ab34cd",
+        )
+        self.assertEqual(
+            format_memory_receipt(["12ab34cd"], "https://user:secret@brain.example/"),
+            "Cortex memory: M:12ab34cd",
         )
 
     def test_json_containing_word_error_is_not_automatically_a_failure(self) -> None:

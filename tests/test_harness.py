@@ -109,6 +109,15 @@ class CortexHarnessContractTests(unittest.TestCase):
         prompt = cortex_primary_system_prompt(memory_receipts=False)
         self.assertNotIn("Cortex memory: M:1234abcd", prompt)
 
+    def test_system_prompt_can_request_linked_receipts(self) -> None:
+        prompt = cortex_primary_system_prompt(
+            memory_receipt_url="https://brain.example/",
+        )
+        self.assertIn(
+            "Cortex memory: [M:1234abcd](https://brain.example/?memory=1234abcd)",
+            prompt,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

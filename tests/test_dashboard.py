@@ -218,6 +218,20 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderAttentionLearning", html)
         self.assertIn("function renderSleep", html)
         self.assertIn("function startSleepSession", html)
+
+    def test_memory_receipt_deep_link_opens_and_tracks_the_detail_drawer(self) -> None:
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertIn(
+            'deepLinkMemory: new URLSearchParams(window.location.search).get("memory")',
+            html,
+        )
+        self.assertIn("await selectMemory(memoryId, { updateUrl: false })", html)
+        self.assertIn(
+            "async function selectMemory(id, { updateUrl = true } = {})",
+            html,
+        )
+        self.assertIn('url.searchParams.set("memory", id)', html)
+        self.assertIn('url.searchParams.delete("memory")', html)
         self.assertIn("/api/sleep/start", html)
         self.assertIn("function renderTrendChart", html)
         self.assertIn("app.data.memory_timeline_by_day_kind", html)

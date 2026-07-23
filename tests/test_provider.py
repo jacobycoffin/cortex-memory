@@ -392,6 +392,52 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertIsNone(transformed)
 
+    def test_output_hook_canonicalizes_valid_receipt_as_dashboard_link(self) -> None:
+        self.provider._config["memory_receipt_url"] = "https://brain.example/"
+        memory_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        self.provider.prefetch(
+            "Which port does Cobalt launch traffic use?",
+            session_id="session-1",
+        )
+        response = f"The port is 8181.\n\nCortex memory: M:{memory_id[:8]}"
+
+        transformed = self.provider.transform_llm_output(
+            response,
+            session_id="session-1",
+        )
+
+        self.assertEqual(
+            transformed,
+            f"The port is 8181.\n\nCortex memory: "
+            f"[M:{memory_id[:8]}](https://brain.example/?memory={memory_id[:8]})",
+        )
+
+    def test_output_hook_adds_dashboard_link_when_model_omits_receipt(self) -> None:
+        self.provider._config["memory_receipt_url"] = "https://brain.example/"
+        memory_id, _ = self.provider._store.add_memory(
+            "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+            kind="semantic",
+            confidence=0.95,
+        )
+        query = "Tell me about my Proxmox server."
+        self.provider.prefetch(query, session_id="session-1")
+        original = "The r630 Proxmox server is the physical machine in your closet."
+
+        transformed = self.provider.transform_llm_output(
+            original,
+            session_id="session-1",
+        )
+
+        self.assertEqual(
+            transformed,
+            f"{original}\n\nCortex memory: "
+            f"[M:{memory_id[:8]}](https://brain.example/?memory={memory_id[:8]})",
+        )
+
     def test_register_uses_the_same_provider_for_memory_and_output_hook(self) -> None:
         class Context:
             provider = None

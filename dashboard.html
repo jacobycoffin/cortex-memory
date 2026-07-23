@@ -2500,6 +2500,7 @@
     const savedGraphPositions = parseJson(localStorage.getItem("cortex-graph-positions") || "{}", {});
     const app = {
       data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
+      deepLinkMemory: new URLSearchParams(window.location.search).get("memory"),
       healthReview: { kind: null, index: 0, pending: null, busy: false }, sleepRunId: null, sleepFilter: "all", metacognitionFilter: "all",
       review: { filter: "creation", index: 0, busy: false, preview: null, previewLoading: false, connectionPattern: "", lastConnection: null, creationReceipt: null, creationDrafts: {}, autoMap: localStorage.getItem("cortex-review-auto-map") !== "false", copilotByProposal: {} },
       recallSets: { data: null, preview: null, loaded: false, loading: false, busy: false },
@@ -2783,6 +2784,11 @@
         const generated = new Date(app.data.generated_at);
         document.getElementById("freshness").textContent = `Updated ${timeAgo(generated)}`;
         document.getElementById("sidebar-status").textContent = `${formatNum(app.data.stats.memories)} memories · ${formatNum(app.data.stats.edges)} connections`;
+        if (app.deepLinkMemory) {
+          const memoryId = app.deepLinkMemory;
+          app.deepLinkMemory = null;
+          await selectMemory(memoryId, { updateUrl: false });
+        }
         if (!silent && !app.firstLoad) showToast("Cortex data refreshed");
       } catch (error) {
         showToast(`Could not load Cortex: ${error.message}`, true);
@@ -4606,7 +4612,12 @@
       visible.forEach(memory=>host.append(renderMemoryCard(memory)));
     }
 
-    async function selectMemory(id) {
+    async function selectMemory(id, { updateUrl = true } = {}) {
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("memory", id);
+        window.history.replaceState({}, "", url);
+      }
       app.selectedId=id; openDrawer(); const body=document.getElementById("drawer-body");body.replaceChildren();body.append(emptyState("Loading memory…","Fetching provenance and connections."));
       try{const response=await fetch(`/api/memory?id=${encodeURIComponent(id)}`,{cache:"no-store"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const payload=await response.json(),memory=payload.memory,presentation=payload.presentation||{};body.replaceChildren();
         const role=memoryRole(memory),chips=el("div","chip-row");chips.append(el("span",`role-chip role-${role}`,roleLabel(role)),el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("span","chip",humanize(memory.kind)),el("span","chip",humanize(memory.source_category)));body.append(chips);
@@ -4642,7 +4653,7 @@
     }
 
     function openDrawer(){document.getElementById("drawer").classList.add("open");document.getElementById("drawer").setAttribute("aria-hidden","false");document.getElementById("drawer-backdrop").classList.add("open");document.body.style.overflow="hidden";}
-    function closeDrawer(){document.getElementById("drawer").classList.remove("open");document.getElementById("drawer").setAttribute("aria-hidden","true");document.getElementById("drawer-backdrop").classList.remove("open");document.body.style.overflow="";}
+    function closeDrawer({ updateUrl = true } = {}){if(updateUrl){const url=new URL(window.location.href);url.searchParams.delete("memory");window.history.replaceState({},"",url);}app.selectedId=null;document.getElementById("drawer").classList.remove("open");document.getElementById("drawer").setAttribute("aria-hidden","true");document.getElementById("drawer-backdrop").classList.remove("open");document.body.style.overflow="";}
 
     function metricCards(id, values, allowText=false){const host=document.getElementById(id);host.replaceChildren();values.forEach(([label,value,note,icon])=>{const card=el("div","panel metric-card"),top=el("div","metric-top");top.append(el("span","metric-label",label),el("span","metric-icon",icon||"•"));card.append(top,el("div","metric-value",typeof value==="number"?formatNum(value):String(value)),el("div","metric-note",note||""));host.append(card);});}
     function detailSection(title){const section=el("section","detail-section");section.append(el("h3","",title));return section;}

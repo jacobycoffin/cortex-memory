@@ -24,6 +24,7 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
 
 from .attribution import (
     attribution_score,
+    format_memory_receipt,
     memory_receipt_prefixes,
     referenced_memory_prefixes,
     strip_memory_receipt,
@@ -136,6 +137,7 @@ DEFAULTS: dict[str, Any] = {
     "query_cache_ttl_seconds": 45,
     "compact_context": True,
     "memory_receipts": True,
+    "memory_receipt_url": "",
     "attribution_threshold": 0.18,
     "regret_mode": "shadow",
     "consolidation_mode": "shadow",
@@ -381,6 +383,7 @@ class CortexMemoryProvider(MemoryProvider):
                 memory_count=int(stats["memories"]),
                 edge_count=int(stats["edges"]),
                 memory_receipts=_as_bool(self._config.get("memory_receipts", True)),
+                memory_receipt_url=str(self._config.get("memory_receipt_url", "")),
             )
         return (
             "# Cortex Memory\n"
@@ -948,10 +951,15 @@ class CortexMemoryProvider(MemoryProvider):
 
         supplied_prefixes = memory_receipt_prefixes(response_text)
         supplied_ids = _resolve_allowed_prefixes(supplied_prefixes, current_ids)
-        if supplied_prefixes and len(supplied_ids) == len(supplied_prefixes):
-            return None
-
         semantic_response = strip_memory_receipt(response_text)
+        if supplied_prefixes and len(supplied_ids) == len(supplied_prefixes):
+            receipt = format_memory_receipt(
+                supplied_ids,
+                str(self._config.get("memory_receipt_url", "")),
+            )
+            transformed = f"{semantic_response.rstrip()}\n\n{receipt}"
+            return None if transformed == response_text.rstrip() else transformed
+
         threshold = max(
             0.50,
             float(self._config.get("attribution_threshold", 0.18)),
@@ -967,8 +975,11 @@ class CortexMemoryProvider(MemoryProvider):
         if not receipt_ids:
             return semantic_response if supplied_prefixes else None
 
-        receipt = ", ".join(f"M:{memory_id[:8]}" for memory_id in receipt_ids)
-        return f"{semantic_response.rstrip()}\n\nCortex memory: {receipt}"
+        receipt = format_memory_receipt(
+            receipt_ids,
+            str(self._config.get("memory_receipt_url", "")),
+        )
+        return f"{semantic_response.rstrip()}\n\n{receipt}"
 
     def sync_turn(
         self,
@@ -1504,6 +1515,11 @@ class CortexMemoryProvider(MemoryProvider):
                 "description": "Show one compact memory-ID receipt when Cortex evidence influenced an answer",
                 "default": "true",
                 "choices": ["true", "false"],
+            },
+            {
+                "key": "memory_receipt_url",
+                "description": "Optional HTTPS Brain dashboard URL used to make receipt IDs clickable",
+                "default": "",
             },
             {
                 "key": "attribution_threshold",

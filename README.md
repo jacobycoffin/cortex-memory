@@ -364,6 +364,7 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `query_cache_ttl_seconds` | `45` | Reuse unchanged retrieval results briefly; `0` disables it |
 | `compact_context` | `true` | Use the lower-token evidence format |
 | `memory_receipts` | `true` | Add one quiet `Cortex memory: M:…` line only when recalled evidence influenced the answer |
+| `memory_receipt_url` | empty | Optional HTTPS Brain dashboard URL that turns each receipt ID into a direct memory-detail link |
 | `attribution_threshold` | `0.18` | Minimum evidence-use score for utility credit |
 | `regret_mode` | `shadow` | `off`, detect only, or `restore` archived matches |
 | `consolidation_mode` | `shadow` | `manual`, `shadow`, or reversible `apply` |

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from .semantics import feature_similarity
 
@@ -13,10 +14,16 @@ _ANCHOR = re.compile(
     r"(?:https?://\S+|(?:~?/)?(?:[\w.-]+/){1,}[\w./-]+|\b\d{2,}(?:\.\d+)?\b|\b[\w]+-[\w-]{3,}\b)",
     re.I,
 )
+_MEMORY_RECEIPT_ITEM = (
+    r"(?:M:[0-9a-f]{8}|"
+    r"\[M:[0-9a-f]{8}\]\(https?://[^\s)]+\))"
+)
 _MEMORY_RECEIPT_LINE = re.compile(
-    r"(?im)^[ \t]*Cortex memory:[ \t]*"
-    r"(M:[0-9a-f]{8}(?:[ \t]*,[ \t]*M:[0-9a-f]{8}){0,2})"
-    r"[ \t]*$"
+    r"(?im)^[ \t]*Cortex memory:[ \t]*("
+    + _MEMORY_RECEIPT_ITEM
+    + r"(?:[ \t]*,[ \t]*"
+    + _MEMORY_RECEIPT_ITEM
+    + r"){0,2})[ \t]*$"
 )
 _MEMORY_REFERENCE = re.compile(r"\bM:([0-9a-f]{8})\b", re.I)
 _STOP = {
@@ -71,6 +78,41 @@ def memory_receipt_prefixes(response: str) -> list[str]:
     return [item.casefold() for item in _MEMORY_REFERENCE.findall(matches[0].group(1))]
 
 
+def format_memory_receipt(memory_ids: list[str], dashboard_url: str = "") -> str:
+    """Return one bounded plain or dashboard-linked receipt line."""
+
+    prefixes: list[str] = []
+    for memory_id in memory_ids:
+        match = re.match(r"^([0-9a-fA-F]{8})(?:[0-9a-fA-F-]*)$", str(memory_id).strip())
+        if match:
+            prefix = match.group(1).casefold()
+            if prefix not in prefixes:
+                prefixes.append(prefix)
+        if len(prefixes) == 3:
+            break
+    base_url = _safe_dashboard_url(dashboard_url)
+    items: list[str] = []
+    for prefix in prefixes:
+        label = f"M:{prefix}"
+        if base_url:
+            parsed = urlsplit(base_url)
+            query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            query["memory"] = prefix
+            target = urlunsplit(
+                (
+                    parsed.scheme,
+                    parsed.netloc,
+                    parsed.path or "/",
+                    urlencode(query),
+                    parsed.fragment,
+                )
+            )
+            items.append(f"[{label}]({target})")
+        else:
+            items.append(label)
+    return f"Cortex memory: {', '.join(items)}" if items else ""
+
+
 def strip_memory_receipt(response: str) -> str:
     """Remove the receipt before semantic attribution, capture, and replay."""
 
@@ -81,6 +123,24 @@ def referenced_memory_prefixes(text: str) -> list[str]:
     """Extract unique receipt-style memory references from operator feedback."""
 
     return list(dict.fromkeys(item.casefold() for item in _MEMORY_REFERENCE.findall(text or "")))
+
+
+def _safe_dashboard_url(value: str) -> str:
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    try:
+        parsed = urlsplit(candidate)
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme != "https"
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return ""
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.query, parsed.fragment))
 
 
 def _tokens(text: str) -> set[str]:
