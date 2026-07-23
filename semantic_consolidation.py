@@ -78,7 +78,7 @@ def run_semantic_consolidation(
     config.validate()
 
     candidates = store.semantic_consolidation_candidates(
-        limit=SEMANTIC_CONSOLIDATION_BATCH_LIMIT
+        limit=min(SEMANTIC_CONSOLIDATION_BATCH_LIMIT, config.max_proposals)
     )
     report["selected"] = len(candidates)
     run_id = str(uuid.uuid4())

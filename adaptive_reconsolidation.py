@@ -71,7 +71,7 @@ def run_adaptive_reconsolidation(
     candidates = store.adaptive_reconsolidation_candidates(
         task_id=task_id,
         lability_minutes=window,
-        limit=_MAX_CANDIDATES,
+        limit=min(_MAX_CANDIDATES, config.max_proposals),
     )
     report["selected"] = len(candidates)
     run_id = str(uuid.uuid4())

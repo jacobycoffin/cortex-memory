@@ -53,7 +53,14 @@ def run_adaptive_pruning(
 ) -> dict[str, Any]:
     mode = "apply" if apply else "shadow"
     threshold = max(0.0, min(float(relevance_threshold), 1.0))
-    bounded = max(1, min(int(max_candidates), ADAPTIVE_PRUNING_MAX_CANDIDATES))
+    bounded = max(
+        1,
+        min(
+            int(max_candidates),
+            ADAPTIVE_PRUNING_MAX_CANDIDATES,
+            config.max_proposals,
+        ),
+    )
     report: dict[str, Any] = {
         "enabled": config.enabled,
         "policy_version": ADAPTIVE_PRUNING_POLICY_VERSION,

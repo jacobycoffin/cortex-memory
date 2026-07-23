@@ -69,7 +69,7 @@ def run_schema_formation(
     config.validate()
     candidates = store.schema_formation_candidates(
         minimum_cluster=minimum,
-        limit=_MAX_CLUSTERS,
+        limit=min(_MAX_CLUSTERS, config.max_proposals),
     )
     report["selected"] = len(candidates)
     run_id = str(uuid.uuid4())

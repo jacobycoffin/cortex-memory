@@ -91,7 +91,7 @@ def run_adaptive_weight_learning(
                 "current_weights": active["weights"],
             }
         )
-    eligible = eligible[:_MAX_TASK_TYPES]
+    eligible = eligible[: min(_MAX_TASK_TYPES, config.max_proposals)]
     report["eligible_task_types"] = len(eligible)
     run_id = str(uuid.uuid4())
     report["run_id"] = run_id
