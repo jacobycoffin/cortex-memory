@@ -30,8 +30,11 @@ printf 'Testing a clean install in %s\n' "$HERMES_HOME"
 for relative_path in \
   __init__.py \
   __main__.py \
+  adaptive_reconsolidation.py \
+  adaptive_weights.py \
   autojudge.py \
   benchmarking.py \
+  brain_mechanics.py \
   cli.py \
   client.py \
   dashboard.py \
@@ -44,7 +47,10 @@ for relative_path in \
   metacognition.py \
   plugin.yaml \
   refinery.py \
+  relevance_pruning.py \
   review_copilot.py \
+  schema_formation.py \
+  semantic_consolidation.py \
   sleep.py \
   store.py \
   benchmarks/core.py \
