@@ -12,6 +12,7 @@ from cortex import CortexMemoryProvider
 from cortex.attribution import (
     attribution_score,
     format_memory_receipt,
+    format_recall_trace_receipt,
     memory_receipt_prefixes,
     referenced_memory_prefixes,
     strip_memory_receipt,
@@ -208,6 +209,28 @@ class AttributionAndWorkflowTests(unittest.TestCase):
         self.assertEqual(
             format_memory_receipt(["12ab34cd"], "https://user:secret@brain.example/"),
             "Cortex memory: M:12ab34cd",
+        )
+
+    def test_turn_trace_receipt_reports_complete_recall_count_and_is_removable(self) -> None:
+        task_id = "12345678-abcd-4000-8000-123456789abc"
+        receipt = format_recall_trace_receipt(
+            4,
+            task_id,
+            "https://brain.example/?view=trust&memory=old",
+        )
+        self.assertEqual(
+            receipt,
+            "Cortex recall: "
+            "[4 memories recalled · View trace]"
+            f"(https://brain.example/?view=trust&trace={task_id})",
+        )
+        self.assertEqual(
+            strip_memory_receipt(f"Answer text.\n\n{receipt}"),
+            "Answer text.",
+        )
+        self.assertEqual(
+            format_recall_trace_receipt(1, task_id, "http://brain.example/"),
+            "Cortex recall: 1 memory recalled",
         )
 
     def test_json_containing_word_error_is_not_automatically_a_failure(self) -> None:

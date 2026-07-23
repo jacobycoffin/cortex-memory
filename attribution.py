@@ -25,6 +25,12 @@ _MEMORY_RECEIPT_LINE = re.compile(
     + _MEMORY_RECEIPT_ITEM
     + r"){0,2})[ \t]*$"
 )
+_TRACE_RECEIPT_LINE = re.compile(
+    r"(?im)^[ \t]*Cortex recall:[ \t]*"
+    r"(?:\d{1,3} memor(?:y|ies) recalled|"
+    r"\[\d{1,3} memor(?:y|ies) recalled · View trace\]\(https?://[^\s)]+\))"
+    r"[ \t]*$"
+)
 _MEMORY_REFERENCE = re.compile(r"\bM:([0-9a-f]{8})\b", re.I)
 _STOP = {
     "about", "after", "again", "also", "because", "before", "could", "from", "have", "into", "memory",
@@ -79,7 +85,7 @@ def memory_receipt_prefixes(response: str) -> list[str]:
 
 
 def format_memory_receipt(memory_ids: list[str], dashboard_url: str = "") -> str:
-    """Return one bounded plain or dashboard-linked receipt line."""
+    """Return one legacy bounded plain or dashboard-linked receipt line."""
 
     prefixes: list[str] = []
     for memory_id in memory_ids:
@@ -113,10 +119,43 @@ def format_memory_receipt(memory_ids: list[str], dashboard_url: str = "") -> str
     return f"Cortex memory: {', '.join(items)}" if items else ""
 
 
-def strip_memory_receipt(response: str) -> str:
-    """Remove the receipt before semantic attribution, capture, and replay."""
+def format_recall_trace_receipt(
+    recalled_count: int,
+    task_id: str,
+    dashboard_url: str = "",
+) -> str:
+    """Return one honest turn-level recall receipt with an optional trace link."""
 
-    return _MEMORY_RECEIPT_LINE.sub("", response or "").rstrip()
+    count = max(0, min(999, int(recalled_count)))
+    if count <= 0:
+        return ""
+    noun = "memory" if count == 1 else "memories"
+    label = f"{count} {noun} recalled"
+    base_url = _safe_dashboard_url(dashboard_url)
+    safe_task_id = str(task_id or "").strip()
+    if base_url and re.fullmatch(r"[0-9A-Za-z_-]{8,120}", safe_task_id):
+        parsed = urlsplit(base_url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.pop("memory", None)
+        query["trace"] = safe_task_id
+        target = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path or "/",
+                urlencode(query),
+                parsed.fragment,
+            )
+        )
+        return f"Cortex recall: [{label} · View trace]({target})"
+    return f"Cortex recall: {label}"
+
+
+def strip_memory_receipt(response: str) -> str:
+    """Remove legacy memory or turn-level recall receipts before learning."""
+
+    stripped = _MEMORY_RECEIPT_LINE.sub("", response or "")
+    return _TRACE_RECEIPT_LINE.sub("", stripped).rstrip()
 
 
 def referenced_memory_prefixes(text: str) -> list[str]:

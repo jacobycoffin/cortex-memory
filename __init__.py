@@ -24,7 +24,7 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
 
 from .attribution import (
     attribution_score,
-    format_memory_receipt,
+    format_recall_trace_receipt,
     memory_receipt_prefixes,
     referenced_memory_prefixes,
     strip_memory_receipt,
@@ -928,13 +928,14 @@ class CortexMemoryProvider(MemoryProvider):
         session_id: str = "",
         **_kwargs: Any,
     ) -> str | None:
-        """Mechanically add a conservative receipt when the model omits it.
+        """Mechanically add the complete current-turn recall-trace receipt.
 
         Hermes invokes this hook before delivering the response and before
-        ``sync_turn`` resolves the current prefetch.  Model-authored receipts
-        remain authoritative when every listed prefix belongs to the current
-        bounded recall set.  The fallback only emits IDs with strong answer
-        evidence, avoiding a claim that every retrieved item was used.
+        ``sync_turn`` resolves answer attribution. The receipt therefore states
+        only the observable number of memories injected into context and links
+        to the task trace, which is updated with attribution after turn sync.
+        Model-authored legacy ID receipts are replaced, never treated as a
+        complete accounting.
         """
 
         if (
@@ -945,41 +946,18 @@ class CortexMemoryProvider(MemoryProvider):
         ):
             return None
         sid = session_id or self._session_id or "default"
-        current_ids = self._peek_current_prefetch_ids(sid)
-        if not current_ids:
-            return None
-
-        supplied_prefixes = memory_receipt_prefixes(response_text)
-        supplied_ids = _resolve_allowed_prefixes(supplied_prefixes, current_ids)
+        current_ids, current_task = self._peek_latest_prefetch(sid)
         semantic_response = strip_memory_receipt(response_text)
-        if supplied_prefixes and len(supplied_ids) == len(supplied_prefixes):
-            receipt = format_memory_receipt(
-                supplied_ids,
-                str(self._config.get("memory_receipt_url", "")),
-            )
-            transformed = f"{semantic_response.rstrip()}\n\n{receipt}"
-            return None if transformed == response_text.rstrip() else transformed
+        if not current_ids:
+            return semantic_response if semantic_response != response_text.rstrip() else None
 
-        threshold = max(
-            0.50,
-            float(self._config.get("attribution_threshold", 0.18)),
-        )
-        order = {memory_id: index for index, memory_id in enumerate(current_ids)}
-        attributed: list[tuple[float, str]] = []
-        for memory in self._store.get_memories(current_ids):
-            score = attribution_score(memory, semantic_response)
-            if score >= threshold:
-                attributed.append((score, str(memory["id"])))
-        attributed.sort(key=lambda item: (-item[0], order.get(item[1], len(order))))
-        receipt_ids = [memory_id for _score, memory_id in attributed[:3]]
-        if not receipt_ids:
-            return semantic_response if supplied_prefixes else None
-
-        receipt = format_memory_receipt(
-            receipt_ids,
+        receipt = format_recall_trace_receipt(
+            len(current_ids),
+            current_task,
             str(self._config.get("memory_receipt_url", "")),
         )
-        return f"{semantic_response.rstrip()}\n\n{receipt}"
+        transformed = f"{semantic_response.rstrip()}\n\n{receipt}"
+        return None if transformed == response_text.rstrip() else transformed
 
     def sync_turn(
         self,
@@ -1128,7 +1106,9 @@ class CortexMemoryProvider(MemoryProvider):
         if current_tasks:
             self._completed_task_by_session[sid] = current_tasks
         self._used_by_session[sid] = used
-        self._receipt_ids_by_session[sid] = receipt_ids
+        # Keep attributed IDs available for later explicit M: prefix feedback,
+        # even though the chat receipt now links to the complete turn trace.
+        self._receipt_ids_by_session[sid] = used
         for current_task in current_tasks:
             self._reinforce_group(
                 used,
@@ -1512,13 +1492,13 @@ class CortexMemoryProvider(MemoryProvider):
             },
             {
                 "key": "memory_receipts",
-                "description": "Show one compact memory-ID receipt when Cortex evidence influenced an answer",
+                "description": "Show one compact count-and-trace receipt when Cortex injected memory evidence",
                 "default": "true",
                 "choices": ["true", "false"],
             },
             {
                 "key": "memory_receipt_url",
-                "description": "Optional HTTPS Brain dashboard URL used to make receipt IDs clickable",
+                "description": "Optional HTTPS Brain dashboard URL used for authenticated turn trace links",
                 "default": "",
             },
             {
@@ -1727,15 +1707,37 @@ class CortexMemoryProvider(MemoryProvider):
         return ids, task_ids
 
     def _peek_current_prefetch_ids(self, session_id: str) -> list[str]:
+        ids, _task_ids = self._peek_current_prefetches(session_id)
+        return ids
+
+    def _peek_latest_prefetch(self, session_id: str) -> tuple[list[str], str]:
+        """Return only the newest pending recall that produced this response."""
+
         with self._cache_lock:
             matches = list(self._pending_prefetches.get(session_id, ()))
-        return list(
+        if not matches:
+            return [], ""
+        memory_ids, task_id = matches[-1]
+        return list(dict.fromkeys(memory_ids)), str(task_id or "")
+
+    def _peek_current_prefetches(self, session_id: str) -> tuple[list[str], list[str]]:
+        with self._cache_lock:
+            matches = list(self._pending_prefetches.get(session_id, ()))
+        ids = list(
             dict.fromkeys(
                 memory_id
                 for memory_ids, _task_id in matches
                 for memory_id in memory_ids
             )
         )
+        task_ids = list(
+            dict.fromkeys(
+                task_id
+                for _memory_ids, task_id in matches
+                if task_id
+            )
+        )
+        return ids, task_ids
 
     def _record_prefetch_task(
         self,

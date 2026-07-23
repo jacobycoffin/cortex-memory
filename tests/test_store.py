@@ -50,6 +50,23 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual([row["decision"] for row in write_rows], ["updated", "created"])
         self.assertEqual(write_rows[0]["duplicate_memory_id"], memory_id)
 
+    def test_trace_memory_feedback_is_individual_and_audited(self) -> None:
+        memory_id, _ = self.store.add_memory("The receipt trace shows this memory.")
+        self.store.feedback([memory_id], "helpful", session_id="dashboard-trace:task-12345678")
+        self.store.record_operator_review(
+            item_type="memory_feedback",
+            item_key=f"trace:task-12345678:memory:{memory_id}",
+            action="helpful",
+            reason_code="trace_helpful",
+            actor="operator",
+            effect={"task_id": "task-12345678", "memory_id": memory_id},
+        )
+
+        labels = self.store.trace_memory_feedback("task-12345678")
+        self.assertEqual(labels[memory_id]["label"], "helpful")
+        self.assertEqual(labels[memory_id]["actor"], "operator")
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+
     def test_review_inbox_approves_explained_connections_and_undoes_them(self) -> None:
         first_id, _ = self.store.add_memory("The production API runs in the Cortex service.")
         second_id, _ = self.store.add_memory("Cortex production deploys through the Hermes host.")

@@ -496,7 +496,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._headers_only(HTTPStatus.OK, "application/json; charset=utf-8", 0)
                 return
             if parsed.path in {
-                "/api/snapshot", "/api/memory", "/api/sleep/status",
+                "/api/snapshot", "/api/memory", "/api/trace", "/api/sleep/status",
                 "/api/benchmark/status", "/api/evaluation/status",
                 "/api/refinery/summary", "/api/refinery/items", "/api/refinery/shadow",
                 "/api/recall-sets", "/api/auto-judge", "/api/scoring-health",
@@ -614,6 +614,24 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     return
                 self._json(HTTPStatus.OK, store.explain(memory_id))
                 return
+            if parsed.path == "/api/trace":
+                task_id = parse_qs(parsed.query).get("task_id", [""])[0][:120]
+                if not task_id:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
+                    return
+                traces = store.memory_traces(limit=1, task_id=task_id)
+                if not traces:
+                    self._json(HTTPStatus.NOT_FOUND, {"error": "recall trace not found"})
+                    return
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "trace": traces[0],
+                        "feedback": store.trace_memory_feedback(task_id),
+                        "review_writes_enabled": reviews_enabled,
+                    },
+                )
+                return
             if parsed.path == "/api/refinery/summary":
                 summary = store.refinery_summary()
                 summary["rebuild"] = refinery_rebuild_status()
@@ -668,6 +686,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 "/api/evaluation/start",
                 "/api/outcome/label",
                 "/api/outcome/undo",
+                "/api/memory/feedback",
                 "/api/experiment/control",
                 "/api/sleep/trial/start",
                 "/api/sleep/trial/undo",
@@ -699,7 +718,8 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 )
                 or parsed.path in {
                     "/api/sleep/start", "/api/benchmark/start", "/api/evaluation/start",
-                    "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
+                    "/api/outcome/label", "/api/outcome/undo", "/api/memory/feedback",
+                    "/api/experiment/control",
                     "/api/sleep/trial/start", "/api/sleep/trial/undo", "/api/summary/generate",
                     "/api/summary/review", "/api/prospective/create", "/api/prospective/update",
                     "/api/brain-mechanics/action",
@@ -724,6 +744,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 return
             if parsed.path in {"/api/outcome/label", "/api/outcome/undo"}:
                 self._outcome_feedback(undo=parsed.path.endswith("/undo"))
+                return
+            if parsed.path == "/api/memory/feedback":
+                self._memory_feedback()
                 return
             if parsed.path.startswith(("/api/experiment/", "/api/sleep/trial/", "/api/summary/", "/api/prospective/")):
                 self._research_action(parsed.path)
@@ -1263,6 +1286,81 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
             self._json(HTTPStatus.OK, {"result": result, "outcome_lab": store.outcome_lab_snapshot()})
+
+        def _memory_feedback(self) -> None:
+            if not reviews_enabled:
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": "memory feedback is disabled on this dashboard"},
+                )
+                return
+            payload = self._read_json()
+            if payload is None:
+                return
+            task_id = str(payload.get("task_id") or "")[:120]
+            memory_id = store.resolve_id(str(payload.get("memory_id") or ""))
+            label = str(payload.get("label") or "").casefold()
+            if not task_id or not memory_id:
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "task_id and a valid memory_id are required"},
+                )
+                return
+            if label not in {"helpful", "irrelevant", "wrong", "outdated"}:
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "label must be helpful, irrelevant, wrong, or outdated"},
+                )
+                return
+            traces = store.memory_traces(limit=1, task_id=task_id)
+            if not traces:
+                self._json(HTTPStatus.NOT_FOUND, {"error": "recall trace not found"})
+                return
+            selected_ids = {
+                str(candidate.get("memory_id") or "")
+                for candidate in traces[0].get("candidate_memories", [])
+                if bool(candidate.get("selected"))
+            }
+            if memory_id not in selected_ids:
+                self._json(
+                    HTTPStatus.BAD_REQUEST,
+                    {"error": "feedback is limited to memories injected for this trace"},
+                )
+                return
+            existing = store.trace_memory_feedback(task_id).get(memory_id)
+            if existing:
+                self._json(
+                    HTTPStatus.CONFLICT,
+                    {"error": f"this memory is already labeled {existing['label']} for the trace"},
+                )
+                return
+            actor = auth.username() if auth_enabled else "local-operator"
+            updated = store.feedback(
+                [memory_id],
+                label,
+                session_id=f"dashboard-trace:{task_id}",
+            )
+            if updated != 1:
+                self._json(HTTPStatus.CONFLICT, {"error": "memory feedback was not recorded"})
+                return
+            store.record_operator_review(
+                item_type="memory_feedback",
+                item_key=f"trace:{task_id}:memory:{memory_id}",
+                action=label,
+                reason_code=f"trace_{label}",
+                actor=actor,
+                effect={"task_id": task_id, "memory_id": memory_id, "label": label},
+                decision_scope="item_only",
+            )
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "success": True,
+                    "task_id": task_id,
+                    "memory_id": memory_id,
+                    "label": label,
+                },
+            )
 
         def _research_action(self, path: str) -> None:
             if not reviews_enabled:

@@ -121,11 +121,10 @@ Raw call count is demand, not truth. An adapter should never mark every retrieve
 
 ### User-visible memory receipts
 
-The Cortex-primary prompt asks the agent to append one exact, compact line only
-when recalled evidence materially influenced the answer. In Hermes, Cortex also
-uses the pre-delivery `transform_llm_output` hook as a conservative backstop:
-when the model omits the line, only memories with strong deterministic
-answer-use evidence are added mechanically.
+The Cortex-primary prompt reserves one exact, compact line for the runtime.
+When Hermes injected Cortex evidence, the pre-delivery `transform_llm_output`
+hook appends the number of memories actually placed in context and links to the
+complete task trace. The model neither chooses nor writes the receipt.
 
 Hermes currently loads exclusive memory providers through a collector that
 does not forward general plugin hooks. The Cortex adapter therefore installs
@@ -134,27 +133,26 @@ and routes it to the active provider by session ID. Provider shutdown removes
 its session routes, so repeated gateway sessions do not accumulate bound hook
 callbacks.
 
-```text
-Cortex memory: M:1234abcd, M:5678efab
+```markdown
+Cortex recall: [2 memories recalled · View trace](https://brain.example/?trace=task-id)
 ```
 
-The receipt is transparency, not a source citation or truth claim. It is limited
-to three current-turn IDs, omitted when memory did not influence the answer, and
-removed before Cortex performs semantic attribution, episode replay, or automatic
-capture. A valid receipt is also explicit answer-use evidence, but only when each
-prefix uniquely resolves inside the current turn's bounded recall set.
-Automatically injected `Cortex evidence` means prefetch already checked Cortex;
-the agent must not claim it skipped Cortex merely because it did not make an
-explicit search tool call.
+The receipt is transparency, not a source citation or truth claim. “Recalled”
+means the memory was injected into the model context; after turn sync, the trace
+separately shows which candidates were considered, which were injected, and which
+had observable answer-use attribution. The trace also preserves the selection
+reason and score for each candidate. Receipts are removed before semantic
+attribution, episode replay, and automatic capture. Automatically injected
+`Cortex evidence` means prefetch already checked Cortex; the agent must not claim
+it skipped Cortex merely because it did not make an explicit search tool call.
 
-An immediate response such as `M:1234abcd was wrong` or `M:1234abcd was not
-relevant` applies individual feedback only to that listed memory. When several
-IDs are referenced ambiguously, Cortex does not guess. Replacement content still
-uses the version-preserving `correct` action. Set `memory_receipts: false` in the
-Cortex plugin configuration to disable the user-visible line. Set
-`memory_receipt_url` to the HTTPS Brain dashboard base URL to render each `M:…`
-label as a hyperlink. The authenticated dashboard preserves the requested memory
-through sign-in and opens its detail drawer directly.
+The authenticated trace drawer supports audited per-memory Helpful, Irrelevant,
+Wrong, and Outdated feedback. Individual `M:…` references from the trace remain
+valid for conversational feedback; Cortex does not guess when the target is
+unclear. Replacement content still uses the version-preserving `correct` action.
+Set `memory_receipts: false` to disable the user-visible line, or set
+`memory_receipt_url` to the HTTPS Brain dashboard base URL to enable the trace
+link. The requested trace survives sign-in.
 
 ## Tool and workflow integration
 

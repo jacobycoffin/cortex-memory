@@ -329,7 +329,7 @@ class CortexProviderTests(unittest.TestCase):
             all("Cortex memory:" not in str(item["content"]) for item in proposals)
         )
 
-    def test_output_hook_mechanically_adds_a_high_confidence_receipt(self) -> None:
+    def test_output_hook_mechanically_adds_a_complete_recall_count(self) -> None:
         memory_id, _ = self.provider._store.add_memory(
             "The r630 Proxmox server is the physical machine in Jacoby's closet.",
             kind="semantic",
@@ -349,12 +349,12 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            f"{original}\n\nCortex memory: M:{memory_id[:8]}",
+            f"{original}\n\nCortex recall: 1 memory recalled",
         )
         self.provider.sync_turn(query, transformed, session_id="session-1")
         self.assertEqual(self.provider._receipt_ids_by_session["session-1"], [memory_id])
 
-    def test_output_hook_does_not_claim_unrelated_retrieval_was_used(self) -> None:
+    def test_output_hook_reports_recall_without_claiming_answer_use(self) -> None:
         memory_id, _ = self.provider._store.add_memory(
             "Cobalt launch traffic uses port 8181.",
             kind="operational",
@@ -371,29 +371,13 @@ class CortexProviderTests(unittest.TestCase):
             session_id="session-1",
         )
 
-        self.assertIsNone(transformed)
-
-    def test_output_hook_preserves_one_valid_model_receipt_without_duplication(self) -> None:
-        memory_id, _ = self.provider._store.add_memory(
-            "Cobalt launch traffic uses port 8181.",
-            kind="operational",
-            confidence=0.95,
-        )
-        self.provider.prefetch(
-            "Which port does Cobalt launch traffic use?",
-            session_id="session-1",
-        )
-        response = f"The port is 8181.\n\nCortex memory: M:{memory_id[:8]}"
-
-        transformed = self.provider.transform_llm_output(
-            response,
-            session_id="session-1",
+        self.assertEqual(
+            transformed,
+            "All currently monitored services are healthy.\n\n"
+            "Cortex recall: 1 memory recalled",
         )
 
-        self.assertIsNone(transformed)
-
-    def test_output_hook_canonicalizes_valid_receipt_as_dashboard_link(self) -> None:
-        self.provider._config["memory_receipt_url"] = "https://brain.example/"
+    def test_output_hook_replaces_model_authored_id_receipt(self) -> None:
         memory_id, _ = self.provider._store.add_memory(
             "Cobalt launch traffic uses port 8181.",
             kind="operational",
@@ -412,8 +396,33 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            f"The port is 8181.\n\nCortex memory: "
-            f"[M:{memory_id[:8]}](https://brain.example/?memory={memory_id[:8]})",
+            "The port is 8181.\n\nCortex recall: 1 memory recalled",
+        )
+
+    def test_output_hook_replaces_legacy_receipt_with_trace_link(self) -> None:
+        self.provider._config["memory_receipt_url"] = "https://brain.example/"
+        memory_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        self.provider.prefetch(
+            "Which port does Cobalt launch traffic use?",
+            session_id="session-1",
+        )
+        _ids, task_ids = self.provider._peek_current_prefetches("session-1")
+        response = f"The port is 8181.\n\nCortex memory: M:{memory_id[:8]}"
+
+        transformed = self.provider.transform_llm_output(
+            response,
+            session_id="session-1",
+        )
+
+        self.assertEqual(
+            transformed,
+            "The port is 8181.\n\nCortex recall: "
+            "[1 memory recalled · View trace]"
+            f"(https://brain.example/?trace={task_ids[-1]})",
         )
 
     def test_output_hook_adds_dashboard_link_when_model_omits_receipt(self) -> None:
@@ -425,6 +434,7 @@ class CortexProviderTests(unittest.TestCase):
         )
         query = "Tell me about my Proxmox server."
         self.provider.prefetch(query, session_id="session-1")
+        _ids, task_ids = self.provider._peek_current_prefetches("session-1")
         original = "The r630 Proxmox server is the physical machine in your closet."
 
         transformed = self.provider.transform_llm_output(
@@ -434,9 +444,38 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            f"{original}\n\nCortex memory: "
-            f"[M:{memory_id[:8]}](https://brain.example/?memory={memory_id[:8]})",
+            f"{original}\n\nCortex recall: "
+            "[1 memory recalled · View trace]"
+            f"(https://brain.example/?trace={task_ids[-1]})",
         )
+
+    def test_output_hook_scopes_receipt_to_newest_pending_recall(self) -> None:
+        self.provider._config["memory_receipt_url"] = "https://brain.example/"
+        with self.provider._cache_lock:
+            self.provider._pending_prefetches["session-1"] = [
+                (["old-memory"], "old-task-12345678"),
+                (["new-memory", "new-memory", "second-memory"], "new-task-12345678"),
+            ]
+
+        transformed = self.provider.transform_llm_output(
+            "The current answer.",
+            session_id="session-1",
+        )
+
+        self.assertEqual(
+            transformed,
+            "The current answer.\n\nCortex recall: "
+            "[2 memories recalled · View trace]"
+            "(https://brain.example/?trace=new-task-12345678)",
+        )
+
+    def test_output_hook_strips_spoofed_receipt_without_current_recall(self) -> None:
+        transformed = self.provider.transform_llm_output(
+            "No memory was recalled.\n\nCortex recall: 9 memories recalled",
+            session_id="session-1",
+        )
+
+        self.assertEqual(transformed, "No memory was recalled.")
 
     def test_register_uses_the_same_provider_for_memory_and_output_hook(self) -> None:
         class Context:
@@ -500,9 +539,7 @@ class CortexProviderTests(unittest.TestCase):
                 model="deepseek-v4-flash",
                 platform="telegram",
             )
-            self.assertTrue(
-                transformed.endswith(f"Cortex memory: M:{memory_id[:8]}")
-            )
+            self.assertTrue(transformed.endswith("Cortex recall: 1 memory recalled"))
             provider.shutdown()
             self.assertIsNone(
                 callbacks[0](

@@ -371,6 +371,26 @@
     .connection strong { display: block; color: var(--text); font-size: .7rem; }
     .connection p { margin: 4px 0 0; color: var(--text-soft); line-height: 1.45; }
     .connection span { display: block; margin-top: 4px; color: var(--muted); font-size: .58rem; }
+    .trace-summary { display: grid; gap: 13px; padding-bottom: 18px; }
+    .trace-summary h2 { font-size: 1.05rem; line-height: 1.35; letter-spacing: -.02em; }
+    .trace-summary p { color: var(--text-soft); font-size: .74rem; line-height: 1.55; }
+    .trace-counts { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 8px; }
+    .trace-count { padding: 11px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); text-align: center; }
+    .trace-count strong { display: block; font-size: 1rem; }
+    .trace-count span { display: block; margin-top: 3px; color: var(--muted); font-size: .57rem; text-transform: uppercase; letter-spacing: .06em; }
+    .trace-memory { padding: 14px 0; border-top: 1px solid var(--border); }
+    .trace-memory-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+    .trace-memory-head strong { color: var(--text); font-size: .72rem; line-height: 1.45; }
+    .trace-memory-status { color: var(--muted); font-size: .59rem; white-space: nowrap; }
+    .trace-memory p { margin-top: 7px; color: var(--text-soft); font-size: .7rem; line-height: 1.5; }
+    .trace-reason { color: var(--muted) !important; font-size: .61rem !important; }
+    .trace-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 11px; }
+    .trace-actions button { border: 1px solid var(--border); border-radius: 999px; padding: 6px 9px; background: var(--surface); color: var(--text-soft); font: 650 .58rem/1 var(--sans); cursor: pointer; }
+    .trace-actions button:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); }
+    .trace-actions button.negative { color: var(--red); }
+    .trace-actions button.active { border-color: var(--accent); color: var(--accent); background: color-mix(in srgb,var(--accent) 9%,var(--surface)); }
+    .trace-actions button:disabled { cursor: default; opacity: .58; }
+    .trace-boundary { margin-top: 15px; padding: 11px 12px; border: 1px solid var(--border); border-radius: 10px; color: var(--muted); background: var(--surface-2); font-size: .62rem; line-height: 1.5; }
     .toast { position: fixed; z-index: 120; left: 50%; bottom: 24px; transform: translate(-50%,20px); opacity: 0; pointer-events: none; color: #fff; background: #222735; border: 1px solid #363e50; border-radius: 10px; padding: 10px 14px; box-shadow: var(--shadow); font-size: .72rem; transition: opacity .2s, transform .2s; }
     .toast.show { opacity: 1; transform: translate(-50%,0); }
     .loading-screen { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; background: var(--bg); transition: opacity .35s; }
@@ -2366,7 +2386,7 @@
         <section class="view" id="view-trust" aria-labelledby="trust-heading">
           <div class="page-heading"><div><div class="eyebrow">Teach doubt with real outcomes</div><h1 id="trust-heading">Trust</h1><p>The practical question is simple: did recalled memory help, need verification, or make the answer worse?</p></div></div>
           <div class="panel metacognition-banner">
-            <div><div class="eyebrow">Safe learning phase</div><h2>Label real answers; Cortex handles the calibration.</h2><p>Memory-bearing answers end with a quiet <code>Cortex memory: M:…</code> receipt. Reply that one listed ID was wrong, outdated, or not relevant to target that memory, or use the audited answer review below. Shadow mode observes without withholding memory.</p><div class="review-actions"><button class="primary-btn" type="button" data-go="review">Review an answer</button></div></div>
+            <div><div class="eyebrow">Safe learning phase</div><h2>Label real answers; Cortex handles the calibration.</h2><p>Memory-bearing answers end with one quiet recall-count link. Open it to see every candidate, what entered Kaya’s context, what was later attributed to the answer, and to label one memory Helpful, Irrelevant, Wrong, or Outdated. Shadow mode observes without withholding memory.</p><div class="review-actions"><button class="primary-btn" type="button" data-go="review">Review an answer</button></div></div>
             <div class="monitor-mode" id="metacognition-mode"><strong>Shadow mode</strong><span>Observing only</span></div>
           </div>
           <div class="metric-grid" id="metacognition-metrics"></div>
@@ -2476,7 +2496,7 @@
   </div>
 
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
-  <aside class="drawer" id="drawer" aria-label="Memory details" aria-hidden="true"><div class="drawer-head"><strong>Memory detail</strong><button class="icon-btn" id="drawer-close" type="button" aria-label="Close memory detail">×</button></div><div class="drawer-body" id="drawer-body"></div></aside>
+  <aside class="drawer" id="drawer" aria-label="Cortex detail" aria-hidden="true"><div class="drawer-head"><strong id="drawer-title">Memory detail</strong><button class="icon-btn" id="drawer-close" type="button" aria-label="Close detail">×</button></div><div class="drawer-body" id="drawer-body"></div></aside>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <section class="account-gate" id="account-gate" hidden aria-labelledby="account-title">
     <div class="auth-card account-card">
@@ -2499,8 +2519,9 @@
     "use strict";
     const savedGraphPositions = parseJson(localStorage.getItem("cortex-graph-positions") || "{}", {});
     const app = {
-      data: null, view: "overview", selectedId: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
+      data: null, view: "overview", selectedId: null, selectedTrace: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
       deepLinkMemory: new URLSearchParams(window.location.search).get("memory"),
+      deepLinkTrace: new URLSearchParams(window.location.search).get("trace"),
       healthReview: { kind: null, index: 0, pending: null, busy: false }, sleepRunId: null, sleepFilter: "all", metacognitionFilter: "all",
       review: { filter: "creation", index: 0, busy: false, preview: null, previewLoading: false, connectionPattern: "", lastConnection: null, creationReceipt: null, creationDrafts: {}, autoMap: localStorage.getItem("cortex-review-auto-map") !== "false", copilotByProposal: {} },
       recallSets: { data: null, preview: null, loaded: false, loading: false, busy: false },
@@ -2784,7 +2805,11 @@
         const generated = new Date(app.data.generated_at);
         document.getElementById("freshness").textContent = `Updated ${timeAgo(generated)}`;
         document.getElementById("sidebar-status").textContent = `${formatNum(app.data.stats.memories)} memories · ${formatNum(app.data.stats.edges)} connections`;
-        if (app.deepLinkMemory) {
+        if (app.deepLinkTrace) {
+          const taskId = app.deepLinkTrace;
+          app.deepLinkTrace = null;
+          await selectTrace(taskId, { updateUrl: false });
+        } else if (app.deepLinkMemory) {
           const memoryId = app.deepLinkMemory;
           app.deepLinkMemory = null;
           await selectMemory(memoryId, { updateUrl: false });
@@ -4612,13 +4637,56 @@
       visible.forEach(memory=>host.append(renderMemoryCard(memory)));
     }
 
+    async function selectTrace(taskId, { updateUrl = true } = {}) {
+      if (updateUrl) {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("memory");
+        url.searchParams.set("trace", taskId);
+        window.history.replaceState({}, "", url);
+      }
+      app.selectedId=null;app.selectedTrace=taskId;openDrawer("Recall trace");const body=document.getElementById("drawer-body");body.replaceChildren();body.append(emptyState("Loading recall trace…","Fetching the complete retrieval and attribution record."));
+      try{
+        const response=await fetch(`/api/trace?task_id=${encodeURIComponent(taskId)}`,{cache:"no-store"});
+        if(!response.ok)throw new Error(`HTTP ${response.status}`);
+        const payload=await response.json(),trace=payload.trace||{},candidates=trace.candidate_memories||[],influence=new Map((trace.influence||[]).map(item=>[item.memory_id,item])),selected=candidates.filter(item=>item.selected),attributed=selected.filter(item=>influence.get(item.memory_id)?.influenced),feedback=payload.feedback||{};
+        body.replaceChildren();
+        const summary=el("section","trace-summary"),chips=el("div","chip-row");
+        chips.append(el("span","chip",humanize(trace.recall_mode||"unknown")+" recall"),el("span","chip",humanize(trace.outcome||"pending")),el("span","chip",timeAgo(new Date(trace.created_at))));
+        summary.append(chips,el("h2","",truncate(cleanMemory(trace.goal||"Private memory-bearing task"),190)),el("p","",trace.retrieval_reason||"Cortex ran bounded retrieval for this task."));
+        const counts=el("div","trace-counts");
+        [[candidates.length,"Considered"],[selected.length,"Recalled"],[attributed.length,"Attributed"]].forEach(([value,label])=>{const item=el("div","trace-count");item.append(el("strong","",formatNum(value)),el("span","",label));counts.append(item);});
+        summary.append(counts);body.append(summary);
+        const list=detailSection("Memory-by-memory evidence");
+        if(!candidates.length)list.append(el("p","small-meta","Cortex recorded no memory candidates for this task."));
+        candidates.forEach(candidate=>{
+          const item=el("article","trace-memory"),used=influence.get(candidate.memory_id),status=used?.influenced?"Attributed to answer":candidate.selected?"Recalled; no use evidence":"Considered; not recalled",head=el("div","trace-memory-head"),open=el("button","ghost-btn",`Open M:${String(candidate.memory_id||"").slice(0,8)} ↗`);
+          open.type="button";open.addEventListener("click",()=>selectMemory(candidate.memory_id));head.append(el("strong","",`${humanize(candidate.kind||"memory")} · score ${Number(candidate.score||0).toFixed(3)}`),el("span","trace-memory-status",status));item.append(head,el("p","",truncate(cleanMemory(candidate.content_preview||candidate.memory_id||"Memory"),210)),el("p","trace-reason",used?.reason||candidate.reason||"No selection reason was recorded."),open);
+          if(candidate.selected){
+            const actions=el("div","trace-actions"),existing=feedback[candidate.memory_id]?.label||"";
+            [["helpful","Helpful"],["irrelevant","Irrelevant"],["wrong","Wrong"],["outdated","Outdated"]].forEach(([label,text])=>{const button=el("button",`${["wrong","outdated"].includes(label)?"negative ":""}${existing===label?"active":""}`,existing===label?`${text} ✓`:text);button.type="button";button.disabled=Boolean(existing)||payload.review_writes_enabled!==true;button.addEventListener("click",()=>submitTraceMemoryFeedback(taskId,candidate.memory_id,label,actions));actions.append(button);});
+            if(payload.review_writes_enabled!==true&&!existing)actions.append(el("span","small-meta","Feedback is read-only on this host."));
+            item.append(actions);
+          }
+          list.append(item);
+        });
+        body.append(list,el("div","trace-boundary","Recalled means Cortex injected the memory into Kaya’s context. Attributed means distinctive answer evidence matched it after the turn. Neither proves that memory caused the answer."));
+      }catch(error){body.replaceChildren();body.append(emptyState("Could not load this recall trace",error.message));}
+    }
+
+    async function submitTraceMemoryFeedback(taskId,memoryId,label,actions){
+      if(["wrong","outdated"].includes(label)&&!window.confirm(`Mark this memory ${label} for this recall trace? This records audited negative feedback.`))return;
+      actions.querySelectorAll("button").forEach(button=>button.disabled=true);
+      try{await authRequest("/api/memory/feedback",{task_id:taskId,memory_id:memoryId,label});showToast(`${humanize(label)} memory feedback recorded.`);await selectTrace(taskId,{updateUrl:false});}catch(error){showToast(`Could not record memory feedback: ${error.message}`,true);actions.querySelectorAll("button").forEach(button=>button.disabled=false);}
+    }
+
     async function selectMemory(id, { updateUrl = true } = {}) {
       if (updateUrl) {
         const url = new URL(window.location.href);
+        url.searchParams.delete("trace");
         url.searchParams.set("memory", id);
         window.history.replaceState({}, "", url);
       }
-      app.selectedId=id; openDrawer(); const body=document.getElementById("drawer-body");body.replaceChildren();body.append(emptyState("Loading memory…","Fetching provenance and connections."));
+      app.selectedTrace=null;app.selectedId=id; openDrawer("Memory detail"); const body=document.getElementById("drawer-body");body.replaceChildren();body.append(emptyState("Loading memory…","Fetching provenance and connections."));
       try{const response=await fetch(`/api/memory?id=${encodeURIComponent(id)}`,{cache:"no-store"});if(!response.ok)throw new Error(`HTTP ${response.status}`);const payload=await response.json(),memory=payload.memory,presentation=payload.presentation||{};body.replaceChildren();
         const role=memoryRole(memory),chips=el("div","chip-row");chips.append(el("span",`role-chip role-${role}`,roleLabel(role)),el("span",`status-chip ${memory.state}`,humanize(memory.state)),el("span","chip",humanize(memory.kind)),el("span","chip",humanize(memory.source_category)));body.append(chips);
         const remember=detailSection(role==="reference"?"What this evidence contains":"What Kaya remembers");
@@ -4652,8 +4720,8 @@
       }catch(error){body.replaceChildren();body.append(emptyState("Could not load this memory",error.message));}
     }
 
-    function openDrawer(){document.getElementById("drawer").classList.add("open");document.getElementById("drawer").setAttribute("aria-hidden","false");document.getElementById("drawer-backdrop").classList.add("open");document.body.style.overflow="hidden";}
-    function closeDrawer({ updateUrl = true } = {}){if(updateUrl){const url=new URL(window.location.href);url.searchParams.delete("memory");window.history.replaceState({},"",url);}app.selectedId=null;document.getElementById("drawer").classList.remove("open");document.getElementById("drawer").setAttribute("aria-hidden","true");document.getElementById("drawer-backdrop").classList.remove("open");document.body.style.overflow="";}
+    function openDrawer(title="Memory detail"){document.getElementById("drawer-title").textContent=title;document.getElementById("drawer").classList.add("open");document.getElementById("drawer").setAttribute("aria-hidden","false");document.getElementById("drawer-backdrop").classList.add("open");document.body.style.overflow="hidden";}
+    function closeDrawer({ updateUrl = true } = {}){if(updateUrl){const url=new URL(window.location.href);url.searchParams.delete("memory");url.searchParams.delete("trace");window.history.replaceState({},"",url);}app.selectedId=null;app.selectedTrace=null;document.getElementById("drawer").classList.remove("open");document.getElementById("drawer").setAttribute("aria-hidden","true");document.getElementById("drawer-backdrop").classList.remove("open");document.body.style.overflow="";}
 
     function metricCards(id, values, allowText=false){const host=document.getElementById(id);host.replaceChildren();values.forEach(([label,value,note,icon])=>{const card=el("div","panel metric-card"),top=el("div","metric-top");top.append(el("span","metric-label",label),el("span","metric-icon",icon||"•"));card.append(top,el("div","metric-value",typeof value==="number"?formatNum(value):String(value)),el("div","metric-note",note||""));host.append(card);});}
     function detailSection(title){const section=el("section","detail-section");section.append(el("h3","",title));return section;}

@@ -7907,19 +7907,48 @@ class CortexStore:
     def feedback(self, memory_ids: Sequence[str], outcome: str, *, session_id: str | None = None) -> int:
         event = {
             "useful": "used",
+            "helpful": "helpful",
             "successful": "successful",
             "confirmed": "confirmed",
             "irrelevant": "irrelevant",
             "wrong": "wrong",
+            "outdated": "wrong",
         }.get(outcome)
         if not event:
-            raise ValueError("outcome must be useful, successful, confirmed, irrelevant, or wrong")
+            raise ValueError(
+                "outcome must be useful, helpful, successful, confirmed, irrelevant, wrong, or outdated"
+            )
         count = 0
         for memory_id in dict.fromkeys(memory_ids):
             if self.get_memory(memory_id):
                 self.log_access(memory_id, event, session_id=session_id)
                 count += 1
         return count
+
+    def trace_memory_feedback(self, task_id: str) -> dict[str, dict[str, Any]]:
+        """Return the latest audited per-memory label for one recall trace."""
+
+        prefix = f"trace:{normalize_text(task_id)[:120]}:memory:"
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT item_key,action,reason_code,actor,created_at
+                   FROM operator_review_decisions
+                   WHERE item_type='memory_feedback' AND item_key LIKE ?
+                   ORDER BY created_at,review_id""",
+                (f"{prefix}%",),
+            ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            item_key = str(row["item_key"])
+            memory_id = item_key[len(prefix) :]
+            if memory_id:
+                result[memory_id] = {
+                    "label": str(row["action"]),
+                    "reason_code": str(row["reason_code"]),
+                    "actor": str(row["actor"]),
+                    "created_at": str(row["created_at"]),
+                }
+        return result
 
     def create_usage_batch(
         self,

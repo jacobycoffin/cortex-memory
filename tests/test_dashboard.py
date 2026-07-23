@@ -232,6 +232,25 @@ class DashboardInterfaceTests(unittest.TestCase):
         )
         self.assertIn('url.searchParams.set("memory", id)', html)
         self.assertIn('url.searchParams.delete("memory")', html)
+        self.assertIn(
+            'deepLinkTrace: new URLSearchParams(window.location.search).get("trace")',
+            html,
+        )
+        self.assertIn("await selectTrace(taskId, { updateUrl: false })", html)
+        self.assertIn(
+            "async function selectTrace(taskId, { updateUrl = true } = {})",
+            html,
+        )
+        self.assertIn('url.searchParams.set("trace", taskId)', html)
+        self.assertIn("/api/trace?task_id=", html)
+        self.assertIn("/api/memory/feedback", html)
+        self.assertIn("Memory-by-memory evidence", html)
+        self.assertIn("Attributed to answer", html)
+        self.assertIn("Recalled; no use evidence", html)
+        self.assertIn("Considered; not recalled", html)
+        self.assertIn("Helpful", html)
+        self.assertIn("Irrelevant", html)
+        self.assertIn("Outdated", html)
         self.assertIn("/api/sleep/start", html)
         self.assertIn("function renderTrendChart", html)
         self.assertIn("app.data.memory_timeline_by_day_kind", html)
@@ -415,6 +434,9 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("apply_refinery_action", server)
         self.assertIn("undo_refinery_action", server)
         self.assertIn("rebuild_presentations", server)
+        self.assertIn('parsed.path == "/api/trace"', server)
+        self.assertIn('"/api/memory/feedback"', server)
+        self.assertIn("trace_memory_feedback", server)
         # Mutating refinery routes sit behind the same reviews_enabled gate;
         # the read-only preview is dispatched before it.
         preview_index = server.index('parsed.path == "/api/refinery/preview"')

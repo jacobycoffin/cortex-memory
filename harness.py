@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from .attribution import format_memory_receipt
 from .client import CortexMemory, RecallBatch
 from .cognition import plan_recall
 
@@ -42,18 +41,16 @@ def cortex_primary_system_prompt(
     inventory = ""
     if memory_count is not None and edge_count is not None:
         inventory = f" Current Cortex inventory: {memory_count} memories and {edge_count} explained associations."
-    receipt_example = format_memory_receipt(["1234abcd"], memory_receipt_url)
     receipt_policy = (
-        "- When Cortex evidence materially influences the answer, append exactly one final receipt line in this "
-        f"format: `{receipt_example}` (or up to three comma-separated current-turn IDs). List only memories "
-        "actually used; omit the line when none influenced the answer. The receipt is transparency, not proof, and "
-        "must remain a single quiet line.\n"
+        "- The Cortex runtime appends one quiet turn-level recall receipt when it injected memory evidence. Do not "
+        "write, imitate, or alter that receipt yourself. Its trace is the complete oversight record; retrieval and "
+        "attribution are observational evidence, not proof that memory caused the answer.\n"
         "- An automatically injected `Cortex evidence` block means Cortex was already checked for that turn, even "
         f"if you did not call `{tool_name}` yourself. Do not claim Cortex was skipped when that block was present; "
         "use it first, then use live tools when fresh state is useful.\n"
-        f"- If the user says a listed ID was wrong, outdated, or not relevant, send `{tool_name}` feedback for only "
-        "that ID. If they provide replacement text, use the correction action so the prior version remains audited. "
-        "If several IDs were listed and the target is unclear, ask which one.\n"
+        f"- If the user identifies a traced memory as wrong, outdated, or not relevant, send `{tool_name}` feedback "
+        "for only that ID. If they provide replacement text, use the correction action so the prior version remains "
+        "audited. If the target is unclear, ask which traced memory they mean.\n"
         if memory_receipts
         else ""
     )
