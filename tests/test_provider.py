@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 from tests._bootstrap import ROOT
 
-from cortex import CortexMemoryProvider, register
+from cortex import CortexMemoryProvider, _install_hermes_output_hook, register
 
 
 class CortexProviderTests(unittest.TestCase):
@@ -406,6 +409,61 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(context.assert_name, "transform_llm_output")
         self.assertIs(context.hook.__self__, context.provider)
+
+    def test_initialize_bridges_the_exclusive_memory_loader_to_output_hooks(self) -> None:
+        manager = types.SimpleNamespace(_hooks={})
+        hermes_package = types.ModuleType("hermes_cli")
+        hermes_package.__path__ = []
+        plugins_module = types.ModuleType("hermes_cli.plugins")
+        plugins_module.get_plugin_manager = lambda: manager
+        provider = CortexMemoryProvider(
+            {
+                "db_path": "$HERMES_HOME/cortex/bridge.db",
+                "auto_capture": False,
+                "retrieval_threshold": 0.08,
+            }
+        )
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            sys.modules,
+            {
+                "hermes_cli": hermes_package,
+                "hermes_cli.plugins": plugins_module,
+            },
+        ):
+            provider.initialize(
+                "bridge-session",
+                hermes_home=tmp,
+                agent_context="primary",
+            )
+            callbacks = manager._hooks["transform_llm_output"]
+            self.assertEqual(len(callbacks), 1)
+            _install_hermes_output_hook(provider, "bridge-session")
+            self.assertEqual(len(callbacks), 1)
+            memory_id, _ = provider._store.add_memory(
+                "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+                kind="semantic",
+                confidence=0.95,
+            )
+            provider.prefetch(
+                "Tell me about my Proxmox server.",
+                session_id="bridge-session",
+            )
+            transformed = callbacks[0](
+                "The r630 Proxmox server is the physical machine in your closet.",
+                session_id="bridge-session",
+                model="deepseek-v4-flash",
+                platform="telegram",
+            )
+            self.assertTrue(
+                transformed.endswith(f"Cortex memory: M:{memory_id[:8]}")
+            )
+            provider.shutdown()
+            self.assertIsNone(
+                callbacks[0](
+                    "The r630 is in your closet.",
+                    session_id="bridge-session",
+                )
+            )
 
     def test_receipt_feedback_is_scoped_and_tool_feedback_is_not_duplicated(self) -> None:
         first_id, _ = self.provider._store.add_memory(

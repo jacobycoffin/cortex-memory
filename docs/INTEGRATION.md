@@ -127,6 +127,13 @@ uses the pre-delivery `transform_llm_output` hook as a conservative backstop:
 when the model omits the line, only memories with strong deterministic
 answer-use evidence are added mechanically.
 
+Hermes currently loads exclusive memory providers through a collector that
+does not forward general plugin hooks. The Cortex adapter therefore installs
+one idempotent process-wide output dispatcher during provider initialization
+and routes it to the active provider by session ID. Provider shutdown removes
+its session routes, so repeated gateway sessions do not accumulate bound hook
+callbacks.
+
 ```text
 Cortex memory: M:1234abcd, M:5678efab
 ```
