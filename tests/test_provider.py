@@ -286,6 +286,146 @@ class CortexProviderTests(unittest.TestCase):
         self.assertEqual(report["recent_observations"][0]["live_mode"], "procedural")
         self.assertEqual(report["mode"], "shadow")
 
+    def test_receipt_is_visible_but_not_captured_and_resolves_exact_use(self) -> None:
+        first_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        second_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic stays in the east region.",
+            kind="operational",
+            confidence=0.95,
+        )
+        query = "Which port and region does Cobalt launch traffic use?"
+        context = self.provider.prefetch(query, session_id="session-1")
+        self.assertIn(first_id[:8], context)
+        self.assertIn(second_id[:8], context)
+
+        self.provider.sync_turn(
+            query,
+            f"I used the remembered launch setting.\n\nCortex memory: M:{first_id[:8]}",
+            session_id="session-1",
+        )
+
+        with self.provider._store._lock:
+            rows = self.provider._store._conn.execute(
+                """SELECT memory_id,used,outcome FROM usage_records
+                   WHERE task_id=(SELECT task_id FROM memory_traces ORDER BY created_at DESC LIMIT 1)
+                   ORDER BY memory_id"""
+            ).fetchall()
+            episode = self.provider._store._conn.execute(
+                "SELECT assistant_content FROM episodes ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+        usage = {str(row["memory_id"]): (int(row["used"]), str(row["outcome"])) for row in rows}
+        self.assertEqual(usage[first_id], (1, "used"))
+        self.assertEqual(usage[second_id], (0, "ignored"))
+        self.assertNotIn("Cortex memory:", str(episode["assistant_content"]))
+        proposals = self.provider._store.list_memory_creation_proposals(status="pending")
+        self.assertTrue(
+            all("Cortex memory:" not in str(item["content"]) for item in proposals)
+        )
+
+    def test_receipt_feedback_is_scoped_and_tool_feedback_is_not_duplicated(self) -> None:
+        first_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        second_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic stays in the east region.",
+            kind="operational",
+            confidence=0.95,
+        )
+        query = "Which port and region does Cobalt launch traffic use?"
+        self.provider.prefetch(query, session_id="session-1")
+        self.provider.sync_turn(
+            query,
+            (
+                "The remembered settings are port 8181 in the east region.\n\n"
+                f"Cortex memory: M:{first_id[:8]}, M:{second_id[:8]}"
+            ),
+            session_id="session-1",
+        )
+
+        feedback = self.call(
+            action="feedback",
+            memory_id=first_id[:8],
+            outcome="irrelevant",
+        )
+        self.assertEqual(feedback["updated"], 1)
+        self.provider.sync_turn(
+            f"M:{first_id[:8]} was not relevant.",
+            "Understood.",
+            session_id="session-1",
+        )
+
+        first = self.provider._store.get_memory(first_id)
+        second = self.provider._store.get_memory(second_id)
+        self.assertEqual(first["false_positive_count"], 1)
+        self.assertEqual(second["false_positive_count"], 0)
+
+    def test_unambiguous_receipt_feedback_works_without_a_tool_call(self) -> None:
+        first_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        second_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic stays in the east region.",
+            kind="operational",
+            confidence=0.95,
+        )
+        query = "Which port and region does Cobalt launch traffic use?"
+        self.provider.prefetch(query, session_id="session-1")
+        self.provider.sync_turn(
+            query,
+            (
+                "The remembered settings are port 8181 in the east region.\n\n"
+                f"Cortex memory: M:{first_id[:8]}, M:{second_id[:8]}"
+            ),
+            session_id="session-1",
+        )
+        self.provider.sync_turn(
+            f"M:{second_id[:8]} was not relevant.",
+            "Understood.",
+            session_id="session-1",
+        )
+
+        first = self.provider._store.get_memory(first_id)
+        second = self.provider._store.get_memory(second_id)
+        self.assertEqual(first["false_positive_count"], 0)
+        self.assertEqual(second["false_positive_count"], 1)
+
+    def test_unknown_receipt_reference_does_not_penalize_the_whole_answer(self) -> None:
+        memory_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        query = "Which port does Cobalt launch traffic use?"
+        self.provider.prefetch(query, session_id="session-1")
+        self.provider.sync_turn(
+            query,
+            f"The port is 8181.\n\nCortex memory: M:{memory_id[:8]}",
+            session_id="session-1",
+        )
+        self.provider.sync_turn(
+            "M:deadbeef was outdated.",
+            "I could not match that receipt ID.",
+            session_id="session-1",
+        )
+
+        memory = self.provider._store.get_memory(memory_id)
+        self.assertEqual(memory["harmful_count"], 0)
+        with self.provider._store._lock:
+            outcome = self.provider._store._conn.execute(
+                """SELECT outcome FROM usage_records
+                   WHERE memory_id=? ORDER BY created_at DESC LIMIT 1""",
+                (memory_id,),
+            ).fetchone()["outcome"]
+        self.assertEqual(outcome, "used")
+
     def test_builtin_memory_write_is_an_agent_proposal(self) -> None:
         self.provider.on_memory_write(
             "add",

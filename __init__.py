@@ -22,7 +22,12 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
         pass
 
 
-from .attribution import attribution_score
+from .attribution import (
+    attribution_score,
+    memory_receipt_prefixes,
+    referenced_memory_prefixes,
+    strip_memory_receipt,
+)
 from .client import CortexMemory, RecallBatch, _provenance_label
 from .cognition import attention_topics, plan_recall
 from .extraction import extract_candidates
@@ -67,6 +72,7 @@ DEFAULTS: dict[str, Any] = {
     "metacognition_mode": "shadow",
     "query_cache_ttl_seconds": 45,
     "compact_context": True,
+    "memory_receipts": True,
     "attribution_threshold": 0.18,
     "regret_mode": "shadow",
     "consolidation_mode": "shadow",
@@ -90,6 +96,14 @@ _CREATION_POSITIVE_FEEDBACK = re.compile(
 )
 _NEGATIVE_FEEDBACK = re.compile(
     r"\b(?:that(?:'s| is) wrong|not right|outdated|incorrect|didn(?:'t| not) work|still broken|you forgot)\b", re.I
+)
+_RECEIPT_IRRELEVANT_FEEDBACK = re.compile(
+    r"\b(?:not relevant|irrelevant|wrong context|didn(?:'t| not) apply|doesn(?:'t| not) apply)\b",
+    re.I,
+)
+_RECEIPT_WRONG_FEEDBACK = re.compile(
+    r"\b(?:wrong|outdated|incorrect|not right|false)\b",
+    re.I,
 )
 _AMBIGUOUS_FEEDBACK = re.compile(
     r"\?|\b(?:wish|at first|initially|temporarily|maybe|might|unsure|uncertain)\b|"
@@ -166,7 +180,14 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
             "importance": {"type": "number", "minimum": 0, "maximum": 1},
             "confidence": {"type": "number", "minimum": 0, "maximum": 1},
             "pinned": {"type": "boolean"},
-            "outcome": {"type": "string", "enum": ["useful", "successful", "confirmed", "irrelevant", "wrong"]},
+            "outcome": {
+                "type": "string",
+                "enum": ["useful", "successful", "confirmed", "irrelevant", "wrong"],
+                "description": (
+                    "Feedback for only the listed memory IDs. Use irrelevant for wrong-context recall "
+                    "and wrong for stale or incorrect content."
+                ),
+            },
             "include_archived": {"type": "boolean"},
             "evidence_lookup": {
                 "type": "boolean",
@@ -242,6 +263,8 @@ class CortexMemoryProvider(MemoryProvider):
         self._task_started_monotonic: dict[str, float] = {}
         self._memory_actions_by_session: dict[str, list[dict[str, Any]]] = {}
         self._creation_proposals_by_session: dict[str, list[str]] = {}
+        self._receipt_ids_by_session: dict[str, list[str]] = {}
+        self._explicit_feedback_by_session: dict[str, set[tuple[str, str]]] = {}
 
     @property
     def name(self) -> str:
@@ -292,6 +315,7 @@ class CortexMemoryProvider(MemoryProvider):
                 tool_name="cortex_memory",
                 memory_count=int(stats["memories"]),
                 edge_count=int(stats["edges"]),
+                memory_receipts=_as_bool(self._config.get("memory_receipts", True)),
             )
         return (
             "# Cortex Memory\n"
@@ -841,6 +865,24 @@ class CortexMemoryProvider(MemoryProvider):
             return
         sid = session_id or self._session_id or "default"
 
+        previous_receipt_ids = self._receipt_ids_by_session.get(sid, [])
+        referenced_prefixes = referenced_memory_prefixes(user_content)
+        referenced_ids = _resolve_allowed_prefixes(referenced_prefixes, previous_receipt_ids)
+        receipt_feedback = _receipt_feedback_outcome(user_content, referenced_ids)
+        explicit_feedback = self._explicit_feedback_by_session.pop(sid, set())
+        if receipt_feedback:
+            feedback_outcome, feedback_ids = receipt_feedback
+            missing = [
+                memory_id
+                for memory_id in feedback_ids
+                if not any(
+                    explicit_memory_id == memory_id
+                    for explicit_memory_id, _explicit_outcome in explicit_feedback
+                )
+            ]
+            if missing:
+                self._store.feedback(missing, feedback_outcome, session_id=sid)
+
         # Positive feedback about the preceding answer is also evidence that its
         # still-staged creation candidates may be worth retaining. This signal
         # never approves a candidate on its own; the background judge weighs it.
@@ -863,7 +905,11 @@ class CortexMemoryProvider(MemoryProvider):
 
         # Feedback applies to memories inferred as used in the preceding answer.
         previous_tasks = self._completed_task_by_session.get(sid, [])
-        if previous_tasks and _NEGATIVE_FEEDBACK.search(user_content or ""):
+        if (
+            previous_tasks
+            and _NEGATIVE_FEEDBACK.search(user_content or "")
+            and not referenced_prefixes
+        ):
             for previous_task in previous_tasks:
                 self._store.apply_task_outcome(previous_task, "harmful")
         elif (
@@ -886,8 +932,14 @@ class CortexMemoryProvider(MemoryProvider):
                     task_id=previous_task,
                 )
 
+        current_ids, current_tasks = self._current_prefetches(sid)
+        receipt_ids = _resolve_allowed_prefixes(
+            memory_receipt_prefixes(assistant_content),
+            current_ids,
+        )
+        semantic_assistant_content = strip_memory_receipt(assistant_content)
         safe_user = sanitize_memory(user_content)
-        safe_assistant = sanitize_memory(assistant_content)
+        safe_assistant = sanitize_memory(semantic_assistant_content)
         self._store.record_episode(safe_user.text, safe_assistant.text, session_id=sid)
         executions = self._capture_tool_outcomes(messages, sid) if messages else []
         current_executions = [
@@ -919,11 +971,14 @@ class CortexMemoryProvider(MemoryProvider):
         self._creation_proposals_by_session[sid] = list(dict.fromkeys(assistant_created_ids))
         # Credit only memories with evidence of answer use. Structured values and
         # distinctive anchors dominate; conceptual similarity cannot win alone.
-        current_ids, current_tasks = self._current_prefetches(sid)
         used: list[str] = []
         attributions: dict[str, float] = {}
         for memory in self._store.get_memories(current_ids):
-            attribution = attribution_score(memory, assistant_content)
+            attribution = (
+                1.0
+                if str(memory["id"]) in receipt_ids
+                else attribution_score(memory, semantic_assistant_content)
+            )
             if attribution >= float(self._config.get("attribution_threshold", 0.18)):
                 self._store.log_access(memory["id"], "used", query=user_content, session_id=sid)
                 used.append(memory["id"])
@@ -945,6 +1000,7 @@ class CortexMemoryProvider(MemoryProvider):
         if current_tasks:
             self._completed_task_by_session[sid] = current_tasks
         self._used_by_session[sid] = used
+        self._receipt_ids_by_session[sid] = receipt_ids
         for current_task in current_tasks:
             self._reinforce_group(
                 used,
@@ -1040,6 +1096,8 @@ class CortexMemoryProvider(MemoryProvider):
             self._used_by_session.pop(new_session_id, None)
             self._completed_task_by_session.pop(new_session_id, None)
             self._creation_proposals_by_session.pop(new_session_id, None)
+            self._receipt_ids_by_session.pop(new_session_id, None)
+            self._explicit_feedback_by_session.pop(new_session_id, None)
             with self._cache_lock:
                 self._memory_actions_by_session.pop(new_session_id, None)
                 dropped = self._pending_prefetches.pop(new_session_id, None) or []
@@ -1212,7 +1270,12 @@ class CortexMemoryProvider(MemoryProvider):
                 if args.get("memory_id"):
                     raw_ids.append(args["memory_id"])
                 ids = [resolved for raw in raw_ids if (resolved := self._resolve(raw))]
-                count = self._store.feedback(ids, str(args.get("outcome") or "useful"), session_id=self._session_id)
+                outcome = str(args.get("outcome") or "useful")
+                sid = str(kwargs.get("session_id") or self._session_id or "default")
+                count = self._store.feedback(ids, outcome, session_id=sid)
+                self._explicit_feedback_by_session.setdefault(sid, set()).update(
+                    (memory_id, outcome) for memory_id in ids
+                )
                 return _json_ok(updated=count, memory_ids=ids)
 
             if action == "explain":
@@ -1320,6 +1383,12 @@ class CortexMemoryProvider(MemoryProvider):
                 "choices": ["true", "false"],
             },
             {
+                "key": "memory_receipts",
+                "description": "Show one compact memory-ID receipt when Cortex evidence influenced an answer",
+                "default": "true",
+                "choices": ["true", "false"],
+            },
+            {
                 "key": "attribution_threshold",
                 "description": "Minimum evidence-use score before a memory receives utility credit",
                 "default": "0.18",
@@ -1377,6 +1446,8 @@ class CortexMemoryProvider(MemoryProvider):
             self._pending_prefetches.clear()
             self._task_started_monotonic.clear()
             self._memory_actions_by_session.clear()
+            self._receipt_ids_by_session.clear()
+            self._explicit_feedback_by_session.clear()
 
     def _capture(
         self,
@@ -1726,6 +1797,36 @@ class CortexMemoryProvider(MemoryProvider):
 
     def _resolve(self, value: Any) -> str | None:
         return self._store.resolve_id(str(value or "")) if self._store else None
+
+
+def _resolve_allowed_prefixes(prefixes: List[str], allowed_ids: List[str]) -> list[str]:
+    """Resolve only unique prefixes from the bounded current/previous turn set."""
+
+    resolved: list[str] = []
+    for prefix in prefixes:
+        matches = [
+            memory_id
+            for memory_id in allowed_ids
+            if str(memory_id).casefold().startswith(str(prefix).casefold())
+        ]
+        if len(matches) == 1 and matches[0] not in resolved:
+            resolved.append(matches[0])
+    return resolved
+
+
+def _receipt_feedback_outcome(
+    text: str,
+    referenced_ids: List[str],
+) -> tuple[str, list[str]] | None:
+    """Recognize an unambiguous one-memory negative receipt response."""
+
+    if len(referenced_ids) != 1 or _AMBIGUOUS_FEEDBACK.search(text or ""):
+        return None
+    if _RECEIPT_IRRELEVANT_FEEDBACK.search(text or ""):
+        return "irrelevant", referenced_ids
+    if _RECEIPT_WRONG_FEEDBACK.search(text or ""):
+        return "wrong", referenced_ids
+    return None
 
 
 def _read_config(hermes_home: Path) -> dict[str, Any]:

@@ -59,6 +59,7 @@ Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing buil
 - **Controlled learning lab:** randomized adaptive/fixed/no-memory tasks, matched reversible Sleep trials, explicit agent-level outcomes, a failure explorer, cited summary approval, prospective-memory states, and reconsolidation follow-through share one local task/evidence ledger.
 - **Budgeted idle reflection:** optional model review can spend a separate per-run token ceiling on evidence-linked proposals. It is off by default, normally billed, privacy-sensitive, and never applies its own conclusions.
 - **Silent automatic admission judge:** an explicit remote-data-egress opt-in can enable a clock-aligned five-minute systemd timer that asks a bounded LLM batch to keep, file as evidence, reject, defer, or request context for staged creation proposals. Decisions are strictly validated, honestly labeled `AUTOMATIC_APPROVED`, atomically audited, reversible, and never hard-delete data or notify the user. Unambiguous later outcome feedback raises only the preceding assistant turn's candidate signal without crediting generic thanks or unrelated user-authored candidates, and never bypasses safety guards. See [Automatic memory judge](docs/AUTO_JUDGE.md).
+- **Visible memory receipts:** when recalled Cortex evidence materially influences an answer, Kaya appends one quiet line with up to three current-turn memory IDs. Direct wrong or irrelevant feedback can then target one listed memory without penalizing unrelated evidence; receipts never become memories themselves.
 - **Harness-neutral API:** `CortexMemory` and `RecallBatch` expose storage, bounded recall, outcome feedback, episodes, audit, and Sleep without depending on a particular agent framework.
 - **Cortex-first harness contract:** `CortexHarnessAdapter`, the portable system-prompt block, and `cortex-memory harness-contract` make Cortex the durable store of record while keeping each harness's built-in memory limited to a bootstrap pointer and temporary session scratch.
 - **Inspectable memory traces:** every adapter task records why recall ran or abstained, candidate component scores, selection and rejection reasons, later answer influence, outcome ratings, and create/update/ignore storage decisions in a local JSONL-style event ledger.
@@ -362,6 +363,7 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `metacognition_mode` | `shadow` | `off`, observe use/verify/abstain decisions, or experimental `enforce` |
 | `query_cache_ttl_seconds` | `45` | Reuse unchanged retrieval results briefly; `0` disables it |
 | `compact_context` | `true` | Use the lower-token evidence format |
+| `memory_receipts` | `true` | Add one quiet `Cortex memory: M:…` line only when recalled evidence influenced the answer |
 | `attribution_threshold` | `0.18` | Minimum evidence-use score for utility credit |
 | `regret_mode` | `shadow` | `off`, detect only, or `restore` archived matches |
 | `consolidation_mode` | `shadow` | `manual`, `shadow`, or reversible `apply` |

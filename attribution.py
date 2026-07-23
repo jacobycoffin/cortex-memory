@@ -13,6 +13,12 @@ _ANCHOR = re.compile(
     r"(?:https?://\S+|(?:~?/)?(?:[\w.-]+/){1,}[\w./-]+|\b\d{2,}(?:\.\d+)?\b|\b[\w]+-[\w-]{3,}\b)",
     re.I,
 )
+_MEMORY_RECEIPT_LINE = re.compile(
+    r"(?im)^[ \t]*Cortex memory:[ \t]*"
+    r"(M:[0-9a-f]{8}(?:[ \t]*,[ \t]*M:[0-9a-f]{8}){0,2})"
+    r"[ \t]*$"
+)
+_MEMORY_REFERENCE = re.compile(r"\bM:([0-9a-f]{8})\b", re.I)
 _STOP = {
     "about", "after", "again", "also", "because", "before", "could", "from", "have", "into", "memory",
     "completed", "done", "should", "task", "that", "the", "their", "there", "these", "they", "this",
@@ -54,6 +60,27 @@ def attribution_score(memory: dict[str, Any], response: str) -> float:
     if overlap < 0.12 and anchor_score == 0:
         score = min(score, 0.17)
     return max(0.0, min(1.0, score))
+
+
+def memory_receipt_prefixes(response: str) -> list[str]:
+    """Return the bounded IDs from one exact user-visible Cortex receipt."""
+
+    matches = list(_MEMORY_RECEIPT_LINE.finditer(response or ""))
+    if len(matches) != 1:
+        return []
+    return [item.casefold() for item in _MEMORY_REFERENCE.findall(matches[0].group(1))]
+
+
+def strip_memory_receipt(response: str) -> str:
+    """Remove the receipt before semantic attribution, capture, and replay."""
+
+    return _MEMORY_RECEIPT_LINE.sub("", response or "").rstrip()
+
+
+def referenced_memory_prefixes(text: str) -> list[str]:
+    """Extract unique receipt-style memory references from operator feedback."""
+
+    return list(dict.fromkeys(item.casefold() for item in _MEMORY_REFERENCE.findall(text or "")))
 
 
 def _tokens(text: str) -> set[str]:

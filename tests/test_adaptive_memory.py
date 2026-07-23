@@ -9,7 +9,12 @@ from pathlib import Path
 from tests._bootstrap import ROOT
 
 from cortex import CortexMemoryProvider
-from cortex.attribution import attribution_score
+from cortex.attribution import (
+    attribution_score,
+    memory_receipt_prefixes,
+    referenced_memory_prefixes,
+    strip_memory_receipt,
+)
 from cortex.cognition import attention_topics, plan_recall
 from cortex.retrieval import MemoryRetriever
 from cortex.store import CortexStore
@@ -144,6 +149,30 @@ class AttributionAndWorkflowTests(unittest.TestCase):
     def test_vague_conceptual_similarity_does_not_receive_credit(self) -> None:
         memory = {"content": "Use the website research tool for current papers.", "object_value": ""}
         self.assertLess(attribution_score(memory, "I completed the task."), 0.18)
+
+    def test_memory_receipt_syntax_is_bounded_and_removable(self) -> None:
+        response = (
+            "The deployment uses the verified route.\n\n"
+            "Cortex memory: M:12ab34cd, M:98ef76ab"
+        )
+        self.assertEqual(
+            memory_receipt_prefixes(response),
+            ["12ab34cd", "98ef76ab"],
+        )
+        self.assertEqual(
+            strip_memory_receipt(response),
+            "The deployment uses the verified route.",
+        )
+        self.assertEqual(
+            referenced_memory_prefixes("M:12ab34cd was wrong."),
+            ["12ab34cd"],
+        )
+        self.assertEqual(
+            memory_receipt_prefixes(
+                "Cortex memory: M:12ab34cd, M:98ef76ab, M:11111111, M:22222222"
+            ),
+            [],
+        )
 
     def test_json_containing_word_error_is_not_automatically_a_failure(self) -> None:
         messages = [

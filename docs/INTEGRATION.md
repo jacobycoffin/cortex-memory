@@ -119,6 +119,27 @@ Do not store secrets, raw tool credentials, or authorization decisions as ordina
 
 Raw call count is demand, not truth. An adapter should never mark every retrieved memory helpful automatically.
 
+### User-visible memory receipts
+
+The Cortex-primary prompt asks the agent to append one exact, compact line only
+when recalled evidence materially influenced the answer:
+
+```text
+Cortex memory: M:1234abcd, M:5678efab
+```
+
+The receipt is transparency, not a source citation or truth claim. It is limited
+to three current-turn IDs, omitted when memory did not influence the answer, and
+removed before Cortex performs semantic attribution, episode replay, or automatic
+capture. A valid receipt is also explicit answer-use evidence, but only when each
+prefix uniquely resolves inside the current turn's bounded recall set.
+
+An immediate response such as `M:1234abcd was wrong` or `M:1234abcd was not
+relevant` applies individual feedback only to that listed memory. When several
+IDs are referenced ambiguously, Cortex does not guess. Replacement content still
+uses the version-preserving `correct` action. Set `memory_receipts: false` in the
+Cortex plugin configuration to disable the user-visible line.
+
 ## Tool and workflow integration
 
 The included Hermes adapter demonstrates deeper tool-event capture and workflow learning. Other harnesses can start with the five-event contract, then map normalized tool outcomes into `CortexStore.record_tool_execution` and ordered successful traces into the workflow APIs. Store tool names, task families, argument keys, and normalized outcomes—not secret argument values.
