@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -100,6 +101,166 @@ class OutcomeDrivenBudgetTests(unittest.TestCase):
             )["budget"],
             100,
         )
+
+
+class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+        self.memory_id, _ = self.store.add_memory(
+            "Plex deploys to the Proxmox server.", kind="procedure"
+        )
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _observation(
+        self,
+        *,
+        mode: str,
+        used: bool,
+        helpful: bool = False,
+    ) -> str:
+        task_id = self.store.create_usage_batch(
+            [(self.memory_id, 0.8)],
+            query="Deploy Plex to Proxmox",
+            session_id="attention-test",
+            task_type="tool_execution",
+            recall_mode=mode,
+            requested_budget=600,
+            estimated_tokens=520,
+        )
+        decision = self.store.record_attention_observation(
+            task_id,
+            task_type="tool_execution",
+            topics=("plex", "proxmox"),
+            live_mode=mode,
+            live_budget=600,
+            max_budget=700,
+            selected_count=1,
+        )
+        self.assertFalse(decision["applied"])
+        self.store.resolve_usage(task_id, {self.memory_id: 0.9} if used else {})
+        if helpful:
+            self.store.apply_task_outcome(task_id, "helpful")
+        return task_id
+
+    def test_helpful_topic_can_recommend_a_richer_prior_mode_in_shadow(self) -> None:
+        for index in range(4):
+            self._observation(mode="procedural", used=True, helpful=index < 2)
+
+        recommendation = self.store.attention_recommendation(
+            "tool_execution",
+            ("plex",),
+            "lean",
+            600,
+            max_budget=700,
+        )
+        self.assertEqual(recommendation["shadow_mode"], "procedural")
+        self.assertEqual(recommendation["shadow_budget"], 660)
+        self.assertEqual(recommendation["budget_delta"], 0.1)
+        self.assertFalse(recommendation["applied"])
+        row = next(
+            item
+            for item in self.store.attention_learning_summary()["weights"]
+            if item["topic_key"] == "plex"
+        )
+        self.assertEqual(row["used_count"], 4)
+        self.assertEqual(row["helpful_count"], 2)
+        self.assertEqual(row["weight_delta"], 0.1)
+
+    def test_repeated_ignored_deep_context_recommends_one_level_less(self) -> None:
+        for _index in range(4):
+            self._observation(mode="deep", used=False)
+
+        recommendation = self.store.attention_recommendation(
+            "tool_execution",
+            ("proxmox",),
+            "deep",
+            600,
+            max_budget=700,
+        )
+        self.assertEqual(recommendation["shadow_mode"], "focused")
+        self.assertEqual(recommendation["shadow_budget"], 540)
+        self.assertEqual(recommendation["budget_delta"], -0.1)
+
+    def test_inactive_topic_weight_loses_half_its_strength_after_thirty_days(self) -> None:
+        for _index in range(4):
+            self._observation(mode="procedural", used=True)
+        stale = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                """UPDATE attention_weights SET last_observed_at=?
+                   WHERE task_type='tool_execution' AND topic_key='plex'""",
+                (stale,),
+            )
+
+        recommendation = self.store.attention_recommendation(
+            "tool_execution",
+            ("plex",),
+            "procedural",
+            600,
+            max_budget=700,
+        )
+        evidence = next(
+            item for item in recommendation["evidence"] if item["topic_key"] == "plex"
+        )
+        self.assertAlmostEqual(evidence["decay_factor"], 0.5, places=3)
+        self.assertAlmostEqual(evidence["effective_delta"], 0.05, places=3)
+
+    def test_pending_and_no_context_observations_never_train_topic_weights(self) -> None:
+        pending = self.store.create_usage_batch(
+            [(self.memory_id, 0.8)],
+            query="Plex",
+            session_id="attention-test",
+            task_type="tool_execution",
+            recall_mode="focused",
+            requested_budget=600,
+            estimated_tokens=400,
+        )
+        self.store.record_attention_observation(
+            pending,
+            task_type="tool_execution",
+            topics=("plex",),
+            live_mode="focused",
+            live_budget=600,
+            max_budget=700,
+            selected_count=1,
+        )
+        self.store.record_attention_observation(
+            "no-context",
+            task_type="tool_execution",
+            topics=("weather",),
+            live_mode="none",
+            live_budget=0,
+            max_budget=700,
+            selected_count=0,
+        )
+
+        report = self.store.attention_learning_summary()
+        self.assertEqual(report["summary"]["resolved_count"], 0)
+        self.assertEqual(report["summary"]["no_context_count"], 1)
+        self.assertFalse(report["weights"])
+
+    def test_dashboard_outcome_label_and_undo_rebuild_attention_counts(self) -> None:
+        task_id = self._observation(mode="focused", used=True)
+        labeled = self.store.label_task_outcome(task_id, "helpful", actor="attention-test")
+        self.assertTrue(labeled["changed"])
+        learned = next(
+            item
+            for item in self.store.attention_learning_summary()["weights"]
+            if item["topic_key"] == "plex"
+        )
+        self.assertEqual(learned["helpful_count"], 1)
+
+        self.assertTrue(self.store.undo_task_outcome_label(task_id, actor="attention-test"))
+        restored = next(
+            item
+            for item in self.store.attention_learning_summary()["weights"]
+            if item["topic_key"] == "plex"
+        )
+        self.assertEqual(restored["helpful_count"], 0)
 
 
 class SafeRetrievalCacheTests(unittest.TestCase):

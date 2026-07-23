@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -33,7 +34,7 @@ from .security import normalize_text, sanitize_memory
 from .semantics import feature_similarity, semantic_features
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 32
 
 
 logger = logging.getLogger(__name__)
@@ -244,6 +245,9 @@ class CortexStore:
                 role_version TEXT,
                 role_reviewed_at TEXT,
                 state TEXT NOT NULL DEFAULT 'active',
+                stranded INTEGER NOT NULL DEFAULT 0,
+                stranded_reason TEXT,
+                stranded_at TEXT,
                 pinned INTEGER NOT NULL DEFAULT 0,
                 protected INTEGER NOT NULL DEFAULT 0,
                 dirty INTEGER NOT NULL DEFAULT 0,
@@ -759,6 +763,42 @@ class CortexStore:
             CREATE INDEX IF NOT EXISTS idx_budget_observations_lookup
               ON recall_budget_observations(task_type,mode,outcome,created_at);
 
+            CREATE TABLE IF NOT EXISTS attention_observations (
+                task_id TEXT PRIMARY KEY,
+                task_type TEXT NOT NULL,
+                topics_json TEXT NOT NULL DEFAULT '[]',
+                live_mode TEXT NOT NULL,
+                live_budget INTEGER NOT NULL,
+                shadow_mode TEXT NOT NULL,
+                shadow_budget INTEGER NOT NULL,
+                policy_version TEXT NOT NULL,
+                selected_count INTEGER NOT NULL DEFAULT 0,
+                usage_outcome TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(usage_outcome IN ('pending','used','ignored','no_context','control')),
+                final_outcome TEXT NOT NULL DEFAULT 'pending'
+                  CHECK(final_outcome IN ('pending','helpful','harmful','validated','corrected')),
+                created_at TEXT NOT NULL,
+                resolved_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_attention_observations_lookup
+              ON attention_observations(task_type,live_mode,usage_outcome,created_at);
+
+            CREATE TABLE IF NOT EXISTS attention_weights (
+                task_type TEXT NOT NULL,
+                topic_key TEXT NOT NULL,
+                mode TEXT NOT NULL,
+                used_count INTEGER NOT NULL DEFAULT 0,
+                helpful_count INTEGER NOT NULL DEFAULT 0,
+                ignored_count INTEGER NOT NULL DEFAULT 0,
+                harmful_count INTEGER NOT NULL DEFAULT 0,
+                weight_delta REAL NOT NULL DEFAULT 0.0,
+                last_observed_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(task_type,topic_key,mode)
+            );
+            CREATE INDEX IF NOT EXISTS idx_attention_weights_topic
+              ON attention_weights(topic_key,task_type,updated_at DESC);
+
             CREATE TABLE IF NOT EXISTS metacognitive_predictions (
                 prediction_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
@@ -910,6 +950,219 @@ class CortexStore:
             );
             CREATE INDEX IF NOT EXISTS idx_pruning_regret_created ON pruning_regret(created_at);
 
+            CREATE TABLE IF NOT EXISTS adaptive_pruning_runs (
+                run_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL CHECK(mode IN ('shadow','apply')),
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                relevance_threshold REAL NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                judgment_count INTEGER NOT NULL DEFAULT 0,
+                applied_count INTEGER NOT NULL DEFAULT 0,
+                usage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_adaptive_pruning_runs_started
+              ON adaptive_pruning_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS adaptive_pruning_decisions (
+                decision_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES adaptive_pruning_runs(run_id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                memory_hash TEXT NOT NULL,
+                relevance_score REAL NOT NULL,
+                score_evidence_json TEXT NOT NULL DEFAULT '{}',
+                action TEXT NOT NULL
+                  CHECK(action IN ('cool','archive','quarantine','keep','orphan_strand')),
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL
+                  CHECK(status IN ('proposed','applied','kept','skipped','reversed')),
+                prior_state TEXT NOT NULL,
+                result_state TEXT,
+                edge_snapshot_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                applied_at TEXT,
+                reversed_at TEXT,
+                UNIQUE(run_id,memory_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_adaptive_pruning_decisions_status
+              ON adaptive_pruning_decisions(status,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_adaptive_pruning_decisions_memory
+              ON adaptive_pruning_decisions(memory_id,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS memory_strands (
+                strand_id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL UNIQUE
+                  REFERENCES adaptive_pruning_decisions(decision_id) ON DELETE CASCADE,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                prior_state TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                edge_snapshot_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active','restored','reversed')),
+                created_at TEXT NOT NULL,
+                restored_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_strands_active
+              ON memory_strands(memory_id,status,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS scoring_weight_runs (
+                run_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL DEFAULT 'shadow' CHECK(mode='shadow'),
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                lookback_days INTEGER NOT NULL DEFAULT 7,
+                task_type_count INTEGER NOT NULL DEFAULT 0,
+                proposal_count INTEGER NOT NULL DEFAULT 0,
+                usage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scoring_weight_runs_started
+              ON scoring_weight_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS scoring_weight_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                run_id TEXT REFERENCES scoring_weight_runs(run_id) ON DELETE SET NULL,
+                task_type TEXT NOT NULL,
+                baseline_version TEXT NOT NULL,
+                baseline_weights_json TEXT NOT NULL,
+                proposed_weights_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                max_deviation REAL NOT NULL,
+                explicit_confirmation_required INTEGER NOT NULL DEFAULT 0,
+                baseline_precision REAL,
+                status TEXT NOT NULL CHECK(status IN (
+                  'proposed','approved','rejected','rolled_back','auto_reverted'
+                )),
+                created_at TEXT NOT NULL,
+                decided_at TEXT,
+                decided_by TEXT,
+                decision_note TEXT,
+                rolled_back_at TEXT,
+                rollback_reason TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_scoring_weight_proposals_status
+              ON scoring_weight_proposals(status,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_scoring_weight_proposals_task
+              ON scoring_weight_proposals(task_type,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS scoring_weight_history (
+                history_id TEXT PRIMARY KEY,
+                proposal_id TEXT REFERENCES scoring_weight_proposals(proposal_id) ON DELETE SET NULL,
+                task_type TEXT NOT NULL,
+                policy_version TEXT NOT NULL,
+                weights_json TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('active','superseded','rolled_back')),
+                precision_at_activation REAL,
+                activation_sample_count INTEGER NOT NULL DEFAULT 0,
+                activated_at TEXT NOT NULL,
+                deactivated_at TEXT,
+                actor TEXT NOT NULL,
+                note TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_scoring_weight_active_task
+              ON scoring_weight_history(task_type) WHERE status='active';
+
+            CREATE TABLE IF NOT EXISTS adaptive_reconsolidation_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                task_id TEXT,
+                lability_minutes INTEGER NOT NULL DEFAULT 30,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                proposal_count INTEGER NOT NULL DEFAULT 0,
+                usage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_adaptive_reconsolidation_runs_started
+              ON adaptive_reconsolidation_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS adaptive_reconsolidation_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL
+                  REFERENCES adaptive_reconsolidation_runs(run_id) ON DELETE CASCADE,
+                task_id TEXT NOT NULL,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                evidence_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                memory_hash TEXT NOT NULL,
+                evidence_hash TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('supersede','extend','conflict')),
+                replacement_content TEXT,
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                protected_confirmation_required INTEGER NOT NULL DEFAULT 0,
+                source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                edge_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL CHECK(status IN (
+                  'proposed','applied','rejected','reversed','skipped'
+                )),
+                created_at TEXT NOT NULL,
+                applied_at TEXT,
+                applied_by TEXT,
+                reversed_at TEXT,
+                feedback_label TEXT CHECK(feedback_label IN ('correct','wrong')),
+                feedback_reason TEXT,
+                feedback_at TEXT,
+                UNIQUE(run_id,task_id,memory_id,evidence_memory_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_adaptive_reconsolidation_status
+              ON adaptive_reconsolidation_proposals(status,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_adaptive_reconsolidation_memory
+              ON adaptive_reconsolidation_proposals(memory_id,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS schema_formation_runs (
+                run_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                minimum_cluster INTEGER NOT NULL DEFAULT 3,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                proposal_count INTEGER NOT NULL DEFAULT 0,
+                usage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_schema_formation_runs_started
+              ON schema_formation_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS schema_formation_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES schema_formation_runs(run_id) ON DELETE CASCADE,
+                cluster_signature TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('abstract','no_schema','partial')),
+                abstract_content TEXT,
+                source_ids_json TEXT NOT NULL,
+                included_source_ids_json TEXT NOT NULL,
+                source_hashes_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL DEFAULT '{}',
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN (
+                  'proposed','applied','dismissed','rejected','reversed','skipped'
+                )),
+                result_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                applied_at TEXT,
+                applied_by TEXT,
+                reversed_at TEXT,
+                feedback_label TEXT CHECK(feedback_label IN ('correct','wrong')),
+                feedback_reason TEXT,
+                feedback_at TEXT,
+                UNIQUE(run_id,cluster_signature)
+            );
+            CREATE INDEX IF NOT EXISTS idx_schema_formation_status
+              ON schema_formation_proposals(status,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_schema_formation_signature
+              ON schema_formation_proposals(cluster_signature,created_at DESC);
+
             CREATE TABLE IF NOT EXISTS consolidation_runs (
                 run_id TEXT PRIMARY KEY,
                 dry_run INTEGER NOT NULL,
@@ -927,6 +1180,64 @@ class CortexStore:
                 prior_state TEXT NOT NULL,
                 PRIMARY KEY(run_id,member_id)
             );
+
+            CREATE TABLE IF NOT EXISTS semantic_consolidation_runs (
+                run_id TEXT PRIMARY KEY,
+                mode TEXT NOT NULL CHECK(mode IN ('shadow','apply')),
+                status TEXT NOT NULL,
+                model TEXT NOT NULL,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                judgment_count INTEGER NOT NULL DEFAULT 0,
+                merge_count INTEGER NOT NULL DEFAULT 0,
+                keep_count INTEGER NOT NULL DEFAULT 0,
+                link_count INTEGER NOT NULL DEFAULT 0,
+                applied_count INTEGER NOT NULL DEFAULT 0,
+                usage_json TEXT NOT NULL DEFAULT '{}',
+                error TEXT,
+                started_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_consolidation_runs_started
+              ON semantic_consolidation_runs(started_at DESC);
+
+            CREATE TABLE IF NOT EXISTS semantic_consolidation_decisions (
+                decision_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL REFERENCES semantic_consolidation_runs(run_id) ON DELETE CASCADE,
+                left_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                right_id TEXT NOT NULL REFERENCES memories(id) ON DELETE RESTRICT,
+                left_hash TEXT NOT NULL,
+                right_hash TEXT NOT NULL,
+                action TEXT NOT NULL CHECK(action IN ('merge','keep_separate','link_as_related')),
+                confidence REAL NOT NULL,
+                reason TEXT NOT NULL,
+                merged_content TEXT,
+                candidate_evidence_json TEXT NOT NULL DEFAULT '[]',
+                source_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                status TEXT NOT NULL CHECK(
+                    status IN ('proposed','applied','kept_separate','linked','skipped','reversed')
+                ),
+                result_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+                created_at TEXT NOT NULL,
+                applied_at TEXT,
+                reversed_at TEXT,
+                UNIQUE(run_id,left_id,right_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_consolidation_decisions_status
+              ON semantic_consolidation_decisions(status,created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_semantic_consolidation_decisions_pair
+              ON semantic_consolidation_decisions(left_id,right_id,created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS semantic_consolidation_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL
+                  REFERENCES semantic_consolidation_decisions(decision_id) ON DELETE CASCADE,
+                label TEXT NOT NULL CHECK(label IN ('correct','wrong')),
+                reason TEXT NOT NULL DEFAULT '',
+                actor TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_semantic_consolidation_feedback_decision
+              ON semantic_consolidation_feedback(decision_id,created_at DESC);
 
             CREATE TABLE IF NOT EXISTS sleep_runs (
                 run_id TEXT PRIMARY KEY,
@@ -1757,6 +2068,9 @@ class CortexStore:
             "role_method": "TEXT NOT NULL DEFAULT 'legacy_default'",
             "role_version": "TEXT",
             "role_reviewed_at": "TEXT",
+            "stranded": "INTEGER NOT NULL DEFAULT 0",
+            "stranded_reason": "TEXT",
+            "stranded_at": "TEXT",
         }
         for name, declaration in additions.items():
             if name not in columns:
@@ -2621,6 +2935,7 @@ class CortexStore:
             "semantic": 0.64,
             "operational": 0.54,
             "episode": 0.38,
+            "schema": 0.86,
         }.get(kind, 0.58)
         reusable_score = _clamp(
             0.34 * type_prior
@@ -3047,7 +3362,7 @@ class CortexStore:
         if status is None or normalize_text(status).casefold() == "all":
             sql = (
                 "SELECT * FROM memory_creation_proposals "
-                f"ORDER BY last_seen_at {order}, proposal_id {order} LIMIT ? OFFSET ?"
+                f"ORDER BY last_seen_at {order}, rowid {order} LIMIT ? OFFSET ?"
             )
             values = (bounded, start)
         else:
@@ -3056,7 +3371,7 @@ class CortexStore:
                 raise ValueError("invalid memory creation proposal status")
             sql = (
                 "SELECT * FROM memory_creation_proposals WHERE status=? "
-                f"ORDER BY last_seen_at {order}, proposal_id {order} LIMIT ? OFFSET ?"
+                f"ORDER BY last_seen_at {order}, rowid {order} LIMIT ? OFFSET ?"
             )
             values = (status_value, bounded, start)
         with self._lock:
@@ -4238,6 +4553,438 @@ class CortexStore:
             "negative_count": negative_count,
         }
 
+    def attention_recommendation(
+        self,
+        task_type: str,
+        topics: Sequence[str],
+        live_mode: str,
+        base_budget: int,
+        *,
+        max_budget: int = 700,
+        min_samples: int = 4,
+    ) -> dict[str, Any]:
+        """Return a decayed, shadow-only topic-salience recommendation."""
+
+        from .cognition import ATTENTION_POLICY_VERSION
+
+        task = normalize_text(task_type)[:80] or "general"
+        topic_keys = list(
+            dict.fromkeys(
+                normalize_text(str(topic)).casefold()[:40]
+                for topic in topics
+                if normalize_text(str(topic))
+            )
+        )[:12]
+        mode = normalize_text(live_mode).casefold()[:40] or "lean"
+        maximum = max(1, int(max_budget))
+        baseline = max(0, min(maximum, int(base_budget)))
+        required = max(2, int(min_samples))
+        rows: list[sqlite3.Row] = []
+        if topic_keys:
+            placeholders = ",".join("?" for _ in topic_keys)
+            with self._lock:
+                rows = self._conn.execute(
+                    f"""SELECT * FROM attention_weights
+                        WHERE task_type=? AND topic_key IN ({placeholders})
+                        ORDER BY topic_key,mode""",
+                    (task, *topic_keys),
+                ).fetchall()
+
+        now = datetime.now(timezone.utc)
+        evidence: list[dict[str, Any]] = []
+        for row in rows:
+            last_seen = parse_iso8601(str(row["last_observed_at"] or ""))
+            age_days = (
+                max(0.0, (now - last_seen).total_seconds() / 86400.0)
+                if last_seen is not None
+                else 0.0
+            )
+            decay = 0.5 ** (age_days / _attentional_decay_days())
+            samples = int(row["used_count"]) + int(row["ignored_count"])
+            evidence.append(
+                {
+                    "topic_key": str(row["topic_key"]),
+                    "mode": str(row["mode"]),
+                    "used_count": int(row["used_count"]),
+                    "helpful_count": int(row["helpful_count"]),
+                    "ignored_count": int(row["ignored_count"]),
+                    "harmful_count": int(row["harmful_count"]),
+                    "sample_count": samples,
+                    "weight_delta": round(float(row["weight_delta"]), 6),
+                    "effective_delta": round(float(row["weight_delta"]) * decay, 6),
+                    "decay_factor": round(decay, 6),
+                    "eligible": samples >= required,
+                }
+            )
+
+        eligible = [item for item in evidence if item["eligible"]]
+        topic_deltas: list[float] = []
+        for topic in topic_keys:
+            topic_rows = [item for item in eligible if item["topic_key"] == topic]
+            if topic_rows:
+                topic_deltas.append(
+                    max(topic_rows, key=lambda item: abs(float(item["effective_delta"])))[
+                        "effective_delta"
+                    ]
+                )
+        aggregate_delta = (
+            max(-0.10, min(0.10, sum(topic_deltas) / len(topic_deltas)))
+            if topic_deltas
+            else 0.0
+        )
+
+        mode_rank = {"none": 0, "lean": 1, "focused": 2, "procedural": 3, "deep": 4}
+        shadow_mode = mode
+        mode_reason = "static attention gate remains authoritative"
+        if mode != "none" and eligible:
+            current_rows = [item for item in eligible if item["mode"] == mode]
+            current_delta = (
+                min((float(item["effective_delta"]) for item in current_rows), default=0.0)
+            )
+            if current_delta <= -0.05:
+                shadow_mode = {
+                    "deep": "focused",
+                    "procedural": "lean",
+                    "focused": "lean",
+                }.get(mode, "lean")
+                mode_reason = "repeated ignored outcomes support a one-level shadow downgrade"
+            else:
+                positive = [
+                    item
+                    for item in eligible
+                    if float(item["effective_delta"]) >= 0.05
+                    and mode_rank.get(str(item["mode"]), 0) > mode_rank.get(mode, 1)
+                ]
+                if positive:
+                    best = max(
+                        positive,
+                        key=lambda item: (
+                            float(item["effective_delta"]),
+                            int(item["sample_count"]),
+                            mode_rank.get(str(item["mode"]), 0),
+                        ),
+                    )
+                    shadow_mode = str(best["mode"])
+                    mode_reason = (
+                        f"resolved outcomes for {best['topic_key']} support the previously useful "
+                        f"{shadow_mode} mode"
+                    )
+
+        shadow_budget = baseline
+        if mode != "none" and baseline > 0 and topic_deltas:
+            shadow_budget = max(
+                min(300, maximum),
+                min(maximum, round(baseline * (1.0 + aggregate_delta))),
+            )
+        return {
+            "policy_version": ATTENTION_POLICY_VERSION,
+            "mode": "shadow",
+            "task_type": task,
+            "topics": topic_keys,
+            "live_mode": mode,
+            "shadow_mode": shadow_mode,
+            "live_budget": baseline,
+            "shadow_budget": shadow_budget,
+            "budget_delta": round(aggregate_delta, 6),
+            "sample_count": sum(int(item["sample_count"]) for item in eligible),
+            "required_samples_per_topic_mode": required,
+            "evidence": evidence,
+            "reason": mode_reason,
+            "applied": False,
+        }
+
+    def record_attention_observation(
+        self,
+        task_id: str,
+        *,
+        task_type: str,
+        topics: Sequence[str],
+        live_mode: str,
+        live_budget: int,
+        max_budget: int,
+        selected_count: int,
+        control: bool = False,
+    ) -> dict[str, Any]:
+        """Persist the policy decision before its attribution outcome exists."""
+
+        recommendation = self.attention_recommendation(
+            task_type,
+            topics,
+            live_mode,
+            live_budget,
+            max_budget=max_budget,
+        )
+        now = utc_now()
+        initial = "control" if control else ("no_context" if selected_count <= 0 else "pending")
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO attention_observations(
+                     task_id,task_type,topics_json,live_mode,live_budget,shadow_mode,
+                     shadow_budget,policy_version,selected_count,usage_outcome,created_at,resolved_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    normalize_text(task_id)[:100],
+                    recommendation["task_type"],
+                    _trace_json(recommendation["topics"]),
+                    recommendation["live_mode"],
+                    recommendation["live_budget"],
+                    recommendation["shadow_mode"],
+                    recommendation["shadow_budget"],
+                    recommendation["policy_version"],
+                    max(0, int(selected_count)),
+                    initial,
+                    now,
+                    now if initial != "pending" else None,
+                ),
+            )
+        return recommendation
+
+    @staticmethod
+    def _attention_weight_delta(
+        used_count: int,
+        ignored_count: int,
+        helpful_count: int,
+        harmful_count: int,
+    ) -> float:
+        samples = used_count + ignored_count
+        if samples < 4:
+            return 0.0
+        used_rate = used_count / samples
+        delta = 0.0
+        if used_rate >= 0.80:
+            delta = 0.10
+        elif used_rate >= 0.65:
+            delta = 0.05
+        elif used_rate <= 0.20:
+            delta = -0.10
+        elif used_rate <= 0.35:
+            delta = -0.05
+        if helpful_count >= 2 and harmful_count == 0:
+            delta = max(delta, 0.10)
+        if harmful_count > 0 and harmful_count >= helpful_count:
+            delta = min(delta, -0.10)
+        return round(max(-0.10, min(0.10, delta)), 6)
+
+    def _refresh_attention_weights_tx(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        task_type: str,
+        topics: Sequence[str],
+        now: str,
+    ) -> None:
+        topic_keys = set(topics)
+        if not topic_keys:
+            return
+        rows = conn.execute(
+            """SELECT topics_json,live_mode,usage_outcome,final_outcome,
+                      COALESCE(resolved_at,created_at) observed_at
+               FROM attention_observations
+               WHERE task_type=? AND usage_outcome IN ('used','ignored')
+               ORDER BY created_at""",
+            (task_type,),
+        ).fetchall()
+        aggregates: dict[tuple[str, str], dict[str, Any]] = {}
+        for row in rows:
+            try:
+                row_topics = json.loads(str(row["topics_json"] or "[]"))
+            except json.JSONDecodeError:
+                row_topics = []
+            if not isinstance(row_topics, list):
+                continue
+            for topic in topic_keys.intersection(str(item) for item in row_topics):
+                key = (topic, str(row["live_mode"]))
+                values = aggregates.setdefault(
+                    key,
+                    {
+                        "used": 0,
+                        "ignored": 0,
+                        "helpful": 0,
+                        "harmful": 0,
+                        "last": str(row["observed_at"]),
+                    },
+                )
+                used = str(row["usage_outcome"]) == "used"
+                values["used" if used else "ignored"] += 1
+                final = str(row["final_outcome"])
+                values["helpful"] += int(used and final in {"helpful", "validated"})
+                values["harmful"] += int(used and final in {"harmful", "corrected"})
+                values["last"] = max(values["last"], str(row["observed_at"]))
+
+        for topic in topic_keys:
+            conn.execute(
+                "DELETE FROM attention_weights WHERE task_type=? AND topic_key=?",
+                (task_type, topic),
+            )
+        for (topic, mode), values in aggregates.items():
+            delta = self._attention_weight_delta(
+                int(values["used"]),
+                int(values["ignored"]),
+                int(values["helpful"]),
+                int(values["harmful"]),
+            )
+            conn.execute(
+                """INSERT INTO attention_weights(
+                     task_type,topic_key,mode,used_count,helpful_count,ignored_count,
+                     harmful_count,weight_delta,last_observed_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    task_type,
+                    topic,
+                    mode,
+                    values["used"],
+                    values["helpful"],
+                    values["ignored"],
+                    values["harmful"],
+                    delta,
+                    values["last"],
+                    now,
+                ),
+            )
+
+    def _set_attention_final_outcome_tx(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        task_id: str,
+        outcome: str,
+        now: str,
+    ) -> None:
+        attention = conn.execute(
+            """SELECT task_type,topics_json FROM attention_observations
+               WHERE task_id=? AND usage_outcome='used'""",
+            (task_id,),
+        ).fetchone()
+        if not attention:
+            return
+        final = (
+            outcome
+            if outcome in {"helpful", "harmful", "validated", "corrected"}
+            else "pending"
+        )
+        conn.execute(
+            """UPDATE attention_observations SET final_outcome=?,resolved_at=?
+               WHERE task_id=? AND usage_outcome='used'""",
+            (final, now, task_id),
+        )
+        try:
+            topics = json.loads(str(attention["topics_json"] or "[]"))
+        except json.JSONDecodeError:
+            topics = []
+        self._refresh_attention_weights_tx(
+            conn,
+            task_type=str(attention["task_type"]),
+            topics=topics if isinstance(topics, list) else [],
+            now=now,
+        )
+
+    def attention_learning_summary(self, *, limit: int = 100) -> dict[str, Any]:
+        """Expose bounded evidence without claiming the shadow policy improved recall."""
+
+        from .cognition import ATTENTION_POLICY_VERSION
+
+        bounded = max(1, min(500, int(limit)))
+        with self._lock:
+            weights = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM attention_weights
+                       ORDER BY ABS(weight_delta) DESC,
+                                used_count+ignored_count DESC,last_observed_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            summary = dict(
+                self._conn.execute(
+                    """SELECT COUNT(*) observation_count,
+                              SUM(CASE WHEN usage_outcome IN ('used','ignored') THEN 1 ELSE 0 END)
+                                resolved_count,
+                              SUM(CASE WHEN usage_outcome='used' THEN 1 ELSE 0 END) used_count,
+                              SUM(CASE WHEN usage_outcome='ignored' THEN 1 ELSE 0 END) ignored_count,
+                              SUM(CASE WHEN usage_outcome='no_context' THEN 1 ELSE 0 END)
+                                no_context_count,
+                              SUM(CASE WHEN usage_outcome='control' THEN 1 ELSE 0 END) control_count,
+                              COUNT(DISTINCT CASE
+                                WHEN usage_outcome IN ('used','ignored')
+                                THEN substr(COALESCE(resolved_at,created_at),1,10) END) observed_days
+                       FROM attention_observations"""
+                ).fetchone()
+            )
+            recent = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT task_id,task_type,topics_json,live_mode,live_budget,shadow_mode,
+                              shadow_budget,policy_version,selected_count,usage_outcome,
+                              final_outcome,created_at,resolved_at
+                       FROM attention_observations ORDER BY created_at DESC LIMIT 100"""
+                ).fetchall()
+            ]
+        now = datetime.now(timezone.utc)
+        for row in weights:
+            last_seen = parse_iso8601(str(row.get("last_observed_at") or ""))
+            age_days = (
+                max(0.0, (now - last_seen).total_seconds() / 86400.0)
+                if last_seen is not None
+                else 0.0
+            )
+            row["sample_count"] = int(row["used_count"]) + int(row["ignored_count"])
+            row["effective_delta"] = round(
+                float(row["weight_delta"]) * (0.5 ** (age_days / _attentional_decay_days())),
+                6,
+            )
+        for row in recent:
+            raw_topics = row.pop("topics_json", "[]")
+            try:
+                topics = json.loads(str(raw_topics or "[]"))
+            except json.JSONDecodeError:
+                topics = []
+            row["topics"] = topics if isinstance(topics, list) else []
+        resolved = int(summary.get("resolved_count") or 0)
+        used = int(summary.get("used_count") or 0)
+        observed_days = int(summary.get("observed_days") or 0)
+        changed = sum(
+            int(row["live_mode"] != row["shadow_mode"] or row["live_budget"] != row["shadow_budget"])
+            for row in recent
+        )
+        return {
+            "policy_version": ATTENTION_POLICY_VERSION,
+            "mode": "shadow",
+            "summary": {
+                **{key: int(value or 0) for key, value in summary.items()},
+                "attributed_use_rate": round(used / resolved, 6) if resolved else None,
+                "recent_shadow_changes": changed,
+            },
+            "weights": weights,
+            "recent_observations": recent,
+            "promotion_gate": {
+                "ready": observed_days >= 7 and resolved >= 50,
+                "checks": [
+                    {
+                        "key": "days",
+                        "label": "Resolved observation days",
+                        "value": observed_days,
+                        "target": 7,
+                        "passed": observed_days >= 7,
+                    },
+                    {
+                        "key": "outcomes",
+                        "label": "Resolved retrieval outcomes",
+                        "value": resolved,
+                        "target": 50,
+                        "passed": resolved >= 50,
+                    },
+                ],
+            },
+            "definitions": {
+                "weight_delta": "A bounded topic and task-type recommendation from resolved attributed use versus ignored context.",
+                "effective_delta": "The weight delta after a 30-day half-life; stale topic salience fades automatically.",
+            },
+            "claim_boundary": (
+                "Topic cues are observational and may be correlated. Shadow recommendations never "
+                "change live recall, and precision improvement requires a later controlled exposure."
+            ),
+        }
+
     def calibrate_metacognitive_probability(
         self,
         raw_probability: float,
@@ -5064,6 +5811,30 @@ class CortexStore:
             writes = self._conn.execute(
                 "SELECT * FROM memory_write_decisions ORDER BY created_at DESC LIMIT ?", (bounded,)
             ).fetchall()
+            mechanics = self._conn.execute(
+                """SELECT decision_id id,'semantic_consolidation' mechanic,status action,
+                          reason summary,created_at,left_id first_id,right_id second_id,
+                          result_memory_id result_id,reversed_at
+                   FROM semantic_consolidation_decisions
+                   UNION ALL
+                   SELECT decision_id,'adaptive_pruning',status,reason,created_at,
+                          memory_id,NULL,NULL,reversed_at
+                   FROM adaptive_pruning_decisions
+                   UNION ALL
+                   SELECT proposal_id,'scoring_weights',status,reason,created_at,
+                          task_type,NULL,NULL,rolled_back_at
+                   FROM scoring_weight_proposals
+                   UNION ALL
+                   SELECT proposal_id,'adaptive_reconsolidation',status,reason,created_at,
+                          memory_id,evidence_memory_id,NULL,reversed_at
+                   FROM adaptive_reconsolidation_proposals
+                   UNION ALL
+                   SELECT proposal_id,'schema_formation',status,reason,created_at,
+                          result_memory_id,NULL,result_memory_id,reversed_at
+                   FROM schema_formation_proposals
+                   ORDER BY created_at DESC LIMIT ?""",
+                (bounded,),
+            ).fetchall()
         entries: list[dict[str, Any]] = []
         for raw in reviews:
             row = dict(raw)
@@ -5172,6 +5943,32 @@ class CortexStore:
                     "scope": "admission",
                     "reversible": str(row["decision"]) != "ignored",
                     "reversed_at": None,
+                }
+            )
+        for raw in mechanics:
+            row = dict(raw)
+            entries.append(
+                {
+                    "id": str(row["id"]),
+                    "category": "brain_mechanics",
+                    "action": str(row["action"]),
+                    "summary": f"{str(row['mechanic']).replace('_', ' ').title()}: {row['summary']}",
+                    "actor": "cortex-auto-judge",
+                    "created_at": row["created_at"],
+                    "affected_ids": [
+                        value
+                        for value in (
+                            row.get("first_id"),
+                            row.get("second_id"),
+                            row.get("result_id"),
+                        )
+                        if value
+                    ],
+                    "before": {},
+                    "after": {"mechanic": row["mechanic"], "status": row["action"]},
+                    "scope": "proposal_then_explicit_gate",
+                    "reversible": True,
+                    "reversed_at": row.get("reversed_at"),
                 }
             )
         entries.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
@@ -5986,7 +6783,18 @@ class CortexStore:
         proposals: list[dict[str, Any]] = []
         for row in dirty_rows:
             deps = self.dependencies(row["id"])
-            active = [d for d in deps if d["active"] and d["evidence_state"] in {"active", "cold"}]
+            active = [
+                d
+                for d in deps
+                if d["active"]
+                and (
+                    d["evidence_state"] in {"active", "cold"}
+                    or (
+                        d["relation"] == "consolidated_from"
+                        and d["evidence_state"] == "archived"
+                    )
+                )
+            ]
             if not active:
                 proposals.append(
                     {"memory_id": row["id"], "action": "quarantine", "confidence": 0.0, "reason": "no active evidence"}
@@ -6288,7 +7096,7 @@ class CortexStore:
     def memory_traces(self, *, limit: int = 100, task_id: str | None = None) -> list[dict[str, Any]]:
         """Return parsed task-level trace snapshots, newest first."""
 
-        safe_limit = max(1, min(1000, int(limit)))
+        safe_limit = max(1, min(50000, int(limit)))
         with self._lock:
             if task_id:
                 rows = self._conn.execute(
@@ -6411,6 +7219,237 @@ class CortexStore:
             "claim_boundary": (
                 "Selection precision means attributed answer use among selected memories; "
                 "it does not by itself prove answer correctness or task causality."
+            ),
+        }
+
+    def scoring_health(self, *, weeks: int = 12, limit: int = 10000) -> dict[str, Any]:
+        """Return resolved weekly retrieval-quality trends and signal evidence.
+
+        Missing attribution is kept separate from false positives. That avoids
+        making an unresolved task look like evidence that a selected memory was
+        irrelevant.
+        """
+
+        from .retrieval import (
+            LIVE_SCORING_POLICY_VERSION,
+            SCORE_SIGNAL_WEIGHTS,
+            SHADOW_SCORING_POLICY_VERSION,
+            SHADOW_SCORE_SIGNAL_WEIGHTS,
+        )
+
+        safe_weeks = max(1, min(104, int(weeks)))
+        traces = self.memory_traces(limit=max(1, min(50000, int(limit))))
+        positive_ratings = {"Essential", "Helpful"}
+        negative_ratings = {"Irrelevant", "Misleading", "Harmful"}
+        weekly: dict[str, dict[str, Any]] = {}
+        signal_totals = {
+            signal: {"used": 0.0, "unused": 0.0, "used_samples": 0, "unused_samples": 0}
+            for signal in SCORE_SIGNAL_WEIGHTS
+        }
+        policy_versions: dict[str, int] = {}
+        observed_days: set[str] = set()
+        shadow_deltas = {"used": [], "unused": [], "all": []}
+
+        def new_bucket(label: str) -> dict[str, Any]:
+            return {
+                "week": label,
+                "tasks": 0,
+                "injections": 0,
+                "resolved_injections": 0,
+                "pending_injections": 0,
+                "used_injections": 0,
+                "resolved_tokens": 0,
+                "wasted_tokens": 0,
+                "evaluated_ratings": 0,
+                "helpful_ratings": 0,
+                "false_positive_ratings": 0,
+            }
+
+        for trace in traces:
+            try:
+                created_at = datetime.fromisoformat(str(trace.get("created_at") or ""))
+            except ValueError:
+                continue
+            iso_year, iso_week, _weekday = created_at.isocalendar()
+            week_label = f"{iso_year}-W{iso_week:02d}"
+            bucket = weekly.setdefault(week_label, new_bucket(week_label))
+            bucket["tasks"] += 1
+            observed_days.add(created_at.date().isoformat())
+            influence = {
+                str(item.get("memory_id") or ""): bool(item.get("influenced"))
+                for item in trace.get("influence", [])
+                if item.get("memory_id")
+            }
+            evaluations = {
+                str(item.get("memory_id") or ""): str(item.get("rating") or "Neutral")
+                for item in trace.get("evaluations", [])
+                if item.get("memory_id")
+            }
+            for candidate in trace.get("candidate_memories", []):
+                if not bool(candidate.get("selected")):
+                    continue
+                memory_id = str(candidate.get("memory_id") or "")
+                bucket["injections"] += 1
+                policy_version = str(
+                    candidate.get("scoring_policy_version") or "legacy_unversioned"
+                )
+                policy_versions[policy_version] = policy_versions.get(policy_version, 0) + 1
+                if memory_id not in influence:
+                    bucket["pending_injections"] += 1
+                    continue
+                used = bool(influence[memory_id])
+                tokens = max(0, int(candidate.get("estimated_tokens") or 0))
+                bucket["resolved_injections"] += 1
+                bucket["resolved_tokens"] += tokens
+                if used:
+                    bucket["used_injections"] += 1
+                else:
+                    bucket["wasted_tokens"] += tokens
+                rating = evaluations.get(memory_id)
+                if rating is not None:
+                    bucket["evaluated_ratings"] += 1
+                    bucket["helpful_ratings"] += int(rating in positive_ratings)
+                    bucket["false_positive_ratings"] += int(rating in negative_ratings)
+                components = (
+                    candidate.get("components")
+                    if isinstance(candidate.get("components"), dict)
+                    else {}
+                )
+                for signal, weight in SCORE_SIGNAL_WEIGHTS.items():
+                    try:
+                        observed_weight = float(
+                            components.get(f"live_weight_{signal}", weight)
+                        )
+                        contribution = max(
+                            0.0,
+                            observed_weight * float(components.get(signal) or 0.0),
+                        )
+                    except (TypeError, ValueError):
+                        contribution = 0.0
+                    target = "used" if used else "unused"
+                    signal_totals[signal][target] += contribution
+                    signal_totals[signal][f"{target}_samples"] += 1
+                try:
+                    shadow_delta = float(components["shadow_score_delta"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                shadow_deltas["all"].append(shadow_delta)
+                shadow_deltas["used" if used else "unused"].append(shadow_delta)
+
+        def finalize(bucket: dict[str, Any]) -> dict[str, Any]:
+            resolved = int(bucket["resolved_injections"])
+            evaluated = int(bucket["evaluated_ratings"])
+            resolved_tokens = int(bucket["resolved_tokens"])
+            return {
+                **bucket,
+                "precision": (
+                    round(int(bucket["used_injections"]) / resolved, 6) if resolved else None
+                ),
+                "helpfulness": (
+                    round(int(bucket["helpful_ratings"]) / evaluated, 6) if evaluated else None
+                ),
+                "false_positive_rate": (
+                    round(int(bucket["false_positive_ratings"]) / evaluated, 6)
+                    if evaluated
+                    else None
+                ),
+                "waste_rate": (
+                    round(int(bucket["wasted_tokens"]) / resolved_tokens, 6)
+                    if resolved_tokens
+                    else None
+                ),
+            }
+
+        weekly_rows = [finalize(weekly[key]) for key in sorted(weekly)[-safe_weeks:]]
+        overall = new_bucket("all")
+        for row in weekly_rows:
+            for field in (
+                "tasks",
+                "injections",
+                "resolved_injections",
+                "pending_injections",
+                "used_injections",
+                "resolved_tokens",
+                "wasted_tokens",
+                "evaluated_ratings",
+                "helpful_ratings",
+                "false_positive_ratings",
+            ):
+                overall[field] += int(row[field])
+        current = finalize(overall)
+        used_total = sum(float(item["used"]) for item in signal_totals.values())
+        unused_total = sum(float(item["unused"]) for item in signal_totals.values())
+        signals = []
+        for signal, values in signal_totals.items():
+            signals.append(
+                {
+                    "signal": signal,
+                    "weight": SCORE_SIGNAL_WEIGHTS[signal],
+                    "shadow_weight": SHADOW_SCORE_SIGNAL_WEIGHTS[signal],
+                    "used_contribution_share": (
+                        round(float(values["used"]) / used_total, 6) if used_total else None
+                    ),
+                    "unused_contribution_share": (
+                        round(float(values["unused"]) / unused_total, 6)
+                        if unused_total
+                        else None
+                    ),
+                    "used_samples": int(values["used_samples"]),
+                    "unused_samples": int(values["unused_samples"]),
+                }
+            )
+        signals.sort(
+            key=lambda item: float(item.get("unused_contribution_share") or 0.0),
+            reverse=True,
+        )
+        top_false = next(
+            (item for item in signals if item["unused_samples"] > 0),
+            None,
+        )
+        best_true = max(
+            (item for item in signals if item["used_samples"] > 0),
+            key=lambda item: float(item.get("used_contribution_share") or 0.0),
+            default=None,
+        )
+
+        def mean(values: list[float]) -> float | None:
+            return round(sum(values) / len(values), 6) if values else None
+
+        return {
+            "generated_at": utc_now(),
+            "current": current,
+            "weekly": weekly_rows,
+            "signals": signals,
+            "top_false_signal": top_false,
+            "best_true_signal": best_true,
+            "policy": {
+                "live_version": LIVE_SCORING_POLICY_VERSION,
+                "shadow_version": SHADOW_SCORING_POLICY_VERSION,
+                "live_weights": dict(SCORE_SIGNAL_WEIGHTS),
+                "shadow_weights": dict(SHADOW_SCORE_SIGNAL_WEIGHTS),
+                "observed_policy_versions": policy_versions,
+                "mode": "shadow",
+            },
+            "shadow": {
+                "resolved_observations": len(shadow_deltas["all"]),
+                "observed_days": len(observed_days),
+                "mean_score_delta": mean(shadow_deltas["all"]),
+                "mean_used_score_delta": mean(shadow_deltas["used"]),
+                "mean_unused_score_delta": mean(shadow_deltas["unused"]),
+                "ready_for_selection_experiment": (
+                    len(observed_days) >= 7 and len(shadow_deltas["all"]) >= 50
+                ),
+            },
+            "definitions": {
+                "precision": "Attributed answer use divided by resolved selected memories.",
+                "helpfulness": "Helpful or Essential ratings divided by all evaluated selected memories.",
+                "false_positive_rate": "Irrelevant, Misleading, or Harmful ratings divided by all evaluated selected memories.",
+                "waste_rate": "Estimated tokens from resolved selected memories with no answer-use attribution divided by all resolved selected-memory tokens.",
+                "signal_breakdown": "Share of weighted component contribution among used or unused resolved selections; observational, not causal.",
+            },
+            "claim_boundary": (
+                "The shadow policy currently records score deltas only. It cannot claim better selection "
+                "precision until a gated selection experiment exposes shadow-ranked memories to real tasks."
             ),
         }
 
@@ -6834,8 +7873,20 @@ class CortexStore:
         restore: bool = False,
     ) -> bool:
         memory = self.get_memory(memory_id)
-        if not memory or memory["state"] != "archived":
+        if not memory or (
+            memory["state"] != "archived" and not bool(memory.get("stranded"))
+        ):
             return False
+        strand_decision_id: str | None = None
+        if bool(memory.get("stranded")):
+            with self._lock:
+                strand = self._conn.execute(
+                    """SELECT decision_id FROM memory_strands
+                       WHERE memory_id=? AND status='active'
+                       ORDER BY created_at DESC LIMIT 1""",
+                    (memory_id,),
+                ).fetchone()
+            strand_decision_id = str(strand["decision_id"]) if strand else None
         with self.transaction() as conn:
             conn.execute(
                 """INSERT INTO pruning_regret(memory_id,query,score,restored,created_at)
@@ -6843,6 +7894,13 @@ class CortexStore:
                 (memory_id, normalize_text(query)[:500], _clamp(score), int(restore), utc_now()),
             )
         if restore:
+            if strand_decision_id:
+                return bool(
+                    self.undo_adaptive_pruning(
+                        strand_decision_id,
+                        via_regret=True,
+                    ).get("restored")
+                )
             return self.set_state(memory_id, "active", reason="automatic pruning-regret restoration")
         return True
 
@@ -7022,6 +8080,27 @@ class CortexStore:
                    WHERE task_id=? AND outcome='pending'""",
                 (used_count, "used" if used_count else "ignored", now, task_id),
             )
+            attention = conn.execute(
+                """SELECT task_type,topics_json FROM attention_observations
+                   WHERE task_id=? AND usage_outcome='pending'""",
+                (task_id,),
+            ).fetchone()
+            if attention:
+                conn.execute(
+                    """UPDATE attention_observations SET usage_outcome=?,resolved_at=?
+                       WHERE task_id=? AND usage_outcome='pending'""",
+                    ("used" if used_count else "ignored", now, task_id),
+                )
+                try:
+                    topics = json.loads(str(attention["topics_json"] or "[]"))
+                except json.JSONDecodeError:
+                    topics = []
+                self._refresh_attention_weights_tx(
+                    conn,
+                    task_type=str(attention["task_type"]),
+                    topics=topics if isinstance(topics, list) else [],
+                    now=now,
+                )
             self._resolve_memory_trace_usage_tx(
                 conn,
                 task_id,
@@ -7057,6 +8136,27 @@ class CortexStore:
                    WHERE task_id=? AND used_count>0""",
                 (outcome, now, task_id),
             )
+            attention = conn.execute(
+                """SELECT task_type,topics_json FROM attention_observations
+                   WHERE task_id=? AND usage_outcome='used'""",
+                (task_id,),
+            ).fetchone()
+            if attention:
+                conn.execute(
+                    """UPDATE attention_observations SET final_outcome=?,resolved_at=?
+                       WHERE task_id=? AND usage_outcome='used'""",
+                    (outcome, now, task_id),
+                )
+                try:
+                    topics = json.loads(str(attention["topics_json"] or "[]"))
+                except json.JSONDecodeError:
+                    topics = []
+                self._refresh_attention_weights_tx(
+                    conn,
+                    task_type=str(attention["task_type"]),
+                    topics=topics if isinstance(topics, list) else [],
+                    now=now,
+                )
             sync_task_outcome_tx(
                 conn,
                 task_id,
@@ -7150,6 +8250,12 @@ class CortexStore:
             conn.execute(
                 "UPDATE recall_budget_observations SET outcome=?,resolved_at=? WHERE task_id=?",
                 (outcome, now, task_id),
+            )
+            self._set_attention_final_outcome_tx(
+                conn,
+                task_id=task_id,
+                outcome=outcome,
+                now=now,
             )
             count_columns = {
                 "helpful": "helpful_count",
@@ -7307,6 +8413,12 @@ class CortexStore:
         conn.execute(
             "UPDATE recall_budget_observations SET outcome=?,resolved_at=? WHERE task_id=?",
             (prior_outcome, now, task_id),
+        )
+        self._set_attention_final_outcome_tx(
+            conn,
+            task_id=task_id,
+            outcome=prior_outcome,
+            now=now,
         )
         conn.execute("DELETE FROM access_log WHERE query=?", (f"task-outcome:{label['label_id']}",))
         conn.execute(
@@ -12107,6 +13219,13 @@ class CortexStore:
             },
             "memory_traces": self.memory_traces(limit=100),
             "memory_trace_summary": self.memory_trace_summary(limit=1000),
+            "scoring_health": self.scoring_health(),
+            "attention_learning": self.attention_learning_summary(),
+            "semantic_consolidation": self.semantic_consolidation_snapshot(),
+            "adaptive_pruning": self.adaptive_pruning_snapshot(),
+            "scoring_weights": self.scoring_weight_snapshot(),
+            "adaptive_reconsolidation": self.adaptive_reconsolidation_snapshot(),
+            "schema_formation": self.schema_formation_snapshot(),
             "memory_write_decisions": self.memory_write_decisions(limit=100),
             "memory_write_summary": self.memory_write_summary(limit=1000),
             "context_feedback": self.context_feedback_summary(limit=1000),
@@ -12178,6 +13297,8 @@ class CortexStore:
         return {
             "generated_at": snapshot["generated_at"],
             "retrieval": snapshot["memory_trace_summary"],
+            "scoring": snapshot["scoring_health"],
+            "attention": snapshot["attention_learning"],
             "storage": snapshot["memory_write_summary"],
             "context_adaptation": {
                 "buckets": context_feedback.get("buckets", 0),
@@ -12477,6 +13598,62 @@ class CortexStore:
                      SELECT 1 FROM operator_review_decisions d WHERE d.review_id=r.review_id
                    )"""
             ).fetchone()["n"]
+            invalid_adaptive_pruning = self._conn.execute(
+                """SELECT COUNT(*) n FROM adaptive_pruning_decisions
+                   WHERE NOT json_valid(score_evidence_json)
+                      OR NOT json_valid(edge_snapshot_json)
+                      OR relevance_score<0 OR relevance_score>1
+                      OR confidence<0 OR confidence>1"""
+            ).fetchone()["n"]
+            invalid_scoring_weights = self._conn.execute(
+                """SELECT COUNT(*) n FROM scoring_weight_proposals
+                   WHERE NOT json_valid(baseline_weights_json)
+                      OR NOT json_valid(proposed_weights_json)
+                      OR NOT json_valid(evidence_json)
+                      OR confidence<0 OR confidence>1
+                      OR max_deviation<0
+                   """
+            ).fetchone()["n"]
+            invalid_active_scoring_weights = self._conn.execute(
+                """SELECT COUNT(*) n FROM scoring_weight_history h
+                   WHERE h.status='active' AND CASE
+                     WHEN NOT json_valid(h.weights_json) THEN 1
+                     ELSE EXISTS(
+                       SELECT 1 FROM json_each(h.weights_json) w
+                       WHERE CAST(w.value AS REAL)<0.02 OR CAST(w.value AS REAL)>0.30
+                     )
+                   END"""
+            ).fetchone()["n"]
+            invalid_adaptive_reconsolidation = self._conn.execute(
+                """SELECT COUNT(*) n FROM adaptive_reconsolidation_proposals
+                   WHERE NOT json_valid(source_snapshot_json)
+                      OR NOT json_valid(edge_snapshot_json)
+                      OR confidence<0 OR confidence>1
+                      OR (action='supersede' AND COALESCE(replacement_content,'')='')"""
+            ).fetchone()["n"]
+            invalid_schema_formations = self._conn.execute(
+                """SELECT COUNT(*) n FROM schema_formation_proposals p
+                   LEFT JOIN memories m ON m.id=p.result_memory_id
+                   WHERE NOT json_valid(p.source_ids_json)
+                      OR NOT json_valid(p.included_source_ids_json)
+                      OR NOT json_valid(p.source_hashes_json)
+                      OR NOT json_valid(p.evidence_json)
+                      OR p.confidence<0 OR p.confidence>1
+                      OR (p.action IN ('abstract','partial') AND COALESCE(p.abstract_content,'')='')
+                      OR (p.status='applied' AND (m.id IS NULL OR m.kind<>'schema'))
+                      OR (p.status='applied' AND (
+                           SELECT COUNT(*) FROM memory_dependencies d
+                           WHERE d.memory_id=p.result_memory_id
+                             AND d.relation='schema_source' AND d.active=1
+                         )<3)"""
+            ).fetchone()["n"]
+            invalid_strands = self._conn.execute(
+                """SELECT COUNT(*) n FROM memory_strands s
+                   JOIN memories m ON m.id=s.memory_id
+                   WHERE NOT json_valid(s.edge_snapshot_json)
+                      OR (s.status='active' AND m.stranded<>1)
+                      OR (s.status<>'active' AND m.stranded=1)"""
+            ).fetchone()["n"]
         return {
             "ok": not (
                 duplicate_groups
@@ -12513,6 +13690,12 @@ class CortexStore:
                 or missing_presentations
                 or stale_presentations
                 or orphan_refinery_proposals
+                or invalid_adaptive_pruning
+                or invalid_scoring_weights
+                or invalid_active_scoring_weights
+                or invalid_adaptive_reconsolidation
+                or invalid_schema_formations
+                or invalid_strands
             ),
             "duplicate_groups": len(duplicate_groups),
             "orphan_fts_rows": orphan_fts,
@@ -12550,6 +13733,562 @@ class CortexStore:
             "missing_memory_presentations": missing_presentations,
             "stale_memory_presentations": stale_presentations,
             "orphan_refinery_proposals": orphan_refinery_proposals,
+            "invalid_adaptive_pruning": invalid_adaptive_pruning,
+            "invalid_scoring_weights": invalid_scoring_weights,
+            "invalid_active_scoring_weights": invalid_active_scoring_weights,
+            "invalid_adaptive_reconsolidation": invalid_adaptive_reconsolidation,
+            "invalid_schema_formations": invalid_schema_formations,
+            "invalid_memory_strands": invalid_strands,
+        }
+
+    def semantic_consolidation_candidates(
+        self,
+        *,
+        limit: int = 5,
+        scan_limit: int = 500,
+        lexical_threshold: float = 0.5,
+    ) -> list[dict[str, Any]]:
+        """Return deterministic, safety-filtered pairs for model review.
+
+        This is intentionally separate from :meth:`consolidate`, which keeps
+        handling near-exact duplicate folding.  Candidate generation never
+        mutates memories and excludes protected, recall-ineligible, quarantined,
+        and contradiction-bearing records.
+        """
+
+        bounded_limit = max(1, min(int(limit), 5))
+        bounded_scan = max(bounded_limit, min(int(scan_limit), 2000))
+        threshold = max(0.0, min(float(lexical_threshold), 1.0))
+        with self._lock:
+            rows = [
+                _decode_memory_metadata(row)
+                for row in self._conn.execute(
+                    """SELECT DISTINCT m.*,
+                              (SELECT COUNT(*) FROM edges e
+                               WHERE e.src_id=m.id OR e.dst_id=m.id) edge_count
+                       FROM memories m
+                       JOIN memory_recall_memberships rm
+                         ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                        AND rm.eligibility='primary'
+                       JOIN memory_recall_sets rs
+                         ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                       WHERE m.state IN ('active','cold')
+                         AND m.pinned=0 AND m.protected=0
+                         AND m.quarantine_reason IS NULL
+                         AND m.kind NOT IN ('identity','preference','prospective')
+                       ORDER BY m.created_at ASC,m.id ASC LIMIT ?""",
+                    (bounded_scan,),
+                ).fetchall()
+            ]
+            contradiction_ids = {
+                str(row["memory_id"])
+                for row in self._conn.execute(
+                    """SELECT src_id memory_id FROM edges WHERE relation='contradicts'
+                       UNION SELECT dst_id memory_id FROM edges WHERE relation='contradicts'"""
+                ).fetchall()
+            }
+            graph_pairs = {
+                tuple(sorted((str(row["src_id"]), str(row["dst_id"]))))
+                for row in self._conn.execute(
+                    """SELECT src_id,dst_id FROM edges
+                       WHERE relation IN ('supports','extends')"""
+                ).fetchall()
+            }
+            decided_pairs = {
+                tuple(sorted((str(row["left_id"]), str(row["right_id"]))))
+                for row in self._conn.execute(
+                    """SELECT left_id,right_id FROM semantic_consolidation_decisions
+                       WHERE status IN ('proposed','applied','kept_separate','linked')"""
+                ).fetchall()
+            }
+
+        eligible = [row for row in rows if str(row["id"]) not in contradiction_ids]
+        candidates: list[dict[str, Any]] = []
+        for left_index, left in enumerate(eligible):
+            left_id = str(left["id"])
+            left_tokens = set(query_tokens(str(left.get("content") or "")))
+            left_entities = {item.casefold() for item in left.get("entities") or []}
+            for right in eligible[left_index + 1 :]:
+                right_id = str(right["id"])
+                pair_key = tuple(sorted((left_id, right_id)))
+                if pair_key in decided_pairs:
+                    continue
+                if _memory_applicability_key(left) != _memory_applicability_key(right):
+                    continue
+                # A different value for the same structured claim is a conflict,
+                # not consolidation material, even if a legacy database lacks
+                # an explicit contradiction edge.
+                same_subject = bool(left.get("subject")) and (
+                    str(left.get("subject")).casefold() == str(right.get("subject") or "").casefold()
+                )
+                same_predicate = bool(left.get("predicate")) and (
+                    str(left.get("predicate")).casefold()
+                    == str(right.get("predicate") or "").casefold()
+                )
+                if (
+                    same_subject
+                    and same_predicate
+                    and left.get("object_value") is not None
+                    and right.get("object_value") is not None
+                    and str(left.get("object_value")).casefold()
+                    != str(right.get("object_value")).casefold()
+                ):
+                    continue
+
+                right_tokens = set(query_tokens(str(right.get("content") or "")))
+                union = left_tokens | right_tokens
+                lexical_overlap = len(left_tokens & right_tokens) / len(union) if union else 0.0
+                right_entities = {item.casefold() for item in right.get("entities") or []}
+                shared_entities = sorted(left_entities & right_entities)
+                evidence: list[str] = []
+                if str(left.get("kind")) == str(right.get("kind")) and lexical_overlap >= threshold:
+                    evidence.append("same_kind_lexical_overlap")
+                if same_subject and not same_predicate:
+                    evidence.append("shared_subject_supplementary_claims")
+                if shared_entities and (
+                    str(left.get("predicate") or "").casefold()
+                    != str(right.get("predicate") or "").casefold()
+                    or lexical_overlap >= 0.2
+                ):
+                    evidence.append("shared_entities_related_predicates")
+                if pair_key in graph_pairs:
+                    evidence.append("supports_or_extends_graph_neighbors")
+                if not evidence:
+                    continue
+                candidates.append(
+                    {
+                        "pair_id": f"{left_id}:{right_id}",
+                        "left": left,
+                        "right": right,
+                        "lexical_overlap": round(lexical_overlap, 6),
+                        "shared_entities": shared_entities[:20],
+                        "candidate_evidence": evidence,
+                        "oldest_at": min(str(left["created_at"]), str(right["created_at"])),
+                    }
+                )
+
+        candidates.sort(
+            key=lambda item: (
+                str(item["oldest_at"]),
+                str(item["left"]["id"]),
+                str(item["right"]["id"]),
+            )
+        )
+        return candidates[:bounded_limit]
+
+    def semantic_consolidation_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        bounded = max(1, min(int(limit), 500))
+        with self._lock:
+            runs = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM semantic_consolidation_runs
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            decisions = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT d.*,lm.content left_content,rm.content right_content,
+                              nm.content result_content,
+                              (SELECT f.label FROM semantic_consolidation_feedback f
+                               WHERE f.decision_id=d.decision_id
+                               ORDER BY f.created_at DESC LIMIT 1) feedback_label
+                       FROM semantic_consolidation_decisions d
+                       JOIN memories lm ON lm.id=d.left_id
+                       JOIN memories rm ON rm.id=d.right_id
+                       LEFT JOIN memories nm ON nm.id=d.result_memory_id
+                       ORDER BY d.created_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            count_rows = self._conn.execute(
+                """SELECT status,COUNT(*) count FROM semantic_consolidation_decisions
+                   GROUP BY status"""
+            ).fetchall()
+            feedback_rows = self._conn.execute(
+                """SELECT label,COUNT(*) count FROM semantic_consolidation_feedback
+                   GROUP BY label"""
+            ).fetchall()
+        for run in runs:
+            run["usage"] = _json_object(run.pop("usage_json", "{}"))
+        for decision in decisions:
+            decision["candidate_evidence"] = _json_string_list(
+                decision.pop("candidate_evidence_json", "[]")
+            )
+            decision.pop("source_snapshot_json", None)
+        counts = {
+            str(row["status"]): int(row["count"] or 0)
+            for row in count_rows
+        }
+        feedback = {
+            str(row["label"]): int(row["count"] or 0)
+            for row in feedback_rows
+        }
+        reviewed = sum(feedback.values())
+        correctness = feedback.get("correct", 0) / reviewed if reviewed else None
+        return {
+            "policy_version": "semantic_consolidation_v1",
+            "default_mode": "shadow",
+            "batch_limit": 5,
+            "counts": counts,
+            "feedback": {
+                **feedback,
+                "reviewed": reviewed,
+                "correctness": round(correctness, 6) if correctness is not None else None,
+                "target": 0.8,
+                "ready": reviewed > 0 and correctness is not None and correctness >= 0.8,
+            },
+            "runs": runs,
+            "decisions": decisions,
+            "claim_boundary": (
+                "Proposed model judgments are not applied merges. Applied decisions remain "
+                "separately labeled and reversible."
+            ),
+        }
+
+    @staticmethod
+    def _refresh_semantic_consolidation_run_tx(
+        conn: sqlite3.Connection,
+        run_id: str,
+    ) -> None:
+        conn.execute(
+            """UPDATE semantic_consolidation_runs
+               SET judgment_count=(
+                     SELECT COUNT(*) FROM semantic_consolidation_decisions WHERE run_id=?
+                   ),
+                   merge_count=(
+                     SELECT COUNT(*) FROM semantic_consolidation_decisions
+                     WHERE run_id=? AND action='merge'
+                   ),
+                   keep_count=(
+                     SELECT COUNT(*) FROM semantic_consolidation_decisions
+                     WHERE run_id=? AND action='keep_separate'
+                   ),
+                   link_count=(
+                     SELECT COUNT(*) FROM semantic_consolidation_decisions
+                     WHERE run_id=? AND action='link_as_related'
+                   ),
+                   applied_count=(
+                     SELECT COUNT(*) FROM semantic_consolidation_decisions
+                     WHERE run_id=? AND status IN ('applied','kept_separate','linked')
+                   )
+               WHERE run_id=?""",
+            (run_id, run_id, run_id, run_id, run_id, run_id),
+        )
+
+    def apply_semantic_consolidation(
+        self,
+        decision_id: str,
+        *,
+        actor: str = "cortex-auto-judge",
+    ) -> dict[str, Any]:
+        """Apply one previously recorded semantic decision after stale checks."""
+
+        with self._lock:
+            raw_decision = self._conn.execute(
+                """SELECT * FROM semantic_consolidation_decisions
+                   WHERE decision_id=?""",
+                (decision_id,),
+            ).fetchone()
+        if not raw_decision:
+            raise ValueError("semantic consolidation decision not found")
+        decision = dict(raw_decision)
+        if str(decision["status"]) != "proposed":
+            raise ValueError("semantic consolidation decision is not proposed")
+        left = self.get_memory(str(decision["left_id"]))
+        right = self.get_memory(str(decision["right_id"]))
+        if not left or not right:
+            raise ValueError("semantic consolidation source memory is unavailable")
+        if (
+            not self.is_memory_recall_eligible(str(left["id"]))
+            or not self.is_memory_recall_eligible(str(right["id"]))
+            or not _semantic_consolidation_sources_are_safe(left, right, decision)
+        ):
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE semantic_consolidation_decisions
+                       SET status='skipped' WHERE decision_id=? AND status='proposed'""",
+                    (decision_id,),
+                )
+                self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+            return {"decision_id": decision_id, "status": "skipped", "reason": "stale or unsafe sources"}
+
+        action = str(decision["action"])
+        now = utc_now()
+        if action == "keep_separate":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE semantic_consolidation_decisions
+                       SET status='kept_separate',applied_at=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (now, decision_id),
+                )
+                self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+            return {"decision_id": decision_id, "status": "kept_separate"}
+        if action == "link_as_related":
+            created = self.add_edge(
+                str(left["id"]),
+                str(right["id"]),
+                "related",
+                weight=max(0.1, min(float(decision["confidence"]), 0.7)),
+                evidence_type="semantic_consolidation_judgment",
+                evidence_key=decision_id,
+                explanation=str(decision["reason"]),
+                source_ref=f"semantic-consolidation:{decision_id}",
+                metadata={"decision_id": decision_id, "actor": actor},
+            )
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE semantic_consolidation_decisions
+                       SET status='linked',applied_at=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (now, decision_id),
+                )
+                self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+            return {"decision_id": decision_id, "status": "linked", "edge_created": bool(created)}
+
+        merged_content = normalize_text(str(decision.get("merged_content") or ""))
+        if not merged_content:
+            raise ValueError("merge decision is missing consolidated content")
+        entities = _normalize_context_list(
+            [*(left.get("entities") or []), *(right.get("entities") or [])]
+        )
+        source_snapshot = str(decision.get("source_snapshot_json") or "")
+        if not _json_object(source_snapshot):
+            source_snapshot = json.dumps(
+                {"left": left, "right": right, "edges": [], "edge_evidence": []},
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            )
+        result_memory_id, created = self.add_memory(
+            merged_content,
+            kind=str(left["kind"]) if left["kind"] == right["kind"] else "semantic",
+            source_type="semantic_consolidation",
+            source_category="AUTOMATIC_APPROVED",
+            origin_source_category="AUTOMATIC_APPROVED",
+            approval_state="automatic_approved",
+            source_ref=f"semantic-consolidation:{decision_id}",
+            context_mode=str(left.get("context_mode") or "standalone"),
+            scope=dict(left.get("scope") or {}),
+            entities=entities,
+            preconditions=dict(left.get("preconditions") or {}),
+            source_context=(
+                f"Consolidated from {str(left['id'])[:8]} and {str(right['id'])[:8]}; "
+                "the decision ledger retains both source snapshots and their edge evidence."
+            ),
+            applicable_systems=list(left.get("applicable_systems") or []),
+            applicable_versions=list(left.get("applicable_versions") or []),
+            confidence=max(float(left.get("confidence") or 0.0), float(right.get("confidence") or 0.0)),
+            currentness_confidence=max(
+                float(left.get("currentness_confidence") or 0.0),
+                float(right.get("currentness_confidence") or 0.0),
+            ),
+            importance=max(float(left.get("importance") or 0.0), float(right.get("importance") or 0.0)),
+            uniqueness=max(float(left.get("uniqueness") or 0.0), float(right.get("uniqueness") or 0.0)),
+            volatility=max(float(left.get("volatility") or 0.0), float(right.get("volatility") or 0.0)),
+            trust=max(float(left.get("trust") or 0.0), float(right.get("trust") or 0.0)),
+            subject=left.get("subject") if left.get("subject") == right.get("subject") else None,
+            predicate=left.get("predicate") if left.get("predicate") == right.get("predicate") else None,
+            object_value=(
+                left.get("object_value")
+                if left.get("object_value") == right.get("object_value")
+                else None
+            ),
+            extraction_method="autojudge_semantic_consolidation",
+            evidence_ids=(str(left["id"]), str(right["id"])),
+            storage_policy="trusted",
+            record_role="canonical",
+            preserve_exact_duplicate=True,
+        )
+        with self.transaction() as conn:
+            current_left = conn.execute("SELECT * FROM memories WHERE id=?", (left["id"],)).fetchone()
+            current_right = conn.execute("SELECT * FROM memories WHERE id=?", (right["id"],)).fetchone()
+            if not current_left or not current_right or not _semantic_consolidation_sources_are_safe(
+                dict(current_left), dict(current_right), decision
+            ):
+                self._refinery_state_change_tx(
+                    conn,
+                    dict(conn.execute("SELECT * FROM memories WHERE id=?", (result_memory_id,)).fetchone()),
+                    "archived",
+                    f"semantic consolidation {decision_id[:8]} became stale before apply",
+                    now,
+                )
+                conn.execute(
+                    """UPDATE semantic_consolidation_decisions
+                       SET status='skipped',result_memory_id=?,source_snapshot_json=?
+                       WHERE decision_id=?""",
+                    (result_memory_id, source_snapshot, decision_id),
+                )
+                self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+                return {
+                    "decision_id": decision_id,
+                    "status": "skipped",
+                    "reason": "sources changed during apply",
+                    "result_memory_id": result_memory_id,
+                }
+            for source in (dict(current_left), dict(current_right)):
+                self._refinery_state_change_tx(
+                    conn,
+                    source,
+                    "archived",
+                    f"reversible semantic consolidation into {result_memory_id[:8]}",
+                    now,
+                )
+            # These dependencies are preserved lineage, not evidence lost by
+            # the intentional source archive. Future corrections still dirty
+            # the result, while dependency repair recognizes archived
+            # consolidated sources as retained evidence.
+            conn.execute(
+                """UPDATE memory_dependencies
+                   SET relation='consolidated_from'
+                   WHERE memory_id=? AND evidence_id IN (?,?)
+                     AND relation='derived_from'""",
+                (result_memory_id, left["id"], right["id"]),
+            )
+            conn.execute(
+                """UPDATE memories SET dirty=0,dirty_reason=NULL
+                   WHERE id=?""",
+                (result_memory_id,),
+            )
+            conn.execute(
+                """UPDATE semantic_consolidation_decisions
+                   SET status='applied',result_memory_id=?,source_snapshot_json=?,applied_at=?
+                   WHERE decision_id=? AND status='proposed'""",
+                (result_memory_id, source_snapshot, now, decision_id),
+            )
+            self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+        for source in (left, right):
+            self.add_edge(
+                result_memory_id,
+                str(source["id"]),
+                "consolidates",
+                weight=max(0.1, min(float(decision["confidence"]), 1.0)),
+                evidence_type="semantic_consolidation_judgment",
+                evidence_key=f"{decision_id}:{source['id']}",
+                explanation=str(decision["reason"]),
+                source_ref=f"semantic-consolidation:{decision_id}",
+                metadata={"decision_id": decision_id, "actor": actor},
+            )
+        return {
+            "decision_id": decision_id,
+            "status": "applied",
+            "result_memory_id": result_memory_id,
+            "created": bool(created),
+        }
+
+    def undo_semantic_consolidation(self, decision_id: str) -> dict[str, Any]:
+        """Restore both source memories and retire the consolidated result."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM semantic_consolidation_decisions
+                   WHERE decision_id=? AND status='applied'""",
+                (decision_id,),
+            ).fetchone()
+        if not raw:
+            return {
+                "decision_id": decision_id,
+                "restored": 0,
+                "error": "applied semantic consolidation decision not found",
+            }
+        decision = dict(raw)
+        snapshots = _json_object(decision.get("source_snapshot_json"))
+        now = utc_now()
+        restored = 0
+        with self.transaction() as conn:
+            for label, memory_id in (
+                ("left", str(decision["left_id"])),
+                ("right", str(decision["right_id"])),
+            ):
+                current = conn.execute("SELECT * FROM memories WHERE id=?", (memory_id,)).fetchone()
+                prior = snapshots.get(label) if isinstance(snapshots.get(label), dict) else {}
+                prior_state = str(prior.get("state") or "active")
+                if current and str(current["state"]) != prior_state:
+                    self._refinery_state_change_tx(
+                        conn,
+                        dict(current),
+                        prior_state,
+                        f"undo semantic consolidation {decision_id[:8]}",
+                        now,
+                    )
+                    restored += 1
+            result_id = str(decision.get("result_memory_id") or "")
+            result = conn.execute("SELECT * FROM memories WHERE id=?", (result_id,)).fetchone()
+            if result and str(result["state"]) != "archived":
+                self._refinery_state_change_tx(
+                    conn,
+                    dict(result),
+                    "archived",
+                    f"reversed semantic consolidation {decision_id[:8]}",
+                    now,
+                )
+            conn.execute(
+                """UPDATE semantic_consolidation_decisions
+                   SET status='reversed',reversed_at=? WHERE decision_id=?""",
+                (now, decision_id),
+            )
+            self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+        return {
+            "decision_id": decision_id,
+            "restored": restored,
+            "result_memory_id": decision.get("result_memory_id"),
+            "status": "reversed",
+        }
+
+    def record_semantic_consolidation_feedback(
+        self,
+        decision_id: str,
+        label: str,
+        *,
+        reason: str = "",
+        actor: str = "cortex-operator",
+    ) -> dict[str, Any]:
+        """Record human review; a wrong applied merge is immediately undone."""
+
+        label_value = normalize_text(label).casefold()
+        if label_value not in {"correct", "wrong"}:
+            raise ValueError("feedback label must be correct or wrong")
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM semantic_consolidation_decisions
+                   WHERE decision_id=?""",
+                (decision_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("semantic consolidation decision not found")
+        decision = dict(row)
+        undo_result: dict[str, Any] | None = None
+        if label_value == "wrong" and str(decision["status"]) == "applied":
+            undo_result = self.undo_semantic_consolidation(decision_id)
+        elif label_value == "wrong" and str(decision["status"]) == "proposed":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE semantic_consolidation_decisions SET status='skipped'
+                       WHERE decision_id=? AND status='proposed'""",
+                    (decision_id,),
+                )
+                self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO semantic_consolidation_feedback(
+                   feedback_id,decision_id,label,reason,actor,created_at
+                   ) VALUES(?,?,?,?,?,?)""",
+                (
+                    str(uuid.uuid4()),
+                    decision_id,
+                    label_value,
+                    normalize_text(reason)[:600],
+                    normalize_text(actor)[:160] or "cortex-operator",
+                    utc_now(),
+                ),
+            )
+        return {
+            "decision_id": decision_id,
+            "label": label_value,
+            "undo": undo_result,
         }
 
     def consolidate(self, *, dry_run: bool = True, similarity_threshold: float = 0.78) -> dict[str, Any]:
@@ -12699,6 +14438,1733 @@ class CortexStore:
             ):
                 restored += 1
         return {"run_id": run_id, "restored": restored}
+
+    def adaptive_pruning_candidates(
+        self,
+        *,
+        relevance_threshold: float = 0.25,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Return low-relevance memories with inspectable activity evidence."""
+
+        threshold = _clamp(float(relevance_threshold))
+        bounded = max(1, min(int(limit), 50))
+        with self._lock:
+            rows = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT DISTINCT m.*,
+                              (SELECT COUNT(*) FROM edges e
+                               WHERE e.src_id=m.id OR e.dst_id=m.id) edge_count
+                       FROM memories m
+                       JOIN memory_recall_memberships rm
+                         ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                        AND rm.eligibility='primary'
+                       JOIN memory_recall_sets rs
+                         ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                       WHERE m.state IN ('active','cold')
+                         AND m.pinned=0 AND m.protected=0 AND m.stranded=0
+                         AND m.quarantine_reason IS NULL
+                         AND m.kind NOT IN ('identity','preference','prospective')
+                         AND NOT (
+                           m.kind='schema'
+                           AND julianday('now')-julianday(m.created_at)<7
+                         )
+                       ORDER BY m.created_at ASC,m.id ASC LIMIT 5000"""
+                ).fetchall()
+            ]
+            pending = {
+                (str(row["memory_id"]), str(row["memory_hash"]))
+                for row in self._conn.execute(
+                    """SELECT memory_id,memory_hash FROM adaptive_pruning_decisions
+                       WHERE status IN ('proposed','applied','kept')"""
+                ).fetchall()
+            }
+        experience = self.memory_experience_strengths([str(row["id"]) for row in rows])
+        candidates: list[dict[str, Any]] = []
+        for raw in rows:
+            memory_id = str(raw["id"])
+            if (memory_id, str(raw["content_hash"])) in pending:
+                continue
+            item = {**raw, **experience.get(memory_id, {})}
+            score, evidence = _pruning_relevance_score(item)
+            if score > threshold:
+                continue
+            candidates.append(
+                {
+                    "memory": _decode_memory_metadata(item),
+                    "relevance_score": score,
+                    "score_evidence": evidence,
+                }
+            )
+        candidates.sort(
+            key=lambda item: (
+                float(item["relevance_score"]),
+                str(item["memory"]["created_at"]),
+                str(item["memory"]["id"]),
+            )
+        )
+        return candidates[:bounded]
+
+    def adaptive_pruning_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        bounded = max(1, min(int(limit), 500))
+        with self._lock:
+            runs = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM adaptive_pruning_runs
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            decisions = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT d.*,m.content,m.kind,m.stranded,m.stranded_reason
+                       FROM adaptive_pruning_decisions d
+                       JOIN memories m ON m.id=d.memory_id
+                       ORDER BY d.created_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            count_rows = self._conn.execute(
+                """SELECT status,COUNT(*) count FROM adaptive_pruning_decisions
+                   GROUP BY status"""
+            ).fetchall()
+            action_rows = self._conn.execute(
+                """SELECT action,COUNT(*) count FROM adaptive_pruning_decisions
+                   GROUP BY action"""
+            ).fetchall()
+            strand_rows = self._conn.execute(
+                """SELECT status,COUNT(*) count FROM memory_strands GROUP BY status"""
+            ).fetchall()
+            applied = int(
+                self._conn.execute(
+                    """SELECT COUNT(*) count FROM adaptive_pruning_decisions
+                       WHERE status IN ('applied','reversed')"""
+                ).fetchone()["count"]
+            )
+            regrets = int(
+                self._conn.execute(
+                    """SELECT COUNT(DISTINCT r.memory_id) count
+                       FROM pruning_regret r
+                       WHERE EXISTS(
+                         SELECT 1 FROM adaptive_pruning_decisions d
+                         WHERE d.memory_id=r.memory_id
+                           AND d.status IN ('applied','reversed')
+                           AND r.created_at>=d.applied_at
+                       )"""
+                ).fetchone()["count"]
+            )
+        for run in runs:
+            run["usage"] = _json_object(run.pop("usage_json", "{}"))
+        for decision in decisions:
+            decision["score_evidence"] = _json_object(
+                decision.pop("score_evidence_json", "{}")
+            )
+            decision.pop("edge_snapshot_json", None)
+        return {
+            "policy_version": "adaptive_pruning_v1",
+            "default_mode": "shadow",
+            "candidate_limit": 50,
+            "counts": {
+                str(row["status"]): int(row["count"] or 0)
+                for row in count_rows
+            },
+            "actions": {
+                str(row["action"]): int(row["count"] or 0)
+                for row in action_rows
+            },
+            "strands": {
+                str(row["status"]): int(row["count"] or 0)
+                for row in strand_rows
+            },
+            "regret": {
+                "applied_memories": applied,
+                "regretted_memories": regrets,
+                "rate": round(regrets / applied, 6) if applied else None,
+                "target": 0.05,
+                "passed": applied > 0 and regrets / applied <= 0.05,
+            },
+            "runs": runs,
+            "decisions": decisions,
+            "claim_boundary": (
+                "Low relevance is a review signal, not proof that a memory is useless. "
+                "No pruning action hard-deletes memory content."
+            ),
+        }
+
+    @staticmethod
+    def _refresh_adaptive_pruning_run_tx(
+        conn: sqlite3.Connection,
+        run_id: str,
+    ) -> None:
+        conn.execute(
+            """UPDATE adaptive_pruning_runs
+               SET judgment_count=(
+                     SELECT COUNT(*) FROM adaptive_pruning_decisions WHERE run_id=?
+                   ),
+                   applied_count=(
+                     SELECT COUNT(*) FROM adaptive_pruning_decisions
+                     WHERE run_id=? AND status IN ('applied','kept')
+                   )
+               WHERE run_id=?""",
+            (run_id, run_id, run_id),
+        )
+
+    def apply_adaptive_pruning(
+        self,
+        decision_id: str,
+        *,
+        actor: str = "cortex-operator",
+    ) -> dict[str, Any]:
+        """Apply one pruning proposal after current-state and hash checks."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM adaptive_pruning_decisions WHERE decision_id=?""",
+                (decision_id,),
+            ).fetchone()
+        if not raw:
+            raise ValueError("adaptive pruning decision not found")
+        decision = dict(raw)
+        if str(decision["status"]) != "proposed":
+            raise ValueError("adaptive pruning decision is not proposed")
+        memory = self.get_memory(str(decision["memory_id"]))
+        if (
+            not memory
+            or str(memory.get("content_hash") or "") != str(decision["memory_hash"])
+            or str(memory.get("state") or "") not in {"active", "cold"}
+            or bool(memory.get("pinned"))
+            or bool(memory.get("protected"))
+            or str(memory.get("kind") or "") in {"identity", "preference", "prospective"}
+        ):
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_pruning_decisions SET status='skipped'
+                       WHERE decision_id=? AND status='proposed'""",
+                    (decision_id,),
+                )
+                self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+            return {"decision_id": decision_id, "status": "skipped", "reason": "stale or protected memory"}
+
+        action = str(decision["action"])
+        now = utc_now()
+        if action == "keep":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_pruning_decisions
+                       SET status='kept',result_state=?,applied_at=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (memory["state"], now, decision_id),
+                )
+                self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+            return {"decision_id": decision_id, "status": "kept", "state": memory["state"]}
+        if action == "quarantine" and not (
+            int(memory.get("harmful_count") or 0)
+            or int(memory.get("false_positive_count") or 0)
+        ):
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_pruning_decisions SET status='skipped'
+                       WHERE decision_id=? AND status='proposed'""",
+                    (decision_id,),
+                )
+                self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+            return {
+                "decision_id": decision_id,
+                "status": "skipped",
+                "reason": "quarantine requires harmful or false-positive evidence",
+            }
+
+        if action == "orphan_strand":
+            with self.transaction() as conn:
+                current = conn.execute(
+                    "SELECT * FROM memories WHERE id=?",
+                    (memory["id"],),
+                ).fetchone()
+                edge_rows = [
+                    dict(row)
+                    for row in conn.execute(
+                        """SELECT * FROM edges
+                           WHERE src_id=? OR dst_id=?
+                           ORDER BY created_at,src_id,dst_id,relation""",
+                        (memory["id"], memory["id"]),
+                    ).fetchall()
+                ]
+                snapshot = json.dumps(edge_rows, ensure_ascii=True, sort_keys=True)
+                conn.execute(
+                    "DELETE FROM edges WHERE src_id=? OR dst_id=?",
+                    (memory["id"], memory["id"]),
+                )
+                if str(current["state"]) != "cold":
+                    self._refinery_state_change_tx(
+                        conn,
+                        dict(current),
+                        "cold",
+                        f"reversible relevance stranding {decision_id[:8]}",
+                        now,
+                    )
+                conn.execute(
+                    """UPDATE memories SET stranded=1,stranded_reason=?,stranded_at=?,updated_at=?
+                       WHERE id=?""",
+                    (str(decision["reason"])[:600], now, now, memory["id"]),
+                )
+                conn.execute(
+                    """INSERT INTO memory_strands(
+                       strand_id,decision_id,memory_id,prior_state,reason,
+                       edge_snapshot_json,status,created_at
+                       ) VALUES(?,?,?,?,?,?,'active',?)""",
+                    (
+                        str(uuid.uuid4()),
+                        decision_id,
+                        memory["id"],
+                        memory["state"],
+                        str(decision["reason"])[:600],
+                        snapshot,
+                        now,
+                    ),
+                )
+                conn.execute(
+                    """UPDATE adaptive_pruning_decisions
+                       SET status='applied',result_state='cold',
+                           edge_snapshot_json=?,applied_at=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (snapshot, now, decision_id),
+                )
+                self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+            return {
+                "decision_id": decision_id,
+                "status": "applied",
+                "action": action,
+                "state": "cold",
+                "edges_removed": len(edge_rows),
+            }
+
+        target_state = {
+            "cool": "cold",
+            "archive": "archived" if str(memory["state"]) == "cold" else "cold",
+            "quarantine": "quarantine",
+        }[action]
+        with self.transaction() as conn:
+            current = conn.execute(
+                "SELECT * FROM memories WHERE id=?",
+                (memory["id"],),
+            ).fetchone()
+            if current and str(current["state"]) != target_state:
+                self._refinery_state_change_tx(
+                    conn,
+                    dict(current),
+                    target_state,
+                    f"reversible adaptive pruning {decision_id[:8]}: {decision['reason']}",
+                    now,
+                )
+            conn.execute(
+                """UPDATE adaptive_pruning_decisions
+                   SET status='applied',result_state=?,applied_at=?
+                   WHERE decision_id=? AND status='proposed'""",
+                (target_state, now, decision_id),
+            )
+            self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+        return {
+            "decision_id": decision_id,
+            "status": "applied",
+            "action": action,
+            "state": target_state,
+        }
+
+    def undo_adaptive_pruning(
+        self,
+        decision_id: str,
+        *,
+        via_regret: bool = False,
+    ) -> dict[str, Any]:
+        """Restore lifecycle state and any graph edges removed by stranding."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM adaptive_pruning_decisions
+                   WHERE decision_id=? AND status='applied'""",
+                (decision_id,),
+            ).fetchone()
+        if not raw:
+            return {
+                "decision_id": decision_id,
+                "restored": False,
+                "error": "applied adaptive pruning decision not found",
+            }
+        decision = dict(raw)
+        memory = self.get_memory(str(decision["memory_id"]))
+        if not memory:
+            return {
+                "decision_id": decision_id,
+                "restored": False,
+                "error": "pruned memory not found",
+            }
+        now = utc_now()
+        restored_edges = 0
+        with self.transaction() as conn:
+            current = conn.execute(
+                "SELECT * FROM memories WHERE id=?",
+                (memory["id"],),
+            ).fetchone()
+            prior_state = str(decision["prior_state"])
+            if current and str(current["state"]) != prior_state:
+                self._refinery_state_change_tx(
+                    conn,
+                    dict(current),
+                    prior_state,
+                    (
+                        f"pruning regret restoration {decision_id[:8]}"
+                        if via_regret
+                        else f"undo adaptive pruning {decision_id[:8]}"
+                    ),
+                    now,
+                )
+            edge_snapshot = json.loads(str(decision.get("edge_snapshot_json") or "[]"))
+            if isinstance(edge_snapshot, list):
+                for edge in edge_snapshot:
+                    if not isinstance(edge, dict):
+                        continue
+                    inserted = conn.execute(
+                        """INSERT OR IGNORE INTO edges(
+                           src_id,dst_id,relation,weight,evidence_count,
+                           created_at,last_reinforced_at
+                           ) VALUES(?,?,?,?,?,?,?)""",
+                        (
+                            edge.get("src_id"),
+                            edge.get("dst_id"),
+                            edge.get("relation"),
+                            edge.get("weight"),
+                            edge.get("evidence_count"),
+                            edge.get("created_at"),
+                            edge.get("last_reinforced_at"),
+                        ),
+                    )
+                    restored_edges += int(inserted.rowcount > 0)
+            conn.execute(
+                """UPDATE memories SET stranded=0,stranded_reason=NULL,stranded_at=NULL,updated_at=?
+                   WHERE id=?""",
+                (now, memory["id"]),
+            )
+            conn.execute(
+                """UPDATE memory_strands
+                   SET status=?,restored_at=?
+                   WHERE decision_id=? AND status='active'""",
+                ("restored" if via_regret else "reversed", now, decision_id),
+            )
+            conn.execute(
+                """UPDATE adaptive_pruning_decisions
+                   SET status='reversed',reversed_at=? WHERE decision_id=?""",
+                (now, decision_id),
+            )
+            self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
+        return {
+            "decision_id": decision_id,
+            "restored": True,
+            "state": decision["prior_state"],
+            "edges_restored": restored_edges,
+            "via_regret": via_regret,
+        }
+
+    def scoring_weight_evidence(self, *, lookback_days: int = 7) -> dict[str, Any]:
+        """Summarize resolved score components by task type without claiming causality."""
+
+        from .retrieval import SCORE_SIGNAL_WEIGHTS
+
+        bounded_days = max(1, min(90, int(lookback_days)))
+        cutoff = datetime.now(timezone.utc).timestamp() - bounded_days * 86400
+        buckets: dict[str, dict[str, Any]] = {}
+        traces = self.memory_traces(limit=50000)
+        for trace in traces:
+            try:
+                created = datetime.fromisoformat(str(trace.get("created_at") or "")).timestamp()
+            except (TypeError, ValueError):
+                continue
+            if created < cutoff:
+                continue
+            task_type = normalize_text(str(trace.get("task_type") or "general"))[:80] or "general"
+            influence = {
+                str(item.get("memory_id") or ""): bool(item.get("influenced"))
+                for item in trace.get("influence", [])
+                if item.get("memory_id")
+            }
+            bucket = buckets.setdefault(
+                task_type,
+                {
+                    "task_type": task_type,
+                    "tasks": 0,
+                    "resolved": 0,
+                    "used": 0,
+                    "signals": {
+                        signal: {
+                            "used_total": 0.0,
+                            "unused_total": 0.0,
+                            "used_samples": 0,
+                            "unused_samples": 0,
+                        }
+                        for signal in SCORE_SIGNAL_WEIGHTS
+                    },
+                },
+            )
+            bucket["tasks"] += 1
+            for candidate in trace.get("candidate_memories", []):
+                if not bool(candidate.get("selected")):
+                    continue
+                memory_id = str(candidate.get("memory_id") or "")
+                if memory_id not in influence:
+                    continue
+                used = influence[memory_id]
+                bucket["resolved"] += 1
+                bucket["used"] += int(used)
+                components = candidate.get("components")
+                if not isinstance(components, dict):
+                    components = {}
+                for signal in SCORE_SIGNAL_WEIGHTS:
+                    try:
+                        value = _clamp(float(components.get(signal) or 0.0))
+                    except (TypeError, ValueError):
+                        value = 0.0
+                    target = "used" if used else "unused"
+                    bucket["signals"][signal][f"{target}_total"] += value
+                    bucket["signals"][signal][f"{target}_samples"] += 1
+
+        rows: list[dict[str, Any]] = []
+        for bucket in buckets.values():
+            resolved = int(bucket["resolved"])
+            signals: list[dict[str, Any]] = []
+            for signal, values in bucket["signals"].items():
+                used_samples = int(values["used_samples"])
+                unused_samples = int(values["unused_samples"])
+                used_mean = (
+                    float(values["used_total"]) / used_samples if used_samples else None
+                )
+                unused_mean = (
+                    float(values["unused_total"]) / unused_samples if unused_samples else None
+                )
+                signals.append(
+                    {
+                        "signal": signal,
+                        "current_weight": float(SCORE_SIGNAL_WEIGHTS[signal]),
+                        "used_mean": round(used_mean, 6) if used_mean is not None else None,
+                        "unused_mean": (
+                            round(unused_mean, 6) if unused_mean is not None else None
+                        ),
+                        "separation": (
+                            round(used_mean - unused_mean, 6)
+                            if used_mean is not None and unused_mean is not None
+                            else None
+                        ),
+                        "used_samples": used_samples,
+                        "unused_samples": unused_samples,
+                    }
+                )
+            rows.append(
+                {
+                    "task_type": bucket["task_type"],
+                    "tasks": int(bucket["tasks"]),
+                    "resolved": resolved,
+                    "used": int(bucket["used"]),
+                    "precision": (
+                        round(int(bucket["used"]) / resolved, 6) if resolved else None
+                    ),
+                    "signals": signals,
+                }
+            )
+        rows.sort(key=lambda row: (-int(row["resolved"]), str(row["task_type"])))
+        return {
+            "lookback_days": bounded_days,
+            "task_types": rows,
+            "minimum_resolved": 8,
+            "claim_boundary": (
+                "Signal separation is observational evidence from attributed selected memories. "
+                "It does not prove that changing a weight will improve precision."
+            ),
+        }
+
+    def active_scoring_weights(self, task_type: str | None) -> dict[str, Any]:
+        """Return an explicitly approved task profile or immutable code defaults."""
+
+        from .retrieval import LIVE_SCORING_POLICY_VERSION, SCORE_SIGNAL_WEIGHTS
+
+        normalized = normalize_text(str(task_type or "general"))[:80] or "general"
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM scoring_weight_history
+                   WHERE status='active' AND task_type IN (?, '__all__')
+                   ORDER BY CASE WHEN task_type=? THEN 0 ELSE 1 END,activated_at DESC
+                   LIMIT 1""",
+                (normalized, normalized),
+            ).fetchone()
+        if not row:
+            return {
+                "task_type": normalized,
+                "policy_version": LIVE_SCORING_POLICY_VERSION,
+                "weights": dict(SCORE_SIGNAL_WEIGHTS),
+                "source": "factory_defaults",
+            }
+        item = dict(row)
+        weights = _json_object(item.get("weights_json") or "{}")
+        if set(weights) != set(SCORE_SIGNAL_WEIGHTS):
+            weights = dict(SCORE_SIGNAL_WEIGHTS)
+            source = "factory_defaults_invalid_profile"
+            version = LIVE_SCORING_POLICY_VERSION
+        else:
+            weights = {key: float(weights[key]) for key in SCORE_SIGNAL_WEIGHTS}
+            source = "approved_profile"
+            version = str(item["policy_version"])
+        return {
+            "task_type": normalized,
+            "matched_task_type": str(item["task_type"]),
+            "policy_version": version,
+            "weights": weights,
+            "source": source,
+            "activated_at": item.get("activated_at"),
+            "history_id": item.get("history_id"),
+        }
+
+    def apply_scoring_weight_proposal(
+        self,
+        proposal_id: str,
+        *,
+        actor: str = "cortex-operator",
+        note: str = "",
+        confirm_large_change: bool = False,
+    ) -> dict[str, Any]:
+        """Explicitly activate one staged task profile with stale-baseline checks."""
+
+        from .retrieval import SCORE_SIGNAL_WEIGHTS
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scoring_weight_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("scoring weight proposal not found")
+        proposal = dict(row)
+        if str(proposal["status"]) != "proposed":
+            raise ValueError("scoring weight proposal is not proposed")
+        if bool(proposal["explicit_confirmation_required"]) and not confirm_large_change:
+            raise ValueError(
+                "proposal changes at least one weight by 0.05; explicit confirmation is required"
+            )
+        baseline = {
+            key: float(value)
+            for key, value in _json_object(proposal["baseline_weights_json"]).items()
+        }
+        proposed = {
+            key: float(value)
+            for key, value in _json_object(proposal["proposed_weights_json"]).items()
+        }
+        if set(proposed) != set(SCORE_SIGNAL_WEIGHTS):
+            raise ValueError("proposal does not contain the complete scoring signal set")
+        if any(value < 0.02 or value > 0.30 for value in proposed.values()):
+            raise ValueError("proposed weights must remain between 0.02 and 0.30")
+        active = self.active_scoring_weights(str(proposal["task_type"]))
+        if any(
+            abs(float(active["weights"].get(key, -1.0)) - float(baseline.get(key, -2.0)))
+            > 0.000001
+            for key in SCORE_SIGNAL_WEIGHTS
+        ):
+            raise ValueError("proposal baseline is stale; run weight tuning again")
+        now = utc_now()
+        policy_version = f"adaptive_weights:{proposal_id[:12]}"
+        history_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE scoring_weight_history
+                   SET status='superseded',deactivated_at=?
+                   WHERE task_type=? AND status='active'""",
+                (now, proposal["task_type"]),
+            )
+            conn.execute(
+                """INSERT INTO scoring_weight_history(
+                   history_id,proposal_id,task_type,policy_version,weights_json,status,
+                   precision_at_activation,activation_sample_count,activated_at,actor,note
+                   ) VALUES(?,?,?,?,?,'active',?,?,?,?,?)""",
+                (
+                    history_id,
+                    proposal_id,
+                    proposal["task_type"],
+                    policy_version,
+                    json.dumps(proposed, sort_keys=True),
+                    proposal["baseline_precision"],
+                    int(_json_object(proposal["evidence_json"]).get("resolved") or 0),
+                    now,
+                    normalize_text(actor)[:120] or "cortex-operator",
+                    normalize_text(note)[:600],
+                ),
+            )
+            conn.execute(
+                """UPDATE scoring_weight_proposals
+                   SET status='approved',decided_at=?,decided_by=?,decision_note=?
+                   WHERE proposal_id=? AND status='proposed'""",
+                (
+                    now,
+                    normalize_text(actor)[:120] or "cortex-operator",
+                    normalize_text(note)[:600],
+                    proposal_id,
+                ),
+            )
+        return {
+            "proposal_id": proposal_id,
+            "status": "approved",
+            "task_type": proposal["task_type"],
+            "policy_version": policy_version,
+            "history_id": history_id,
+        }
+
+    def reject_scoring_weight_proposal(
+        self,
+        proposal_id: str,
+        *,
+        actor: str = "cortex-operator",
+        note: str = "",
+    ) -> dict[str, Any]:
+        now = utc_now()
+        with self.transaction() as conn:
+            updated = conn.execute(
+                """UPDATE scoring_weight_proposals
+                   SET status='rejected',decided_at=?,decided_by=?,decision_note=?
+                   WHERE proposal_id=? AND status='proposed'""",
+                (
+                    now,
+                    normalize_text(actor)[:120] or "cortex-operator",
+                    normalize_text(note)[:600],
+                    proposal_id,
+                ),
+            )
+        if not updated.rowcount:
+            raise ValueError("proposed scoring weight proposal not found")
+        return {"proposal_id": proposal_id, "status": "rejected"}
+
+    def rollback_scoring_weights(
+        self,
+        proposal_id: str,
+        *,
+        reason: str,
+        automatic: bool = False,
+        actor: str = "cortex-weight-monitor",
+    ) -> dict[str, Any]:
+        """Deactivate an approved profile and restore its recorded baseline."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM scoring_weight_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        if not row or str(row["status"]) != "approved":
+            raise ValueError("approved scoring weight proposal not found")
+        proposal = dict(row)
+        baseline = _json_object(proposal["baseline_weights_json"])
+        now = utc_now()
+        restored_id = str(uuid.uuid4())
+        status = "auto_reverted" if automatic else "rolled_back"
+        with self.transaction() as conn:
+            active = conn.execute(
+                """UPDATE scoring_weight_history
+                   SET status='rolled_back',deactivated_at=?
+                   WHERE proposal_id=? AND status='active'""",
+                (now, proposal_id),
+            )
+            if not active.rowcount:
+                raise ValueError("proposal is not the active task profile")
+            conn.execute(
+                """INSERT INTO scoring_weight_history(
+                   history_id,proposal_id,task_type,policy_version,weights_json,status,
+                   precision_at_activation,activation_sample_count,activated_at,actor,note
+                   ) VALUES(?,?,?,?,?,'active',NULL,0,?,?,?)""",
+                (
+                    restored_id,
+                    None,
+                    proposal["task_type"],
+                    f"adaptive_rollback:{proposal_id[:12]}",
+                    json.dumps(baseline, sort_keys=True),
+                    now,
+                    normalize_text(actor)[:120] or "cortex-weight-monitor",
+                    normalize_text(reason)[:600],
+                ),
+            )
+            conn.execute(
+                """UPDATE scoring_weight_proposals
+                   SET status=?,rolled_back_at=?,rollback_reason=?
+                   WHERE proposal_id=?""",
+                (status, now, normalize_text(reason)[:600], proposal_id),
+            )
+        return {
+            "proposal_id": proposal_id,
+            "status": status,
+            "restored_history_id": restored_id,
+        }
+
+    def factory_reset_scoring_weights(
+        self,
+        task_type: str,
+        *,
+        actor: str = "cortex-operator",
+        note: str = "factory reset",
+    ) -> dict[str, Any]:
+        """Restore code defaults for one task type while preserving history."""
+
+        from .retrieval import LIVE_SCORING_POLICY_VERSION, SCORE_SIGNAL_WEIGHTS
+
+        normalized = normalize_text(task_type)[:80] or "general"
+        now = utc_now()
+        history_id = str(uuid.uuid4())
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE scoring_weight_history
+                   SET status='superseded',deactivated_at=?
+                   WHERE task_type=? AND status='active'""",
+                (now, normalized),
+            )
+            conn.execute(
+                """INSERT INTO scoring_weight_history(
+                   history_id,proposal_id,task_type,policy_version,weights_json,status,
+                   precision_at_activation,activation_sample_count,activated_at,actor,note
+                   ) VALUES(?,NULL,?,?,?,'active',NULL,0,?,?,?)""",
+                (
+                    history_id,
+                    normalized,
+                    f"{LIVE_SCORING_POLICY_VERSION}:factory_reset",
+                    json.dumps(SCORE_SIGNAL_WEIGHTS, sort_keys=True),
+                    now,
+                    normalize_text(actor)[:120] or "cortex-operator",
+                    normalize_text(note)[:600],
+                ),
+            )
+        return {
+            "task_type": normalized,
+            "status": "factory_reset",
+            "history_id": history_id,
+        }
+
+    def scoring_weight_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        from .retrieval import SCORE_SIGNAL_WEIGHTS
+
+        bounded = max(1, min(500, int(limit)))
+        with self._lock:
+            runs = [
+                dict(row)
+                for row in self._conn.execute(
+                    "SELECT * FROM scoring_weight_runs ORDER BY started_at DESC LIMIT ?",
+                    (bounded,),
+                ).fetchall()
+            ]
+            proposals = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM scoring_weight_proposals
+                       ORDER BY created_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            history = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM scoring_weight_history
+                       ORDER BY activated_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+        for run in runs:
+            run["usage"] = _json_object(run.pop("usage_json", "{}"))
+        for proposal in proposals:
+            proposal["baseline_weights"] = _json_object(
+                proposal.pop("baseline_weights_json", "{}")
+            )
+            proposal["proposed_weights"] = _json_object(
+                proposal.pop("proposed_weights_json", "{}")
+            )
+            proposal["evidence"] = _json_object(proposal.pop("evidence_json", "{}"))
+            proposal["explicit_confirmation_required"] = bool(
+                proposal["explicit_confirmation_required"]
+            )
+        for item in history:
+            item["weights"] = _json_object(item.pop("weights_json", "{}"))
+        active = [item for item in history if item["status"] == "active"]
+        return {
+            "policy_version": "adaptive_scoring_weights_v1",
+            "default_mode": "shadow",
+            "factory_defaults": dict(SCORE_SIGNAL_WEIGHTS),
+            "bounds": {"floor": 0.02, "ceiling": 0.30, "explicit_delta": 0.05},
+            "runs": runs,
+            "proposals": proposals,
+            "history": history,
+            "active_profiles": active,
+            "claim_boundary": (
+                "A staged weight proposal has no retrieval effect. Only an explicit approval "
+                "creates a live task profile, and post-activation precision can trigger rollback."
+            ),
+        }
+
+    def auto_revert_scoring_weights(
+        self,
+        *,
+        minimum_resolved: int = 10,
+        allowed_drop: float = 0.02,
+    ) -> list[dict[str, Any]]:
+        """Roll back active proposals after enough worse post-activation outcomes."""
+
+        traces = self.memory_traces(limit=50000)
+        with self._lock:
+            active = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT h.*,p.baseline_precision
+                       FROM scoring_weight_history h
+                       JOIN scoring_weight_proposals p ON p.proposal_id=h.proposal_id
+                       WHERE h.status='active' AND p.status='approved'"""
+                ).fetchall()
+            ]
+        results: list[dict[str, Any]] = []
+        for profile in active:
+            if profile.get("baseline_precision") is None:
+                continue
+            resolved = 0
+            used = 0
+            for trace in traces:
+                if str(trace.get("task_type") or "general") != str(profile["task_type"]):
+                    continue
+                if str(trace.get("created_at") or "") < str(profile["activated_at"]):
+                    continue
+                influence = {
+                    str(item.get("memory_id") or ""): bool(item.get("influenced"))
+                    for item in trace.get("influence", [])
+                    if item.get("memory_id")
+                }
+                for candidate in trace.get("candidate_memories", []):
+                    memory_id = str(candidate.get("memory_id") or "")
+                    if bool(candidate.get("selected")) and memory_id in influence:
+                        resolved += 1
+                        used += int(influence[memory_id])
+            precision = used / resolved if resolved else None
+            if (
+                resolved >= max(1, int(minimum_resolved))
+                and precision is not None
+                and precision + max(0.0, float(allowed_drop))
+                < float(profile["baseline_precision"])
+            ):
+                results.append(
+                    self.rollback_scoring_weights(
+                        str(profile["proposal_id"]),
+                        reason=(
+                            f"automatic rollback: precision {precision:.3f} fell below "
+                            f"baseline {float(profile['baseline_precision']):.3f}"
+                        ),
+                        automatic=True,
+                    )
+                )
+        return results
+
+    def adaptive_reconsolidation_candidates(
+        self,
+        *,
+        task_id: str | None = None,
+        lability_minutes: int = 30,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Find new same-task evidence for memories that actually influenced the task."""
+
+        bounded_minutes = max(1, min(1440, int(lability_minutes)))
+        bounded_limit = max(1, min(100, int(limit)))
+        now = datetime.now(timezone.utc)
+        traces = self.memory_traces(limit=1000, task_id=task_id)
+        candidates: list[dict[str, Any]] = []
+        with self._lock:
+            pending = {
+                (
+                    str(row["task_id"]),
+                    str(row["memory_id"]),
+                    str(row["evidence_memory_id"]),
+                )
+                for row in self._conn.execute(
+                    """SELECT task_id,memory_id,evidence_memory_id
+                       FROM adaptive_reconsolidation_proposals
+                       WHERE status IN ('proposed','applied')"""
+                ).fetchall()
+            }
+        for trace in traces:
+            if str(trace.get("outcome") or "") == "pending":
+                continue
+            reference = trace.get("completed_at") or trace.get("updated_at")
+            try:
+                reference_at = datetime.fromisoformat(str(reference))
+                if reference_at.tzinfo is None:
+                    reference_at = reference_at.replace(tzinfo=timezone.utc)
+            except (TypeError, ValueError):
+                continue
+            age_minutes = (now - reference_at).total_seconds() / 60.0
+            if age_minutes < 0 or age_minutes > bounded_minutes:
+                continue
+            used_ids = {
+                str(item.get("memory_id") or "")
+                for item in trace.get("influence", [])
+                if item.get("memory_id") and bool(item.get("influenced"))
+            }
+            evidence_ids = {
+                str(item.get("memory_id") or "")
+                for item in trace.get("memory_actions", [])
+                if item.get("memory_id")
+                and str(item.get("action") or "") in {"created", "updated"}
+            }
+            for memory_id in sorted(used_ids):
+                memory = self.get_memory(memory_id)
+                if not memory or str(memory.get("state")) not in {"active", "cold"}:
+                    continue
+                for evidence_id in sorted(evidence_ids - {memory_id}):
+                    evidence = self.get_memory(evidence_id)
+                    key = (str(trace["task_id"]), memory_id, evidence_id)
+                    if (
+                        not evidence
+                        or key in pending
+                        or str(evidence.get("state")) not in {"active", "cold"}
+                    ):
+                        continue
+                    candidates.append(
+                        {
+                            "task_id": str(trace["task_id"]),
+                            "task_type": str(trace.get("task_type") or "general"),
+                            "goal": str(trace.get("goal") or "")[:500],
+                            "used_memory": memory,
+                            "new_evidence": evidence,
+                            "used_at": reference,
+                            "lability_age_minutes": round(age_minutes, 3),
+                            "user_correction_wins": True,
+                        }
+                    )
+                    if len(candidates) >= bounded_limit:
+                        return candidates
+        return candidates
+
+    def adaptive_reconsolidation_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        bounded = max(1, min(500, int(limit)))
+        with self._lock:
+            runs = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM adaptive_reconsolidation_runs
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            proposals = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT p.*,m.content memory_content,m.kind memory_kind,
+                              e.content evidence_content,e.kind evidence_kind
+                       FROM adaptive_reconsolidation_proposals p
+                       JOIN memories m ON m.id=p.memory_id
+                       JOIN memories e ON e.id=p.evidence_memory_id
+                       ORDER BY p.created_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            counts = self._conn.execute(
+                """SELECT status,COUNT(*) count
+                   FROM adaptive_reconsolidation_proposals GROUP BY status"""
+            ).fetchall()
+            feedback = self._conn.execute(
+                """SELECT feedback_label,COUNT(*) count
+                   FROM adaptive_reconsolidation_proposals
+                   WHERE feedback_label IS NOT NULL GROUP BY feedback_label"""
+            ).fetchall()
+        for run in runs:
+            run["usage"] = _json_object(run.pop("usage_json", "{}"))
+        for proposal in proposals:
+            proposal["protected_confirmation_required"] = bool(
+                proposal["protected_confirmation_required"]
+            )
+            proposal.pop("source_snapshot_json", None)
+            proposal.pop("edge_snapshot_json", None)
+        labels = {str(row["feedback_label"]): int(row["count"]) for row in feedback}
+        reviewed = sum(labels.values())
+        correctness = labels.get("correct", 0) / reviewed if reviewed else None
+        return {
+            "policy_version": "adaptive_reconsolidation_v1",
+            "default_mode": "shadow",
+            "lability_minutes": 30,
+            "counts": {str(row["status"]): int(row["count"]) for row in counts},
+            "feedback": {
+                **labels,
+                "reviewed": reviewed,
+                "correctness": round(correctness, 6) if correctness is not None else None,
+                "target": 0.90,
+                "ready": bool(reviewed and correctness is not None and correctness >= 0.90),
+            },
+            "runs": runs,
+            "proposals": proposals,
+            "claim_boundary": (
+                "Retrieval plus same-task evidence opens a bounded review window; it does "
+                "not authorize a rewrite. User corrections remain authoritative."
+            ),
+        }
+
+    def apply_adaptive_reconsolidation(
+        self,
+        proposal_id: str,
+        *,
+        actor: str = "cortex-operator",
+        confirm_protected: bool = False,
+    ) -> dict[str, Any]:
+        """Apply one reviewed reconsolidation proposal with stale-source guards."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM adaptive_reconsolidation_proposals
+                   WHERE proposal_id=?""",
+                (proposal_id,),
+            ).fetchone()
+        if not raw:
+            raise ValueError("adaptive reconsolidation proposal not found")
+        proposal = dict(raw)
+        if str(proposal["status"]) != "proposed":
+            raise ValueError("adaptive reconsolidation proposal is not proposed")
+        if bool(proposal["protected_confirmation_required"]) and not confirm_protected:
+            raise ValueError("protected identity or preference requires explicit confirmation")
+        memory = self.get_memory(str(proposal["memory_id"]))
+        evidence = self.get_memory(str(proposal["evidence_memory_id"]))
+        if (
+            not memory
+            or not evidence
+            or str(memory.get("content_hash")) != str(proposal["memory_hash"])
+            or str(evidence.get("content_hash")) != str(proposal["evidence_hash"])
+        ):
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_reconsolidation_proposals SET status='skipped'
+                       WHERE proposal_id=? AND status='proposed'""",
+                    (proposal_id,),
+                )
+            return {"proposal_id": proposal_id, "status": "skipped", "reason": "source changed"}
+        action = str(proposal["action"])
+        now = utc_now()
+        if action == "supersede":
+            replacement = normalize_text(str(proposal.get("replacement_content") or ""))
+            if not replacement:
+                raise ValueError("supersede proposal has no replacement content")
+            changed = self.correct_memory(
+                str(memory["id"]),
+                replacement,
+                reason=f"reviewed adaptive reconsolidation {proposal_id[:8]}",
+                confidence=max(float(memory["confidence"]), float(evidence["confidence"])),
+                source_ref=f"memory:{evidence['id']}",
+            )
+            if not changed:
+                raise ValueError("reconsolidation target could not be corrected")
+        else:
+            relation = "extends" if action == "extend" else "contradicts"
+            src_id = str(evidence["id"])
+            dst_id = str(memory["id"])
+            with self._lock:
+                edge = self._conn.execute(
+                    """SELECT * FROM edges
+                       WHERE src_id=? AND dst_id=? AND relation=?""",
+                    (src_id, dst_id, relation),
+                ).fetchone()
+            edge_snapshot = json.dumps(dict(edge) if edge else {}, sort_keys=True)
+            self.add_edge(
+                src_id,
+                dst_id,
+                relation,
+                weight=0.55 if action == "extend" else 0.70,
+                evidence_type="reviewed_reconsolidation",
+                evidence_key=proposal_id,
+                explanation=str(proposal["reason"]),
+                source_ref=f"memory:{evidence['id']}",
+                task_id=str(proposal["task_id"]),
+                metadata={"proposal_id": proposal_id, "action": action},
+            )
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_reconsolidation_proposals SET edge_snapshot_json=?
+                       WHERE proposal_id=?""",
+                    (edge_snapshot, proposal_id),
+                )
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE adaptive_reconsolidation_proposals
+                   SET status='applied',applied_at=?,applied_by=?
+                   WHERE proposal_id=? AND status='proposed'""",
+                (now, normalize_text(actor)[:120], proposal_id),
+            )
+        return {"proposal_id": proposal_id, "status": "applied", "action": action}
+
+    def undo_adaptive_reconsolidation(self, proposal_id: str) -> dict[str, Any]:
+        """Restore the prior version or edge state recorded by an applied proposal."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM adaptive_reconsolidation_proposals
+                   WHERE proposal_id=? AND status='applied'""",
+                (proposal_id,),
+            ).fetchone()
+        if not raw:
+            return {"proposal_id": proposal_id, "reversed": False}
+        proposal = dict(raw)
+        action = str(proposal["action"])
+        if action == "supersede":
+            snapshot = _json_object(proposal["source_snapshot_json"])
+            prior = snapshot.get("memory") if isinstance(snapshot.get("memory"), dict) else {}
+            content = normalize_text(str(prior.get("content") or ""))
+            if not content:
+                raise ValueError("reconsolidation source snapshot is unavailable")
+            self.correct_memory(
+                str(proposal["memory_id"]),
+                content,
+                reason=f"undo adaptive reconsolidation {proposal_id[:8]}",
+                confidence=float(prior.get("confidence") or 0.6),
+                source_ref=f"reconsolidation-undo:{proposal_id}",
+            )
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE memories SET state=?,protected=?,updated_at=updated_at
+                       WHERE id=?""",
+                    (
+                        str(prior.get("state") or "active"),
+                        int(bool(prior.get("protected"))),
+                        proposal["memory_id"],
+                    ),
+                )
+        else:
+            relation = "extends" if action == "extend" else "contradicts"
+            src_id = str(proposal["evidence_memory_id"])
+            dst_id = str(proposal["memory_id"])
+            snapshot = _json_object(proposal["edge_snapshot_json"])
+            with self.transaction() as conn:
+                conn.execute(
+                    "DELETE FROM edge_evidence WHERE evidence_key=?",
+                    (proposal_id,),
+                )
+                if snapshot:
+                    conn.execute(
+                        """INSERT INTO edges(
+                           src_id,dst_id,relation,weight,evidence_count,
+                           created_at,last_reinforced_at
+                           ) VALUES(?,?,?,?,?,?,?)
+                           ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET
+                             weight=excluded.weight,
+                             evidence_count=excluded.evidence_count,
+                             created_at=excluded.created_at,
+                             last_reinforced_at=excluded.last_reinforced_at""",
+                        (
+                            snapshot["src_id"],
+                            snapshot["dst_id"],
+                            snapshot["relation"],
+                            snapshot["weight"],
+                            snapshot["evidence_count"],
+                            snapshot["created_at"],
+                            snapshot["last_reinforced_at"],
+                        ),
+                    )
+                else:
+                    remaining = conn.execute(
+                        """SELECT COUNT(*) count FROM edge_evidence
+                           WHERE src_id=? AND dst_id=? AND relation=?""",
+                        (src_id, dst_id, relation),
+                    ).fetchone()["count"]
+                    if not remaining:
+                        conn.execute(
+                            """DELETE FROM edges
+                               WHERE src_id=? AND dst_id=? AND relation=?""",
+                            (src_id, dst_id, relation),
+                        )
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE adaptive_reconsolidation_proposals
+                   SET status='reversed',reversed_at=? WHERE proposal_id=?""",
+                (utc_now(), proposal_id),
+            )
+        return {"proposal_id": proposal_id, "reversed": True, "action": action}
+
+    def record_adaptive_reconsolidation_feedback(
+        self,
+        proposal_id: str,
+        label: str,
+        *,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        label_value = normalize_text(label).casefold()
+        if label_value not in {"correct", "wrong"}:
+            raise ValueError("feedback label must be correct or wrong")
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT status FROM adaptive_reconsolidation_proposals
+                   WHERE proposal_id=?""",
+                (proposal_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("adaptive reconsolidation proposal not found")
+        undone = False
+        if label_value == "wrong" and str(row["status"]) == "applied":
+            undone = bool(self.undo_adaptive_reconsolidation(proposal_id)["reversed"])
+        elif label_value == "wrong" and str(row["status"]) == "proposed":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE adaptive_reconsolidation_proposals
+                       SET status='rejected' WHERE proposal_id=? AND status='proposed'""",
+                    (proposal_id,),
+                )
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE adaptive_reconsolidation_proposals
+                   SET feedback_label=?,feedback_reason=?,feedback_at=?
+                   WHERE proposal_id=?""",
+                (label_value, normalize_text(reason)[:600], utc_now(), proposal_id),
+            )
+        return {
+            "proposal_id": proposal_id,
+            "label": label_value,
+            "automatically_undone": undone,
+            "feedback": self.adaptive_reconsolidation_snapshot(limit=1)["feedback"],
+        }
+
+    def schema_formation_candidates(
+        self,
+        *,
+        minimum_cluster: int = 3,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Build evidence-qualified related-memory clusters for model review."""
+
+        minimum = max(3, min(10, int(minimum_cluster)))
+        bounded = max(1, min(50, int(limit)))
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT m.*,u.task_id,t.task_type
+                   FROM memories m
+                   JOIN usage_records u ON u.memory_id=m.id AND u.used=1
+                   LEFT JOIN memory_traces t ON t.task_id=u.task_id
+                   WHERE m.state IN ('active','cold')
+                     AND m.kind NOT IN ('schema','identity','preference','prospective')
+                     AND m.quarantine_reason IS NULL
+                     AND NOT EXISTS(
+                       SELECT 1 FROM memory_dependencies d
+                       JOIN memories s ON s.id=d.memory_id
+                       WHERE d.evidence_id=m.id AND d.relation='schema_source'
+                         AND d.active=1 AND s.state IN ('active','cold')
+                     )
+                   ORDER BY m.created_at DESC LIMIT 2000"""
+            ).fetchall()
+            edge_rows = self._conn.execute(
+                """SELECT src_id,dst_id FROM edges
+                   WHERE relation IN ('related','extends','supports','co_used','generalizes')"""
+            ).fetchall()
+            prior_rows = self._conn.execute(
+                """SELECT cluster_signature FROM schema_formation_proposals
+                   WHERE status IN ('proposed','applied')"""
+            ).fetchall()
+        by_memory: dict[str, dict[str, Any]] = {}
+        for raw in rows:
+            row = dict(raw)
+            memory_id = str(row["id"])
+            item = by_memory.setdefault(
+                memory_id,
+                {
+                    "memory": _decode_memory_metadata(row),
+                    "tasks": set(),
+                    "task_types": set(),
+                },
+            )
+            item["tasks"].add(str(row["task_id"]))
+            if row.get("task_type"):
+                item["task_types"].add(str(row["task_type"]))
+        ids = sorted(by_memory)
+        if len(ids) < minimum:
+            return []
+        edge_pairs = {
+            frozenset((str(row["src_id"]), str(row["dst_id"]))) for row in edge_rows
+        }
+        parent = {memory_id: memory_id for memory_id in ids}
+
+        def find(memory_id: str) -> str:
+            while parent[memory_id] != memory_id:
+                parent[memory_id] = parent[parent[memory_id]]
+                memory_id = parent[memory_id]
+            return memory_id
+
+        def union(left: str, right: str) -> None:
+            left_root, right_root = find(left), find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
+
+        token_sets = {
+            memory_id: set(query_tokens(str(by_memory[memory_id]["memory"]["content"])))
+            for memory_id in ids
+        }
+        for index, left_id in enumerate(ids):
+            left = by_memory[left_id]["memory"]
+            for right_id in ids[index + 1 :]:
+                right = by_memory[right_id]["memory"]
+                left_tokens = token_sets[left_id]
+                right_tokens = token_sets[right_id]
+                overlap = (
+                    len(left_tokens & right_tokens) / max(1, min(len(left_tokens), len(right_tokens)))
+                )
+                same_claim = bool(
+                    left.get("subject")
+                    and left.get("predicate")
+                    and left.get("subject") == right.get("subject")
+                    and left.get("predicate") == right.get("predicate")
+                )
+                if (
+                    overlap >= 0.30
+                    or same_claim
+                    or frozenset((left_id, right_id)) in edge_pairs
+                ):
+                    union(left_id, right_id)
+        groups: dict[str, list[str]] = {}
+        for memory_id in ids:
+            groups.setdefault(find(memory_id), []).append(memory_id)
+        prior = {str(row["cluster_signature"]) for row in prior_rows}
+        candidates: list[dict[str, Any]] = []
+        for group_ids in groups.values():
+            if len(group_ids) < minimum:
+                continue
+            # Keep provider payloads bounded while retaining deterministic clusters.
+            for offset in range(0, len(group_ids), 8):
+                source_ids = sorted(group_ids[offset : offset + 8])
+                if len(source_ids) < minimum:
+                    continue
+                tasks = sorted(
+                    {
+                        task
+                        for memory_id in source_ids
+                        for task in by_memory[memory_id]["tasks"]
+                    }
+                )
+                task_types = sorted(
+                    {
+                        task_type
+                        for memory_id in source_ids
+                        for task_type in by_memory[memory_id]["task_types"]
+                    }
+                )
+                episode_count = sum(
+                    str(by_memory[memory_id]["memory"].get("kind")) == "episode"
+                    for memory_id in source_ids
+                )
+                if len(tasks) < 3 or (len(task_types) < 2 and episode_count < 2):
+                    continue
+                signature = hashlib.sha256("|".join(source_ids).encode("utf-8")).hexdigest()
+                if signature in prior:
+                    continue
+                memories = [by_memory[memory_id]["memory"] for memory_id in source_ids]
+                candidates.append(
+                    {
+                        "cluster_signature": signature,
+                        "source_ids": source_ids,
+                        "sources": memories,
+                        "evidence": {
+                            "source_count": len(source_ids),
+                            "distinct_tasks": len(tasks),
+                            "task_ids": tasks,
+                            "distinct_task_types": len(task_types),
+                            "task_types": task_types,
+                            "episode_count": episode_count,
+                            "minimum_cluster": minimum,
+                        },
+                    }
+                )
+        candidates.sort(
+            key=lambda item: (
+                -int(item["evidence"]["distinct_tasks"]),
+                -int(item["evidence"]["source_count"]),
+                item["cluster_signature"],
+            )
+        )
+        return candidates[:bounded]
+
+    def active_schema_source_ids(self, memory_ids: Sequence[str]) -> set[str]:
+        if not memory_ids:
+            return set()
+        placeholders = ",".join("?" for _ in memory_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"""SELECT DISTINCT d.evidence_id
+                    FROM memory_dependencies d JOIN memories s ON s.id=d.memory_id
+                    WHERE d.relation='schema_source' AND d.active=1
+                      AND s.state IN ('active','cold')
+                      AND d.evidence_id IN ({placeholders})""",
+                tuple(memory_ids),
+            ).fetchall()
+        return {str(row["evidence_id"]) for row in rows}
+
+    def schema_formation_snapshot(self, *, limit: int = 100) -> dict[str, Any]:
+        bounded = max(1, min(500, int(limit)))
+        with self._lock:
+            runs = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT * FROM schema_formation_runs
+                       ORDER BY started_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            proposals = [
+                dict(row)
+                for row in self._conn.execute(
+                    """SELECT p.*,m.content result_content,m.state result_state,m.dirty result_dirty,
+                              m.dirty_reason result_dirty_reason
+                       FROM schema_formation_proposals p
+                       LEFT JOIN memories m ON m.id=p.result_memory_id
+                       ORDER BY p.created_at DESC LIMIT ?""",
+                    (bounded,),
+                ).fetchall()
+            ]
+            counts = self._conn.execute(
+                """SELECT status,COUNT(*) count FROM schema_formation_proposals
+                   GROUP BY status"""
+            ).fetchall()
+            feedback = self._conn.execute(
+                """SELECT feedback_label,COUNT(*) count FROM schema_formation_proposals
+                   WHERE feedback_label IS NOT NULL GROUP BY feedback_label"""
+            ).fetchall()
+        for run in runs:
+            run["usage"] = _json_object(run.pop("usage_json", "{}"))
+        for proposal in proposals:
+            proposal["source_ids"] = _trace_json_array(proposal.pop("source_ids_json"))
+            proposal["included_source_ids"] = _trace_json_array(
+                proposal.pop("included_source_ids_json")
+            )
+            proposal["source_hashes"] = _json_object(proposal.pop("source_hashes_json"))
+            proposal["evidence"] = _json_object(proposal.pop("evidence_json"))
+            proposal["sources"] = [
+                self.get_memory(memory_id)
+                for memory_id in proposal["included_source_ids"]
+                if self.get_memory(memory_id)
+            ]
+        labels = {str(row["feedback_label"]): int(row["count"]) for row in feedback}
+        reviewed = sum(labels.values())
+        accuracy = labels.get("correct", 0) / reviewed if reviewed else None
+        return {
+            "policy_version": "schema_formation_v1",
+            "default_mode": "shadow",
+            "minimum_cluster": 3,
+            "counts": {str(row["status"]): int(row["count"]) for row in counts},
+            "feedback": {
+                **labels,
+                "reviewed": reviewed,
+                "accuracy": round(accuracy, 6) if accuracy is not None else None,
+                "target": 0.70,
+                "ready": bool(reviewed and accuracy is not None and accuracy >= 0.70),
+            },
+            "runs": runs,
+            "proposals": proposals,
+            "claim_boundary": (
+                "A cluster and model abstraction are review evidence, not a proven rule. "
+                "Source memories remain independently inspectable and recallable."
+            ),
+        }
+
+    def apply_schema_formation(
+        self,
+        proposal_id: str,
+        *,
+        actor: str = "cortex-operator",
+    ) -> dict[str, Any]:
+        """Apply one reviewed schema abstraction without replacing its examples."""
+
+        with self._lock:
+            raw = self._conn.execute(
+                "SELECT * FROM schema_formation_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        if not raw:
+            raise ValueError("schema formation proposal not found")
+        proposal = dict(raw)
+        if str(proposal["status"]) != "proposed":
+            raise ValueError("schema formation proposal is not proposed")
+        if str(proposal["action"]) == "no_schema":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE schema_formation_proposals
+                       SET status='dismissed',applied_at=?,applied_by=?
+                       WHERE proposal_id=? AND status='proposed'""",
+                    (utc_now(), normalize_text(actor)[:120], proposal_id),
+                )
+            return {"proposal_id": proposal_id, "status": "dismissed"}
+        included = _trace_json_array(proposal["included_source_ids_json"])
+        hashes = _json_object(proposal["source_hashes_json"])
+        if len(included) < 3:
+            raise ValueError("schema abstraction requires at least three source memories")
+        sources = [self.get_memory(str(memory_id)) for memory_id in included]
+        if any(
+            not source
+            or str(source.get("content_hash")) != str(hashes.get(str(source["id"])))
+            or str(source.get("state")) not in {"active", "cold"}
+            for source in sources
+            if source is not None
+        ) or len(sources) != len(included) or any(source is None for source in sources):
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE schema_formation_proposals SET status='skipped'
+                       WHERE proposal_id=? AND status='proposed'""",
+                    (proposal_id,),
+                )
+            return {"proposal_id": proposal_id, "status": "skipped", "reason": "source changed"}
+        abstract_content = normalize_text(str(proposal.get("abstract_content") or ""))
+        if not abstract_content:
+            raise ValueError("schema abstraction content is unavailable")
+        schema_id, created = self.add_memory(
+            abstract_content,
+            kind="schema",
+            source_type="schema_formation",
+            source_category="OPERATOR_APPROVED",
+            origin_source_category="AGENT_INFERENCE",
+            approval_state="operator_approved",
+            source_ref=f"schema-proposal:{proposal_id}",
+            extraction_method="reviewed_schema_formation_v1",
+            confidence=max(0.55, min(float(proposal["confidence"]), 0.9)),
+            importance=0.72,
+            uniqueness=0.8,
+            volatility=0.25,
+            trust=0.76,
+            protected=False,
+        )
+        if not created:
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE schema_formation_proposals SET status='skipped'
+                       WHERE proposal_id=? AND status='proposed'""",
+                    (proposal_id,),
+                )
+            return {
+                "proposal_id": proposal_id,
+                "status": "skipped",
+                "reason": "identical schema memory already exists",
+            }
+        for source in sources:
+            source_id = str(source["id"])
+            self.add_dependency(schema_id, source_id, relation="schema_source", weight=1.0)
+            self.add_edge(
+                schema_id,
+                source_id,
+                "abstracts",
+                weight=0.65,
+                evidence_type="reviewed_schema_formation",
+                evidence_key=proposal_id,
+                explanation=str(proposal["reason"]),
+                source_ref=f"schema-proposal:{proposal_id}",
+                metadata={"proposal_id": proposal_id},
+            )
+            self.add_edge(
+                source_id,
+                schema_id,
+                "example_of",
+                weight=0.65,
+                evidence_type="reviewed_schema_formation",
+                evidence_key=proposal_id,
+                explanation=str(proposal["reason"]),
+                source_ref=f"schema-proposal:{proposal_id}",
+                metadata={"proposal_id": proposal_id},
+            )
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE schema_formation_proposals
+                   SET status='applied',result_memory_id=?,applied_at=?,applied_by=?
+                   WHERE proposal_id=? AND status='proposed'""",
+                (schema_id, utc_now(), normalize_text(actor)[:120], proposal_id),
+            )
+        return {
+            "proposal_id": proposal_id,
+            "status": "applied",
+            "schema_memory_id": schema_id,
+            "source_count": len(sources),
+        }
+
+    def undo_schema_formation(self, proposal_id: str) -> dict[str, Any]:
+        with self._lock:
+            raw = self._conn.execute(
+                """SELECT * FROM schema_formation_proposals
+                   WHERE proposal_id=? AND status='applied'""",
+                (proposal_id,),
+            ).fetchone()
+        if not raw:
+            return {"proposal_id": proposal_id, "reversed": False}
+        proposal = dict(raw)
+        schema_id = str(proposal["result_memory_id"])
+        now = utc_now()
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE memory_dependencies SET active=0
+                   WHERE memory_id=? AND relation='schema_source'""",
+                (schema_id,),
+            )
+            edge_keys = conn.execute(
+                """SELECT src_id,dst_id,relation FROM edge_evidence
+                   WHERE evidence_key=?""",
+                (proposal_id,),
+            ).fetchall()
+            conn.execute("DELETE FROM edge_evidence WHERE evidence_key=?", (proposal_id,))
+            for edge in edge_keys:
+                remaining = conn.execute(
+                    """SELECT COUNT(*) count FROM edge_evidence
+                       WHERE src_id=? AND dst_id=? AND relation=?""",
+                    (edge["src_id"], edge["dst_id"], edge["relation"]),
+                ).fetchone()["count"]
+                if not remaining:
+                    conn.execute(
+                        """DELETE FROM edges WHERE src_id=? AND dst_id=? AND relation=?""",
+                        (edge["src_id"], edge["dst_id"], edge["relation"]),
+                    )
+            current = conn.execute("SELECT * FROM memories WHERE id=?", (schema_id,)).fetchone()
+            if current and str(current["state"]) != "archived":
+                self._refinery_state_change_tx(
+                    conn,
+                    dict(current),
+                    "archived",
+                    f"undo schema formation {proposal_id[:8]}",
+                    now,
+                )
+            conn.execute(
+                """UPDATE schema_formation_proposals
+                   SET status='reversed',reversed_at=? WHERE proposal_id=?""",
+                (now, proposal_id),
+            )
+        return {"proposal_id": proposal_id, "reversed": True, "schema_memory_id": schema_id}
+
+    def record_schema_formation_feedback(
+        self,
+        proposal_id: str,
+        label: str,
+        *,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        label_value = normalize_text(label).casefold()
+        if label_value not in {"correct", "wrong"}:
+            raise ValueError("feedback label must be correct or wrong")
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT status FROM schema_formation_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()
+        if not row:
+            raise ValueError("schema formation proposal not found")
+        undone = False
+        if label_value == "wrong" and str(row["status"]) == "applied":
+            undone = bool(self.undo_schema_formation(proposal_id)["reversed"])
+        elif label_value == "wrong" and str(row["status"]) == "proposed":
+            with self.transaction() as conn:
+                conn.execute(
+                    """UPDATE schema_formation_proposals
+                       SET status='rejected' WHERE proposal_id=? AND status='proposed'""",
+                    (proposal_id,),
+                )
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE schema_formation_proposals
+                   SET feedback_label=?,feedback_reason=?,feedback_at=?
+                   WHERE proposal_id=?""",
+                (label_value, normalize_text(reason)[:600], utc_now(), proposal_id),
+            )
+        return {
+            "proposal_id": proposal_id,
+            "label": label_value,
+            "automatically_undone": undone,
+            "feedback": self.schema_formation_snapshot(limit=1)["feedback"],
+        }
 
     def maintenance(
         self,
@@ -12915,6 +16381,43 @@ def _json_string_list(value: Any) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [normalize_text(str(item))[:200] for item in parsed if normalize_text(str(item))]
+
+
+def _json_object(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _memory_applicability_key(memory: dict[str, Any]) -> tuple[str, ...]:
+    return (
+        str(memory.get("context_mode") or "standalone"),
+        str(memory.get("scope_json") or "{}"),
+        str(memory.get("preconditions_json") or "{}"),
+        str(memory.get("applicable_systems_json") or "[]"),
+        str(memory.get("applicable_versions_json") or "[]"),
+    )
+
+
+def _semantic_consolidation_sources_are_safe(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    decision: dict[str, Any],
+) -> bool:
+    for source, hash_key in ((left, "left_hash"), (right, "right_hash")):
+        if str(source.get("state") or "") not in {"active", "cold"}:
+            return False
+        if bool(source.get("pinned")) or bool(source.get("protected")):
+            return False
+        if str(source.get("kind") or "") in {"identity", "preference", "prospective"}:
+            return False
+        if source.get("quarantine_reason"):
+            return False
+        if str(source.get("content_hash") or "") != str(decision.get(hash_key) or ""):
+            return False
+    return _memory_applicability_key(left) == _memory_applicability_key(right)
 
 
 def _sanitize_creation_context_map(value: dict[str, Any] | None) -> dict[str, str]:
@@ -13448,6 +16951,12 @@ def _normalize_trace_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
         "selected": bool(candidate.get("selected")),
         "score": score,
         "estimated_tokens": estimated_tokens,
+        "scoring_policy_version": normalize_text(
+            str(candidate.get("scoring_policy_version") or "legacy_unversioned")
+        )[:80],
+        "shadow_scoring_policy_version": normalize_text(
+            str(candidate.get("shadow_scoring_policy_version") or "")
+        )[:80],
         "components": components,
         "reason": normalize_text(str(candidate.get("reason") or "unspecified decision"))[:300],
         **(
@@ -13481,6 +16990,14 @@ def _clamp(value: float) -> float:
     if not math.isfinite(float(value)):
         raise ValueError("score must be finite")
     return max(0.0, min(1.0, float(value)))
+
+
+def _attentional_decay_days() -> float:
+    try:
+        value = float(os.environ.get("CORTEX_ATTENTIONAL_DECAY_DAYS", "30"))
+    except ValueError:
+        value = 30.0
+    return max(1.0, min(365.0, value))
 
 
 def _percentile(values: Sequence[float | int], quantile: float) -> float:
@@ -13611,6 +17128,71 @@ def _retention_score(memory: dict[str, Any]) -> float:
     if int(memory.get("duplicate_count", 0)) > 0:
         score -= min(0.12, 0.03 * int(memory["duplicate_count"]))
     return _clamp(score)
+
+
+def _pruning_relevance_score(memory: dict[str, Any]) -> tuple[float, dict[str, Any]]:
+    now = datetime.now(timezone.utc)
+
+    def days_since(value: Any, fallback: float) -> float:
+        parsed = parse_iso8601(str(value or ""))
+        if not parsed:
+            return fallback
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0.0, (now - parsed).total_seconds() / 86400.0)
+
+    age_days = days_since(memory.get("created_at"), 3650.0)
+    last_recall_days = days_since(
+        memory.get("last_helpful_at")
+        or memory.get("last_used_at")
+        or memory.get("last_retrieved_at")
+        or memory.get("updated_at"),
+        age_days,
+    )
+    retrieved = max(0, int(memory.get("retrieved_count") or 0))
+    used = max(0, int(memory.get("used_count") or 0))
+    positive = sum(
+        max(0, int(memory.get(key) or 0))
+        for key in ("success_count", "confirmed_count", "validated_count", "helpful_count")
+    )
+    harmful = max(0, int(memory.get("harmful_count") or 0))
+    false_positive = max(0, int(memory.get("false_positive_count") or 0))
+    recency_signal = math.exp(-last_recall_days / 120.0)
+    age_signal = math.exp(-age_days / 730.0)
+    retrieval_signal = min(1.0, math.log1p(retrieved) / math.log(20.0))
+    helpfulness_ratio = positive / max(1.0, used + positive + harmful + false_positive)
+    successful_use_signal = min(1.0, math.log1p(positive) / math.log(8.0))
+    harmful_rate = (harmful + false_positive) / max(
+        1.0,
+        used + positive + harmful + false_positive,
+    )
+    retention = _retention_score(memory)
+    relevance = _clamp(
+        0.40 * retention
+        + 0.18 * recency_signal
+        + 0.10 * retrieval_signal
+        + 0.14 * helpfulness_ratio
+        + 0.10 * successful_use_signal
+        + 0.08 * age_signal
+        - 0.18 * harmful_rate
+    )
+    evidence = {
+        "days_since_last_recall": round(last_recall_days, 3),
+        "age_days": round(age_days, 3),
+        "retrieval_count": retrieved,
+        "used_count": used,
+        "positive_outcomes": positive,
+        "harmful_outcomes": harmful,
+        "false_positive_count": false_positive,
+        "helpfulness_ratio": round(helpfulness_ratio, 6),
+        "harmful_rate": round(harmful_rate, 6),
+        "retention_score": round(retention, 6),
+        "recency_signal": round(recency_signal, 6),
+        "retrieval_signal": round(retrieval_signal, 6),
+        "successful_use_signal": round(successful_use_signal, 6),
+        "age_signal": round(age_signal, 6),
+    }
+    return round(relevance, 6), evidence
 
 
 def _sleep_hypothesis_text(kind: str) -> str:

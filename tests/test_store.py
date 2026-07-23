@@ -836,6 +836,75 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIsNotNone(report["retrieval"]["false_positive_rate"])
         self.assertIsNotNone(report["retrieval"]["context_failure_rate"])
 
+    def test_scoring_health_separates_resolved_use_from_token_waste(self) -> None:
+        used_id, _ = self.store.add_memory("Cortex uses the verified blue gateway.")
+        unused_id, _ = self.store.add_memory("Cortex once used an unrelated green gateway.")
+        task_id = self.store.create_usage_batch(
+            [(used_id, 0.8), (unused_id, 0.7)],
+            query="Which Cortex gateway is verified?",
+            session_id="scoring-health",
+            task_type="deployment",
+            recall_mode="focused",
+        )
+        self.store.record_memory_trace_decision(
+            task_id=task_id,
+            session_id="scoring-health",
+            goal="Choose the verified Cortex gateway",
+            context_summary="active_project=Cortex",
+            task_type="deployment",
+            recall_mode="focused",
+            retrieval_used=True,
+            retrieval_reason="selected for scoring-health test",
+            queries=["Which Cortex gateway is verified?"],
+            candidate_memories=[
+                {
+                    "memory_id": used_id,
+                    "kind": "semantic",
+                    "selected": True,
+                    "score": 0.8,
+                    "estimated_tokens": 100,
+                    "scoring_policy_version": "test_live",
+                    "shadow_scoring_policy_version": "test_shadow",
+                    "components": {
+                        "lexical": 0.8,
+                        "semantic": 0.5,
+                        "shadow_score_delta": 0.03,
+                    },
+                    "reason": "selected",
+                },
+                {
+                    "memory_id": unused_id,
+                    "kind": "semantic",
+                    "selected": True,
+                    "score": 0.7,
+                    "estimated_tokens": 300,
+                    "scoring_policy_version": "test_live",
+                    "shadow_scoring_policy_version": "test_shadow",
+                    "components": {
+                        "lexical": 0.7,
+                        "semantic": 0.2,
+                        "shadow_score_delta": -0.02,
+                    },
+                    "reason": "selected",
+                },
+            ],
+        )
+        self.store.resolve_usage(task_id, {used_id: 1.0})
+        self.store.apply_task_outcome(task_id, "helpful")
+
+        report = self.store.scoring_health()
+
+        self.assertEqual(report["current"]["resolved_injections"], 2)
+        self.assertEqual(report["current"]["pending_injections"], 0)
+        self.assertEqual(report["current"]["precision"], 0.5)
+        self.assertEqual(report["current"]["helpfulness"], 0.5)
+        self.assertEqual(report["current"]["false_positive_rate"], 0.5)
+        self.assertEqual(report["current"]["waste_rate"], 0.75)
+        self.assertEqual(report["policy"]["observed_policy_versions"]["test_live"], 2)
+        self.assertEqual(report["shadow"]["resolved_observations"], 2)
+        self.assertTrue(report["weekly"])
+        self.assertIn("signal_breakdown", report["definitions"])
+
     def test_correction_preserves_version_history(self) -> None:
         memory_id, _ = self.store.add_memory("The service runs on port 3000.")
         self.assertTrue(

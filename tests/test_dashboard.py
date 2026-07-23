@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import tempfile
 import unittest
 from html.parser import HTMLParser
@@ -10,7 +11,7 @@ from xml.etree import ElementTree
 
 from tests._bootstrap import ROOT
 
-from cortex.dashboard import _basic_auth_valid
+from cortex.dashboard import _basic_auth_valid, serve_dashboard
 from cortex.dashboard_auth import DashboardAuth, SESSION_COOKIE
 
 
@@ -58,6 +59,11 @@ class DashboardAuthTests(unittest.TestCase):
 
 
 class DashboardInterfaceTests(unittest.TestCase):
+    def test_dashboard_server_factory_reaches_request_handler_and_serve_loop(self) -> None:
+        source = inspect.getsource(serve_dashboard)
+        self.assertIn("class Handler(BaseHTTPRequestHandler)", source)
+        self.assertIn("server.serve_forever", source)
+
     def test_dashboard_has_unique_ids_and_primary_brain_views(self) -> None:
         html = (ROOT / "dashboard.html").read_text()
         parser = _IdCollector()
@@ -71,11 +77,19 @@ class DashboardInterfaceTests(unittest.TestCase):
             "graph-return-review",
             "timeline-svg",
             "timeline-trail",
+            "view-review",
+            "review-nav-count",
+            "review-filters",
+            "review-focus",
+            "training-next-action",
+            "policy-compile",
             "view-insights",
             "view-auto-judge",
             "aj-summary-metrics",
             "aj-funnel",
             "aj-decision-funnel",
+            "aj-consolidation-metrics",
+            "aj-consolidation-list",
             "aj-recent-list",
             "aj-edge-types",
             "recall-funnel",
@@ -84,6 +98,17 @@ class DashboardInterfaceTests(unittest.TestCase):
             "recall-mode-list",
             "budget-learning-list",
             "budget-learning-total",
+            "scoring-health-metrics",
+            "scoring-policy-status",
+            "scoring-health-chart",
+            "scoring-health-legend",
+            "scoring-signal-list",
+            "scoring-health-boundary",
+            "attention-learning-metrics",
+            "attention-learning-status",
+            "attention-learning-topics",
+            "attention-learning-gate",
+            "attention-learning-boundary",
             "cortex-sleep",
             "sleep-status",
             "sleep-cycle-summary",
@@ -190,6 +215,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderInsights()", html)
         self.assertIn("function renderCognition()", html)
         self.assertIn("function renderBudgetLearning", html)
+        self.assertIn("function renderAttentionLearning", html)
         self.assertIn("function renderSleep", html)
         self.assertIn("function startSleepSession", html)
         self.assertIn("/api/sleep/start", html)
@@ -278,6 +304,9 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("function renderSummaryCandidates", html)
         self.assertIn("function renderProspective", html)
         self.assertIn("function renderReconsolidation", html)
+        self.assertIn("Semantic consolidation", html)
+        self.assertIn("d.semantic_consolidation", html)
+        self.assertIn("/api/semantic-consolidation", inspect.getsource(serve_dashboard))
         self.assertIn("/api/experiment/control", html)
         self.assertIn("/api/sleep/trial/start", html)
         self.assertIn("/api/summary/review", html)

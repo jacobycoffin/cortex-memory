@@ -41,6 +41,13 @@ systemctl --user list-timers cortex-auto-judge.timer
 
 Remote candidate review is privacy-sensitive and normally billable; read [Automatic memory judge](AUTO_JUDGE.md) before opting in or changing provider, model, credential-file, threshold, or feedback settings.
 
+The installed environment file also contains disabled-by-default switches for
+semantic consolidation, relevance pruning, adaptive reconsolidation, schema
+formation, scoring-weight tuning, and attentional learning. Enable only the
+specific proposal passes you want after reviewing the same provider-data-egress
+boundary. Scheduled mechanics remain shadow-only; use the authenticated
+Auto-Judge dashboard or explicit CLI apply commands for any live change.
+
 ## 3. Import an Obsidian vault
 
 Preview first:

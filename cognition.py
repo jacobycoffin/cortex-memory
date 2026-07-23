@@ -52,6 +52,55 @@ _ARITHMETIC_ONLY = re.compile(
     r"(?:(?:[+\-*/%^]|\*\*)\s*(?:\(?\s*-?\d+(?:\.\d+)?\s*\)?\s*))*[?=.! ]*$",
     re.I,
 )
+_EXPLICIT_ATTENTION = re.compile(
+    r"\b(?:pay close attention to|focus closely on|use detailed memory (?:for|about))\b",
+    re.I,
+)
+_TOPIC_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9._-]{2,31}")
+_TOPIC_STOP = {
+    "about",
+    "again",
+    "and",
+    "are",
+    "assistant",
+    "attention",
+    "before",
+    "close",
+    "closely",
+    "could",
+    "current",
+    "detailed",
+    "does",
+    "during",
+    "focus",
+    "for",
+    "from",
+    "have",
+    "help",
+    "how",
+    "into",
+    "latest",
+    "memory",
+    "need",
+    "pay",
+    "please",
+    "remember",
+    "should",
+    "that",
+    "the",
+    "this",
+    "use",
+    "using",
+    "what",
+    "when",
+    "where",
+    "which",
+    "with",
+    "would",
+    "your",
+}
+
+ATTENTION_POLICY_VERSION = "topic_salience_shadow_v1"
 
 
 @dataclass(frozen=True)
@@ -100,6 +149,19 @@ def plan_recall(
     temporal_mode = "historical" if historical else "current"
     as_of = _year_end_iso(int(year.group(1))) if year else None
 
+    if _EXPLICIT_ATTENTION.search(text):
+        return RecallPlan(
+            "deep",
+            True,
+            min(max_limit, 6),
+            min(max_token_budget, 680),
+            max(0.08, base_threshold - 0.02),
+            "explicit user request for close attention",
+            temporal_mode,
+            as_of,
+            graph_depth=2,
+            tool_limit=3 if tool else 0,
+        )
     if multi_hop or (historical and decision):
         return RecallPlan(
             "deep",
@@ -150,6 +212,30 @@ def plan_recall(
         as_of,
         graph_depth=1,
     )
+
+
+def attention_topics(query: str, *, limit: int = 6) -> tuple[str, ...]:
+    """Extract a small, local-only set of deterministic topic cues.
+
+    These keys are used only after a resolved retrieval outcome. Common prompt
+    words are excluded so a generic instruction cannot become learned salience.
+    """
+
+    bounded = max(1, min(12, int(limit)))
+    topics: list[str] = []
+    for match in _TOPIC_TOKEN.finditer(query or ""):
+        topic = match.group(0).casefold().strip("._-")
+        if (
+            len(topic) < 3
+            or topic in _TOPIC_STOP
+            or topic.isdigit()
+            or topic in topics
+        ):
+            continue
+        topics.append(topic)
+        if len(topics) >= bounded:
+            break
+    return tuple(topics)
 
 
 def _year_end_iso(year: int) -> str:

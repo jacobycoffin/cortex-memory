@@ -89,6 +89,157 @@ def main() -> int:
         action="store_true",
         help="Link existing memories with no edges (uses LLM + contradiction detection)",
     )
+    auto_judge.add_argument(
+        "--consolidate",
+        action="store_true",
+        help="Judge up to five oldest related-memory pairs; records shadow proposals by default",
+    )
+    auto_judge.add_argument(
+        "--apply-consolidation",
+        action="store_true",
+        help="Explicitly apply high-confidence consolidation judgments (requires --consolidate)",
+    )
+    auto_judge.add_argument(
+        "--prune",
+        action="store_true",
+        help="Judge up to 50 low-relevance memories; records shadow proposals by default",
+    )
+    auto_judge.add_argument(
+        "--apply-pruning",
+        action="store_true",
+        help="Explicitly apply high-confidence pruning judgments (requires --prune)",
+    )
+    auto_judge.add_argument(
+        "--tune-weights",
+        action="store_true",
+        help="Audit recent outcomes and stage task-specific scoring weight proposals",
+    )
+    auto_judge.add_argument(
+        "--reconsolidate",
+        action="store_true",
+        help="Judge same-task evidence for recently used memories; always stages proposals",
+    )
+    auto_judge.add_argument(
+        "--reconsolidation-task-id",
+        help="Limit --reconsolidate to one completed task trace",
+    )
+    auto_judge.add_argument(
+        "--schemas",
+        action="store_true",
+        help="Review evidence-qualified repeated-memory clusters; always stages abstractions",
+    )
+    mechanics = sub.add_parser(
+        "brain-mechanics",
+        help="Run due opt-in proposal-only consolidation, pruning, reconsolidation, schema, and weight passes",
+    )
+    mechanics.add_argument("--quiet", action="store_true")
+    sub.add_parser(
+        "semantic-consolidation-report",
+        help="Inspect semantic consolidation runs and proposed/applied decisions",
+    )
+    apply_semantic = sub.add_parser(
+        "apply-semantic-consolidation",
+        help="Apply one reviewed semantic consolidation proposal",
+    )
+    apply_semantic.add_argument("decision_id")
+    undo_semantic = sub.add_parser(
+        "undo-semantic-consolidation",
+        help="Restore both source memories from one applied semantic consolidation",
+    )
+    undo_semantic.add_argument("decision_id")
+    semantic_feedback = sub.add_parser(
+        "semantic-consolidation-feedback",
+        help="Label a consolidation judgment correct or wrong; wrong applied merges are undone",
+    )
+    semantic_feedback.add_argument("decision_id")
+    semantic_feedback.add_argument("label", choices=("correct", "wrong"))
+    semantic_feedback.add_argument("--reason", default="")
+    sub.add_parser(
+        "pruning-report",
+        help="Inspect outcome-aware pruning proposals, strands, reversals, and regret rate",
+    )
+    apply_pruning = sub.add_parser(
+        "apply-pruning",
+        help="Apply one reviewed adaptive-pruning proposal",
+    )
+    apply_pruning.add_argument("decision_id")
+    undo_pruning = sub.add_parser(
+        "undo-pruning",
+        help="Undo one applied adaptive-pruning decision",
+    )
+    undo_pruning.add_argument("decision_id")
+    sub.add_parser(
+        "weight-proposals",
+        help="Inspect staged, active, rolled-back, and factory scoring profiles",
+    )
+    apply_weights = sub.add_parser(
+        "apply-weight-proposal",
+        help="Explicitly approve one staged task-specific scoring profile",
+    )
+    apply_weights.add_argument("proposal_id")
+    apply_weights.add_argument("--confirm-large-change", action="store_true")
+    apply_weights.add_argument("--note", default="")
+    reject_weights = sub.add_parser(
+        "reject-weight-proposal",
+        help="Reject one staged scoring profile without affecting retrieval",
+    )
+    reject_weights.add_argument("proposal_id")
+    reject_weights.add_argument("--note", default="")
+    rollback_weights = sub.add_parser(
+        "rollback-weights",
+        help="Restore the baseline captured by one approved scoring proposal",
+    )
+    rollback_weights.add_argument("proposal_id")
+    rollback_weights.add_argument("--reason", required=True)
+    reset_weights = sub.add_parser(
+        "reset-weights",
+        help="Restore immutable code-default weights for one task type",
+    )
+    reset_weights.add_argument("task_type")
+    reset_weights.add_argument("--note", default="factory reset from CLI")
+    sub.add_parser(
+        "reconsolidation-proposals",
+        help="Inspect lability-gated supersede, extend, and conflict proposals",
+    )
+    apply_recon = sub.add_parser(
+        "apply-reconsolidation",
+        help="Apply one reviewed reconsolidation proposal",
+    )
+    apply_recon.add_argument("proposal_id")
+    apply_recon.add_argument("--confirm-protected", action="store_true")
+    undo_recon = sub.add_parser(
+        "undo-reconsolidation",
+        help="Reverse one applied adaptive reconsolidation",
+    )
+    undo_recon.add_argument("proposal_id")
+    recon_feedback = sub.add_parser(
+        "reconsolidation-feedback",
+        help="Label a reconsolidation proposal correct or wrong; wrong applies undo",
+    )
+    recon_feedback.add_argument("proposal_id")
+    recon_feedback.add_argument("label", choices=("correct", "wrong"))
+    recon_feedback.add_argument("--reason", default="")
+    sub.add_parser(
+        "schema-proposals",
+        help="Inspect proposed, applied, dirty, reviewed, and reversed schemas",
+    )
+    apply_schema = sub.add_parser(
+        "apply-schema",
+        help="Apply one reviewed schema abstraction while preserving all sources",
+    )
+    apply_schema.add_argument("proposal_id")
+    undo_schema = sub.add_parser(
+        "undo-schema",
+        help="Archive one applied schema and restore ordinary source weighting",
+    )
+    undo_schema.add_argument("proposal_id")
+    schema_feedback = sub.add_parser(
+        "schema-feedback",
+        help="Label a schema judgment correct or wrong; wrong applied schemas are undone",
+    )
+    schema_feedback.add_argument("proposal_id")
+    schema_feedback.add_argument("label", choices=("correct", "wrong"))
+    schema_feedback.add_argument("--reason", default="")
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
     traces = sub.add_parser("traces", help="Inspect task-level memory decisions or export append-only JSONL")
     traces.add_argument("--limit", type=int, default=100)
@@ -126,6 +277,17 @@ def main() -> int:
         "quality-report",
         help="Show retrieval precision, false positives, context failures, health, and Sleep evidence",
     )
+    scoring_trend = sub.add_parser(
+        "scoring-trend",
+        help="Show weekly resolved retrieval precision, helpfulness, false positives, and token waste",
+    )
+    scoring_trend.add_argument("--weeks", type=int, default=12)
+    scoring_trend.add_argument("--limit", type=int, default=10000)
+    attention_learning = sub.add_parser(
+        "attention-learning",
+        help="Show per-topic shadow attention evidence, decay, and promotion readiness",
+    )
+    attention_learning.add_argument("--limit", type=int, default=100)
     sub.add_parser(
         "refinery-report",
         help="Dry-run role classification report: aggregate counts and redacted examples, no mutation",
@@ -281,10 +443,177 @@ def main() -> int:
             from .autojudge import AutoJudge, AutoJudgeConfig, link_orphan_memories
 
             config = AutoJudgeConfig.from_env()
-            if args.link_orphans:
+            if args.apply_consolidation and not args.consolidate:
+                parser.error("--apply-consolidation requires --consolidate")
+            if args.apply_pruning and not args.prune:
+                parser.error("--apply-pruning requires --prune")
+            selected_passes = sum(
+                bool(value)
+                for value in (
+                    args.link_orphans,
+                    args.consolidate,
+                    args.prune,
+                    args.tune_weights,
+                    args.reconsolidate,
+                    args.schemas,
+                )
+            )
+            if selected_passes > 1:
+                parser.error(
+                    "--link-orphans, --consolidate, --prune, --tune-weights, "
+                    "--reconsolidate, and --schemas are separate bounded passes"
+                )
+            if args.consolidate:
+                from .semantic_consolidation import run_semantic_consolidation
+
+                result = run_semantic_consolidation(
+                    store,
+                    config,
+                    apply=bool(args.apply_consolidation),
+                )
+            elif args.prune:
+                from .relevance_pruning import run_adaptive_pruning
+
+                result = run_adaptive_pruning(
+                    store,
+                    config,
+                    relevance_threshold=float(
+                        os.environ.get("CORTEX_AUTO_JUDGE_PRUNE_THRESHOLD", "0.25")
+                    ),
+                    max_candidates=int(
+                        os.environ.get("CORTEX_AUTO_JUDGE_PRUNE_MAX_PER_RUN", "50")
+                    ),
+                    apply=bool(args.apply_pruning),
+                )
+            elif args.tune_weights:
+                from .adaptive_weights import run_adaptive_weight_learning
+
+                result = run_adaptive_weight_learning(
+                    store,
+                    config,
+                    lookback_days=int(
+                        os.environ.get("CORTEX_AUTO_JUDGE_WEIGHT_AUDIT_DAYS", "7")
+                    ),
+                )
+            elif args.reconsolidate:
+                from .adaptive_reconsolidation import run_adaptive_reconsolidation
+
+                result = run_adaptive_reconsolidation(
+                    store,
+                    config,
+                    task_id=args.reconsolidation_task_id,
+                    lability_minutes=int(
+                        os.environ.get("CORTEX_LABILITY_WINDOW_MINUTES", "30")
+                    ),
+                )
+            elif args.schemas:
+                from .schema_formation import run_schema_formation
+
+                result = run_schema_formation(
+                    store,
+                    config,
+                    minimum_cluster=int(
+                        os.environ.get("CORTEX_AUTO_JUDGE_SCHEMA_MIN_CLUSTER", "3")
+                    ),
+                )
+            elif args.link_orphans:
                 result = link_orphan_memories(store, config)
             else:
                 result = AutoJudge(config).run(store)
+                from .brain_mechanics import run_due_brain_mechanics
+
+                result["brain_mechanics"] = run_due_brain_mechanics(store, config)
+        elif args.command == "brain-mechanics":
+            from .autojudge import AutoJudgeConfig
+            from .brain_mechanics import run_due_brain_mechanics
+
+            result = run_due_brain_mechanics(store, AutoJudgeConfig.from_env())
+        elif args.command == "semantic-consolidation-report":
+            result = store.semantic_consolidation_snapshot()
+        elif args.command == "apply-semantic-consolidation":
+            result = store.apply_semantic_consolidation(
+                args.decision_id,
+                actor="cortex-operator:cli",
+            )
+        elif args.command == "undo-semantic-consolidation":
+            result = store.undo_semantic_consolidation(args.decision_id)
+        elif args.command == "semantic-consolidation-feedback":
+            result = store.record_semantic_consolidation_feedback(
+                args.decision_id,
+                args.label,
+                reason=args.reason,
+                actor="cortex-operator:cli",
+            )
+        elif args.command == "pruning-report":
+            result = store.adaptive_pruning_snapshot()
+        elif args.command == "apply-pruning":
+            result = store.apply_adaptive_pruning(
+                args.decision_id,
+                actor="cortex-operator:cli",
+            )
+        elif args.command == "undo-pruning":
+            result = store.undo_adaptive_pruning(args.decision_id)
+        elif args.command == "weight-proposals":
+            result = {
+                **store.scoring_weight_snapshot(),
+                "auto_reverted": store.auto_revert_scoring_weights(),
+            }
+        elif args.command == "apply-weight-proposal":
+            result = store.apply_scoring_weight_proposal(
+                args.proposal_id,
+                actor="cortex-operator:cli",
+                note=args.note,
+                confirm_large_change=bool(args.confirm_large_change),
+            )
+        elif args.command == "reject-weight-proposal":
+            result = store.reject_scoring_weight_proposal(
+                args.proposal_id,
+                actor="cortex-operator:cli",
+                note=args.note,
+            )
+        elif args.command == "rollback-weights":
+            result = store.rollback_scoring_weights(
+                args.proposal_id,
+                reason=args.reason,
+                actor="cortex-operator:cli",
+            )
+        elif args.command == "reset-weights":
+            result = store.factory_reset_scoring_weights(
+                args.task_type,
+                actor="cortex-operator:cli",
+                note=args.note,
+            )
+        elif args.command == "reconsolidation-proposals":
+            result = store.adaptive_reconsolidation_snapshot()
+        elif args.command == "apply-reconsolidation":
+            result = store.apply_adaptive_reconsolidation(
+                args.proposal_id,
+                actor="cortex-operator:cli",
+                confirm_protected=bool(args.confirm_protected),
+            )
+        elif args.command == "undo-reconsolidation":
+            result = store.undo_adaptive_reconsolidation(args.proposal_id)
+        elif args.command == "reconsolidation-feedback":
+            result = store.record_adaptive_reconsolidation_feedback(
+                args.proposal_id,
+                args.label,
+                reason=args.reason,
+            )
+        elif args.command == "schema-proposals":
+            result = store.schema_formation_snapshot()
+        elif args.command == "apply-schema":
+            result = store.apply_schema_formation(
+                args.proposal_id,
+                actor="cortex-operator:cli",
+            )
+        elif args.command == "undo-schema":
+            result = store.undo_schema_formation(args.proposal_id)
+        elif args.command == "schema-feedback":
+            result = store.record_schema_formation_feedback(
+                args.proposal_id,
+                args.label,
+                reason=args.reason,
+            )
         elif args.command == "recall-stats":
             snapshot = store.dashboard_snapshot(memory_limit=1)
             result = {
@@ -322,6 +651,10 @@ def main() -> int:
                 return 0
         elif args.command == "quality-report":
             result = store.memory_quality_report()
+        elif args.command == "scoring-trend":
+            result = store.scoring_health(weeks=args.weeks, limit=args.limit)
+        elif args.command == "attention-learning":
+            result = store.attention_learning_summary(limit=args.limit)
         elif args.command == "refinery-report":
             result = store.refinery_classification_report()
         elif args.command == "refinery-summary":
@@ -330,7 +663,10 @@ def main() -> int:
             result = MemoryRetriever(store).shadow_tiered_comparison(args.query)
         else:
             result = store.maintenance(dry_run=not args.apply)
-        if not (args.command == "auto-judge" and args.quiet):
+        if not (
+            (args.command == "auto-judge" and args.quiet)
+            or (args.command == "brain-mechanics" and args.quiet)
+        ):
             print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0
     finally:

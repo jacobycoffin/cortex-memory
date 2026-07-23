@@ -22,6 +22,7 @@ _HALF_LIFE_DAYS = {
     "episode": 60.0,
     "operational": 21.0,
     "prospective": 365.0,
+    "schema": 730.0,
 }
 
 _SOURCE_RELIABILITY = {
@@ -47,7 +48,48 @@ _MEMORY_TYPE_PRIOR = {
     "semantic": 0.66,
     "operational": 0.58,
     "episode": 0.48,
+    "schema": 0.82,
 }
+
+# Keep scoring policies explicit and versioned so historical traces can be
+# interpreted honestly. The semantic/graph policy is shadow-only: live recall
+# continues to use the current policy until outcome evidence supports a switch.
+LIVE_SCORING_POLICY_VERSION = "retrieval_live_v2"
+SHADOW_SCORING_POLICY_VERSION = "semantic_graph_shadow_v1"
+SCORE_SIGNAL_WEIGHTS = {
+    "lexical": 0.20,
+    "phrase": 0.06,
+    "semantic": 0.06,
+    "activation": 0.09,
+    "utility": 0.11,
+    "importance": 0.06,
+    "confidence": 0.05,
+    "source_reliability": 0.06,
+    "currentness": 0.06,
+    "memory_type": 0.03,
+    "uniqueness": 0.02,
+    "graph": 0.06,
+    "neighborhood": 0.04,
+}
+SHADOW_SCORE_SIGNAL_WEIGHTS = {
+    **SCORE_SIGNAL_WEIGHTS,
+    "lexical": 0.15,
+    "semantic": 0.11,
+    "importance": 0.05,
+    "confidence": 0.04,
+    "graph": 0.08,
+}
+SCORE_PENALTIES = {
+    "relevance": 0.12,
+    "stale_risk": 0.08,
+    "wrong_rate": 0.12,
+}
+SHADOW_SCORE_PENALTIES = {
+    **SCORE_PENALTIES,
+    "relevance": 0.16,
+}
+_GRAPH_EXPANSION_WEIGHT = 0.10
+_SHADOW_GRAPH_EXPANSION_WEIGHT = 0.14
 
 # Shadow-only role tiering. This version string names the exact proposed
 # policy compared against live retrieval; nothing here changes live results.
@@ -183,6 +225,9 @@ class MemoryRetriever:
             return [], RetrievalDiagnostics(0, 0, 0, True)
         expanded_query = _expand_query(query)
         retrieval_context = _normalize_retrieval_context(context, goal=query)
+        scoring_profile = self.store.active_scoring_weights(
+            retrieval_context.scope.get("task_type")
+        )
         candidate_limit = max(40, limit * 8)
         lexical_candidates = self.store.fts_search(
             expanded_query,
@@ -251,6 +296,9 @@ class MemoryRetriever:
             if memory_id in candidates_by_id:
                 candidates_by_id[memory_id].update(evidence)
         candidates = list(candidates_by_id.values())
+        schema_source_ids = self.store.active_schema_source_ids(list(candidates_by_id))
+        for candidate in candidates:
+            candidate["schema_example"] = str(candidate["id"]) in schema_source_ids
         superseded = self.store.superseded_ids(list(candidates_by_id)) if temporal_mode == "current" else set()
         contradicted = self.store.contradicted_ids(list(candidates_by_id))
         scored: dict[str, RetrievalResult] = {}
@@ -263,6 +311,7 @@ class MemoryRetriever:
                 superseded=candidate["id"] in superseded,
                 contradicted=candidate["id"] in contradicted,
                 context=retrieval_context,
+                scoring_weights=scoring_profile["weights"],
             )
             scored[candidate["id"]] = result
 
@@ -280,7 +329,14 @@ class MemoryRetriever:
                     old = scored[neighbor_id]
                     components = dict(old.components)
                     components["graph"] = max(components.get("graph", 0.0), graph_boost)
-                    score = min(1.0, old.score + 0.10 * graph_boost)
+                    score = min(1.0, old.score + _GRAPH_EXPANSION_WEIGHT * graph_boost)
+                    shadow_score = min(
+                        1.0,
+                        float(components.get("shadow_score") or old.score)
+                        + _SHADOW_GRAPH_EXPANSION_WEIGHT * graph_boost,
+                    )
+                    components["shadow_score"] = shadow_score
+                    components["shadow_score_delta"] = shadow_score - score
                     scored[neighbor_id] = RetrievalResult(old.memory, score, components, old.estimated_tokens)
                     continue
                 memory = self.store.get_memory(neighbor_id)
@@ -303,6 +359,7 @@ class MemoryRetriever:
                     superseded=neighbor_id in graph_superseded,
                     contradicted=neighbor_id in graph_contradicted,
                     context=retrieval_context,
+                    scoring_weights=scoring_profile["weights"],
                 )
                 scored[neighbor_id] = result
 
@@ -403,6 +460,8 @@ class MemoryRetriever:
                     "pinned": bool(result.memory.get("pinned")),
                     "score": round(float(result.score), 6),
                     "estimated_tokens": int(result.estimated_tokens),
+                    "scoring_policy_version": scoring_profile["policy_version"],
+                    "shadow_scoring_policy_version": SHADOW_SCORING_POLICY_VERSION,
                     "components": {
                         key: round(float(value), 6) for key, value in result.components.items()
                     },
@@ -568,6 +627,7 @@ class MemoryRetriever:
         superseded: bool = False,
         contradicted: bool = False,
         context: RetrievalContext | None = None,
+        scoring_weights: dict[str, float] | None = None,
     ) -> RetrievalResult:
         q_tokens = set(query_tokens(query))
         m_tokens = set(query_tokens(memory["content"]))
@@ -593,7 +653,11 @@ class MemoryRetriever:
         # small explicit penalty when neither the text nor semantic features
         # provide enough direct support. Strong graph neighbors can still
         # surface; they simply cannot win on connectivity alone.
-        relevance_penalty = 0.12 if len(q_tokens) >= 3 and direct_relevance < 0.28 else 0.0
+        relevance_penalty = (
+            SCORE_PENALTIES["relevance"]
+            if len(q_tokens) >= 3 and direct_relevance < 0.28
+            else 0.0
+        )
         activation = self._activation(memory)
         historical_usefulness = self._utility(memory)
         confidence = float(memory["confidence"])
@@ -637,36 +701,6 @@ class MemoryRetriever:
         )
         neighborhood = min(1.0, float(memory.get("neighborhood_candidate_score", 0.0) or 0.0))
 
-        score = (
-            0.20 * lexical
-            + 0.06 * phrase
-            + 0.06 * semantic
-            + 0.09 * activation
-            + 0.11 * historical_usefulness
-            + 0.06 * importance
-            + 0.05 * confidence
-            + 0.06 * source_reliability
-            + 0.06 * currentness
-            + 0.03 * memory_type
-            + 0.02 * uniqueness
-            + 0.06 * graph
-            + 0.04 * neighborhood
-            + context_boost
-            + 0.08 * context_adaptation
-            - relevance_penalty
-            - 0.08 * stale_risk
-            - 0.12 * min(1.0, wrong_rate)
-            - 0.15 * float(contradicted)
-            + 0.18 * float(memory.get("prospective_due_score") or 0.0)
-        )
-        if superseded:
-            score -= 0.18
-        if memory["pinned"]:
-            score += 0.08
-        if memory["state"] == "cold":
-            score -= 0.03
-        if memory["state"] == "archived":
-            score -= 0.10
         operator_policy = self.store.active_policy_adjustment(
             "retrieval",
             {
@@ -675,18 +709,12 @@ class MemoryRetriever:
                 "source_category": str(memory.get("source_category") or "AGENT_INFERENCE"),
             },
         )
-        score += float(operator_policy.get("score_adjustment") or 0.0)
-        if context_components["context_gate"] < 1.0:
-            score = min(score, 0.01)
-
-        components = {
+        score_signals = {
             "lexical": lexical,
             "phrase": phrase,
             "semantic": semantic,
-            "semantic_similarity": semantic,
             "activation": activation,
             "utility": historical_usefulness,
-            "historical_usefulness": historical_usefulness,
             "importance": importance,
             "confidence": confidence,
             "source_reliability": source_reliability,
@@ -695,6 +723,52 @@ class MemoryRetriever:
             "uniqueness": uniqueness,
             "graph": graph,
             "neighborhood": neighborhood,
+        }
+        common_adjustments = {
+            "context_boost": context_boost,
+            "context_adaptation": context_adaptation,
+            "relevance_penalty": relevance_penalty,
+            "stale_risk": stale_risk,
+            "wrong_rate": min(1.0, wrong_rate),
+            "contradiction_risk": float(contradicted),
+            "prospective_due": float(memory.get("prospective_due_score") or 0.0),
+            "superseded": float(superseded),
+            "pinned": float(bool(memory["pinned"])),
+            "cold": float(memory["state"] == "cold"),
+            "archived": float(memory["state"] == "archived"),
+            "stranded": float(bool(memory.get("stranded"))),
+            "schema_example": float(bool(memory.get("schema_example"))),
+            "specificity_request": float(
+                bool(
+                    re.search(
+                        r"\b(?:specific|specifics|example|examples|episode|episodes|"
+                        r"exact|detail|details|instance|instances|when exactly)\b",
+                        query,
+                        re.I,
+                    )
+                )
+            ),
+            "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
+            "context_gate": float(context_components["context_gate"]),
+        }
+        score = _weighted_score(
+            score_signals,
+            scoring_weights or SCORE_SIGNAL_WEIGHTS,
+            SCORE_PENALTIES,
+            common_adjustments,
+        )
+        shadow_score = _weighted_score(
+            score_signals,
+            SHADOW_SCORE_SIGNAL_WEIGHTS,
+            SHADOW_SCORE_PENALTIES,
+            common_adjustments,
+        )
+
+        components = {
+            **score_signals,
+            "phrase": phrase,
+            "semantic_similarity": semantic,
+            "historical_usefulness": historical_usefulness,
             "relevance_penalty": relevance_penalty,
             "stale_risk": stale_risk,
             "wrong_rate": min(1.0, wrong_rate),
@@ -708,8 +782,20 @@ class MemoryRetriever:
                 1.0, float(context_feedback["observations"]) / 10.0
             ),
             "context_adaptation": context_adaptation,
+            "context_boost": context_boost,
+            "shadow_score": shadow_score,
+            "shadow_score_delta": shadow_score - score,
             "spaced_reinforcement": float(memory.get("spaced_reinforcement") or 0.0),
             "selected_unused": min(1.0, float(memory.get("selected_unused") or 0.0) / 5.0),
+            "stranded": float(bool(memory.get("stranded"))),
+            "schema_example": float(bool(memory.get("schema_example"))),
+            "specificity_request": common_adjustments["specificity_request"],
+            **{
+                f"live_weight_{signal}": float(
+                    (scoring_weights or SCORE_SIGNAL_WEIGHTS)[signal]
+                )
+                for signal in SCORE_SIGNAL_WEIGHTS
+            },
             **context_components,
         }
         estimated_tokens = max(12, math.ceil(len(memory["content"]) / 4) + 18)
@@ -791,6 +877,39 @@ class MemoryRetriever:
         except ValueError:
             return base * 0.6
         return base
+
+
+def _weighted_score(
+    signals: dict[str, float],
+    weights: dict[str, float],
+    penalties: dict[str, float],
+    adjustments: dict[str, float],
+) -> float:
+    """Apply one explicit scoring policy to observable component values."""
+
+    score = sum(
+        float(weights.get(component, 0.0)) * float(signals.get(component, 0.0))
+        for component in weights
+    )
+    score += float(adjustments.get("context_boost", 0.0))
+    score += 0.08 * float(adjustments.get("context_adaptation", 0.0))
+    if float(adjustments.get("relevance_penalty", 0.0)) > 0.0:
+        score -= float(penalties["relevance"])
+    score -= float(penalties["stale_risk"]) * float(adjustments.get("stale_risk", 0.0))
+    score -= float(penalties["wrong_rate"]) * float(adjustments.get("wrong_rate", 0.0))
+    score -= 0.15 * float(adjustments.get("contradiction_risk", 0.0))
+    score += 0.18 * float(adjustments.get("prospective_due", 0.0))
+    score -= 0.18 * float(adjustments.get("superseded", 0.0))
+    score += 0.08 * float(adjustments.get("pinned", 0.0))
+    score -= 0.03 * float(adjustments.get("cold", 0.0))
+    score -= 0.10 * float(adjustments.get("archived", 0.0))
+    score -= 0.12 * float(adjustments.get("stranded", 0.0))
+    if float(adjustments.get("schema_example", 0.0)) > 0.0:
+        score -= 0.10 * (1.0 - float(adjustments.get("specificity_request", 0.0)))
+    score += float(adjustments.get("operator_policy", 0.0))
+    if float(adjustments.get("context_gate", 1.0)) < 1.0:
+        score = min(score, 0.01)
+    return max(0.0, min(1.0, score))
 
 
 def token_overlap(left: str, right: str) -> float:

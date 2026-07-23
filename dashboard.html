@@ -910,6 +910,7 @@
     .health-symbol { border-radius: 50%; font-family: ui-monospace,monospace; font-size: .72rem; }
     .health-score-large { font-family: Iowan Old Style, Baskerville, Georgia, serif; font-weight: 500; }
     .chip, .status-chip { max-width: 100%; white-space: normal; border-radius: 2px; line-height: 1.25; }
+    .panel-heading > .chip { flex: 0 0 auto; white-space: nowrap; }
     .explorer-panel { border-radius: 3px; }
     .explorer-toolbar { border-radius: 2px 2px 0 0; background: var(--surface); backdrop-filter: none; }
     .memory-row { grid-template-columns: minmax(0,1.6fr) minmax(90px,125px) minmax(70px,105px) minmax(82px,100px) minmax(72px,100px) 20px; align-items: start; }
@@ -1820,14 +1821,15 @@
         <button class="nav-btn" data-view="overview" aria-selected="true"><span class="nav-icon">01</span><span class="nav-text">Overview</span></button>
         <button class="nav-btn" data-view="graph" aria-selected="false"><span class="nav-icon">02</span><span class="nav-text">Memory map</span></button>
         <button class="nav-btn" data-view="timeline" aria-selected="false"><span class="nav-icon">03</span><span class="nav-text">Timeline</span></button>
-        <button class="nav-btn" data-view="auto-judge" aria-selected="false"><span class="nav-icon">04</span><span class="nav-text">Auto-Judge</span></button>
-        <button class="nav-btn" data-view="insights" aria-selected="false"><span class="nav-icon">05</span><span class="nav-text">Insights</span></button>
-        <button class="nav-btn" data-view="cognition" aria-selected="false"><span class="nav-icon">06</span><span class="nav-text">Cognition</span></button>
-        <button class="nav-btn" data-view="trust" aria-selected="false"><span class="nav-icon">07</span><span class="nav-text">Trust</span></button>
-        <button class="nav-btn" data-view="tools" aria-selected="false"><span class="nav-icon">08</span><span class="nav-text">Tool notes</span></button>
-        <button class="nav-btn" data-view="learning" aria-selected="false"><span class="nav-icon">09</span><span class="nav-text">Learning lab</span></button>
-        <button class="nav-btn" data-view="health" aria-selected="false"><span class="nav-icon">10</span><span class="nav-text">Health</span></button>
-        <button class="nav-btn" data-view="explorer" aria-selected="false"><span class="nav-icon">11</span><span class="nav-text">Index</span></button>
+        <button class="nav-btn" data-view="review" aria-selected="false"><span class="nav-icon">04</span><span class="nav-text">Train Kaya <small id="review-nav-count"></small></span></button>
+        <button class="nav-btn" data-view="auto-judge" aria-selected="false"><span class="nav-icon">05</span><span class="nav-text">Auto-Judge</span></button>
+        <button class="nav-btn" data-view="insights" aria-selected="false"><span class="nav-icon">06</span><span class="nav-text">Insights</span></button>
+        <button class="nav-btn" data-view="cognition" aria-selected="false"><span class="nav-icon">07</span><span class="nav-text">Cognition</span></button>
+        <button class="nav-btn" data-view="trust" aria-selected="false"><span class="nav-icon">08</span><span class="nav-text">Trust</span></button>
+        <button class="nav-btn" data-view="tools" aria-selected="false"><span class="nav-icon">09</span><span class="nav-text">Tool notes</span></button>
+        <button class="nav-btn" data-view="learning" aria-selected="false"><span class="nav-icon">10</span><span class="nav-text">Learning lab</span></button>
+        <button class="nav-btn" data-view="health" aria-selected="false"><span class="nav-icon">11</span><span class="nav-text">Health</span></button>
+        <button class="nav-btn" data-view="explorer" aria-selected="false"><span class="nav-icon">12</span><span class="nav-text">Index</span></button>
       </nav>
       <div class="sidebar-spacer"></div>
       <div class="brain-mini">
@@ -1966,6 +1968,96 @@
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>What was captured</h2><p>Memory types within the selected period</p></div></div><div class="timeline-kind-list" id="timeline-kind-list"></div></div>
         </section>
 
+        <section class="view" id="view-review" aria-labelledby="review-heading">
+          <div class="page-heading"><div><div class="eyebrow">Notice → review → remember → test the pattern</div><h1 id="review-heading">Train Kaya</h1><p>Start by deciding what deserves to become a memory. Your one-off choices happen immediately; broader creation standards still require repeated evidence, testing, and your approval.</p></div></div>
+          <section class="panel training-overview" aria-labelledby="training-path-heading">
+            <div class="training-overview-head">
+              <div><div class="eyebrow">Your training path</div><h2 id="training-path-heading">Choose good memories first. Teach patterns second.</h2><p>New candidates wait outside recall until you decide. Teach the examples. Approve the standard. Cortex can group the examples you deliberately mark for teaching, replay a proposed rule, observe it in shadow mode, and return to you for final approval.</p></div>
+              <div class="training-progress-number"><strong id="training-progress-value">0%</strong><span>first policy journey</span></div>
+            </div>
+            <div class="training-progress-track" role="progressbar" aria-label="Kaya training progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="training-progress-track"><div class="training-progress-fill" id="training-progress-fill"></div></div>
+            <div class="training-steps" id="training-steps"></div>
+            <div class="training-next"><div><strong id="training-next-title">Review real Kaya examples</strong><span id="training-next-copy">Your choices create the evidence used by the policy compiler.</span></div><button class="primary-btn" id="training-next-action" type="button">Start reviewing</button></div>
+          </section>
+          <div class="panel review-hero">
+            <div><div class="eyebrow">Your attention is the scarce resource</div><h2>One clear decision at a time.</h2><p>Each item shows what happened, what Cortex proposes, why it noticed, and what Kaya could do with it. The result can stay specific to this candidate or count as one example toward a future tested standard.</p></div>
+            <div class="review-progress-large" id="review-inbox-total"><strong>—</strong><span>waiting</span></div>
+          </div>
+          <div class="review-filter-bar" id="review-filters" aria-label="Filter review inbox">
+            <button class="review-filter active" type="button" data-review-filter="creation">New memories</button>
+            <button class="review-filter" type="button" data-review-filter="all">All</button>
+            <button class="review-filter" type="button" data-review-filter="cleanup">Cleanup</button>
+            <button class="review-filter" type="button" data-review-filter="clarity">Clarity</button>
+            <button class="review-filter" type="button" data-review-filter="connections">Connections</button>
+            <button class="review-filter" type="button" data-review-filter="conflicts">Conflicts</button>
+            <button class="review-filter" type="button" data-review-filter="claims">Claims</button>
+            <button class="review-filter" type="button" data-review-filter="accuracy">Answer accuracy</button>
+          </div>
+          <section class="panel creation-review-guide" id="creation-review-guide">
+            <div class="eyebrow">Creation trainer · nothing here is a memory yet</div>
+            <h2>Decide what Kaya is allowed to learn.</h2>
+            <p>Cortex caught a possible memory and paused it here. Kaya cannot recall it until you choose “Remember it.” Your decision changes this one proposal now; it becomes a broader standard only if you choose to teach from the example and later approve the tested rule.</p>
+            <div class="creation-flow" aria-label="How creation training reaches Cortex">
+              <div class="creation-flow-step"><span>1 · Candidate</span><strong>Cortex notices</strong><p>Text waits outside recall.</p></div>
+              <div class="creation-flow-step"><span>2 · Your decision</span><strong>You choose</strong><p>Remember, edit, reference, reject, or wait.</p></div>
+              <div class="creation-flow-step"><span>3 · Evidence</span><strong>Patterns collect</strong><p>Only examples marked “Teach” count.</p></div>
+              <div class="creation-flow-step"><span>4 · Standard</span><strong>You approve again</strong><p>Tested policy can then affect Cortex-wide creation.</p></div>
+            </div>
+            <div class="recall-set-panel">
+              <div><div class="eyebrow">What Kaya can recall</div><h3 id="recall-set-title">Checking the active recall set…</h3><p id="recall-set-copy">Legacy keeps today’s eligible Cortex records. Trained starts with only memories approved for the clean set. Switching sets does not delete any memory content, and it never changes Hermes MEMORY.md or USER.md.</p><div class="recall-set-status" id="recall-set-status"></div></div>
+              <div class="recall-set-actions"><button class="primary-btn" id="recall-set-preview" type="button">Preview a clean start</button><button class="ghost-btn" id="recall-set-switch-back" type="button" hidden>Switch back to Legacy</button></div>
+            </div>
+            <div class="creation-receipt" id="creation-review-receipt" hidden><div><strong id="creation-review-receipt-title">Decision saved</strong><span id="creation-review-receipt-copy"></span></div><button class="ghost-btn" id="creation-review-receipt-undo" type="button">Undo decision</button></div>
+            <dialog class="recall-set-dialog" id="recall-set-dialog" aria-labelledby="recall-set-dialog-title">
+              <div class="recall-set-dialog-body"><div class="eyebrow">Clean-start preview</div><h2 id="recall-set-dialog-title">Review the exact impact</h2><p id="recall-set-dialog-copy">Loading the preview…</p><div class="recall-set-counts" id="recall-set-counts"></div><div class="recall-set-warning">This changes which Cortex records normal recall can use. It does not delete or rewrite memory content, and it does not touch Hermes MEMORY.md or USER.md. You can switch back to Legacy.</div><div class="recall-set-dialog-actions"><button class="ghost-btn" id="recall-set-dialog-cancel" type="button">Cancel</button><button class="primary-btn" id="recall-set-activate" type="button">Activate Trained set</button></div></div>
+            </dialog>
+          </section>
+          <section class="panel connection-review-guide" id="connection-review-guide" hidden>
+            <div class="connection-review-head">
+              <div><div class="eyebrow">Connection workshop</div><h2>Review a relationship, not two blobs of text.</h2><p>Cortex groups similar pairs so your decisions compound. Every approval creates one explained map edge immediately. Five consistent denials can propose a stricter evidence standard; it must pass replay, three new shadow reviews, and your approval before it filters future weak suggestions.</p></div>
+              <div class="connection-review-total"><strong id="connection-review-count">0</strong><span>connection pairs</span></div>
+            </div>
+            <div class="connection-patterns" id="connection-patterns" aria-label="Connection patterns"></div>
+            <label class="connection-auto-map"><input id="connection-auto-map" type="checkbox" checked> Show each approved connection on the memory map</label>
+            <div class="connection-map-receipt" id="connection-map-receipt" hidden><div><strong id="connection-map-receipt-title">Connection created</strong><span id="connection-map-receipt-copy"></span></div><button class="primary-btn" id="connection-map-receipt-open" type="button">Show on map</button></div>
+          </section>
+          <div class="review-workspace">
+            <aside class="panel review-queue" aria-label="Pending review items">
+              <div class="review-queue-head"><strong id="review-queue-title">All pending decisions</strong><span id="review-queue-count">Loading the queue…</span></div>
+              <div class="review-queue-list" id="review-queue-list"></div>
+            </aside>
+            <section class="panel review-focus" id="review-focus" aria-live="polite"></section>
+          </div>
+          <section class="panel panel-pad review-learning">
+            <div class="panel-heading"><div><h2>What Cortex is learning from you</h2><p>Operator decisions are evidence, not instant global rules. Repeated patterns become reviewable policy signals.</p></div><span class="chip" id="review-decision-total">0 decisions</span></div>
+            <div class="review-learning-grid" id="review-learning-signals"></div>
+            <div class="review-history-list" id="review-history-list"></div>
+          </section>
+          <div class="training-governance-grid">
+            <section class="panel panel-pad" aria-labelledby="schema-training-heading">
+              <div class="panel-heading"><div><h2 id="schema-training-heading">How Cortex groups memories</h2><p>Broad neighborhoods are immediate. Named projects and services must earn a permanent place on the map.</p></div><span class="chip" id="schema-training-total">0 evaluated</span></div>
+              <div class="schema-rule" id="schema-training-rule">Checking the evidence rule…</div>
+              <div class="schema-evaluation-list" id="schema-evaluation-list"></div>
+            </section>
+            <section class="panel panel-pad" aria-labelledby="experience-training-heading">
+              <div class="panel-heading"><div><h2 id="experience-training-heading">Learning experience dataset</h2><p>Cortex records decisions and outcomes without copying memory text into the training export by default.</p></div><span class="chip" id="experience-training-total">0 examples</span></div>
+              <div class="experience-stat-grid" id="experience-stat-grid"></div>
+              <div class="measurement-boundary" id="experience-claim-boundary">This dataset trains Cortex policies, not Kaya’s base model.</div>
+            </section>
+          </div>
+          <section class="panel panel-pad decision-ledger" aria-labelledby="decision-ledger-heading">
+            <div class="panel-heading"><div><h2 id="decision-ledger-heading">Why Cortex did this</h2><p>One timeline for admission, your reviews, neighborhood changes, recall-set boundaries, policy versions, and lifecycle actions.</p></div><select class="control" id="decision-log-filter" aria-label="Filter Cortex decision log"><option value="all">All decisions</option><option value="operator_review">Your reviews</option><option value="admission">Admission</option><option value="neighborhood">Neighborhoods</option><option value="recall_set">Recall sets</option><option value="policy">Policies</option><option value="lifecycle">Lifecycle</option></select></div>
+            <div class="decision-ledger-list" id="decision-ledger-list"></div>
+          </section>
+          <section class="panel panel-pad policy-lab" aria-labelledby="policy-lab-heading">
+            <div class="panel-heading"><div><h2 id="policy-lab-heading">Proposed standards</h2><p>This is where repeated reviews become changes to Cortex’s admission, linking, retrieval, and retention core. Every proposal shows its rule, evidence gates, replay result, shadow progress, and rollback path.</p></div><button class="ghost-btn" id="policy-compile" type="button">Compile latest reviews</button></div>
+            <div class="policy-candidate-list" id="policy-candidate-list"></div>
+            <div class="panel-heading" style="margin-top:18px"><div><h2>Active policy versions</h2><p>Only policies listed here affect Kaya. Rollback removes the adjustment while preserving the evidence and audit trail.</p></div><span class="chip" id="active-policy-total">0 active</span></div>
+            <div class="active-policy-list" id="active-policy-list"></div>
+            <div class="measurement-boundary" id="policy-claim-boundary">Reviews generate proposals; explicit promotion is required before a policy can affect the core.</div>
+          </section>
+        </section>
+
         <section class="view" id="view-auto-judge" aria-labelledby="auto-judge-heading">
           <div class="page-heading"><div><div class="eyebrow">Automated memory governance</div><h1 id="auto-judge-heading">Auto-Judge</h1><p>Cortex's auto-judge reviews staged memory proposals, decides what to keep or reject, and links related memories — all without manual review. Inspect what it's been doing below.</p></div></div>
 
@@ -1980,6 +2072,43 @@
               <div class="panel-heading"><div><h2 id="aj-orphan-heading">Knowledge graph health</h2><p>Edge coverage and orphan linking progress</p></div><span class="chip" id="aj-orphan-total">—</span></div>
               <div class="orphan-stats" id="aj-orphan-stats"></div>
               <div class="graph-edge-types" id="aj-edge-types"></div>
+            </section>
+          </div>
+
+          <section class="panel panel-pad" aria-labelledby="aj-consolidation-heading">
+            <div class="panel-heading"><div><h2 id="aj-consolidation-heading">Semantic consolidation</h2><p>Related-but-distinct memories are judged in batches of five. Shadow proposals stay separate from explicitly applied, reversible merges.</p></div><span class="chip" id="aj-consolidation-count">0 proposals</span></div>
+            <div class="lab-metric-grid" id="aj-consolidation-metrics"></div>
+            <div class="lab-list" id="aj-consolidation-list"></div>
+            <div class="measurement-boundary" id="aj-consolidation-boundary">A model proposal is not an applied merge. Originals remain available until an explicit apply gate succeeds.</div>
+          </section>
+
+          <div class="dashboard-grid equal">
+            <section class="panel panel-pad" aria-labelledby="aj-pruning-heading">
+              <div class="panel-heading"><div><h2 id="aj-pruning-heading">Relevance pruning</h2><p>Outcome-aware cooling, archive, quarantine, and reversible graph-stranding proposals. Nothing is hard-deleted.</p></div><span class="chip" id="aj-pruning-count">0 proposals</span></div>
+              <div class="lab-metric-grid" id="aj-pruning-metrics"></div>
+              <div class="lab-list" id="aj-pruning-list"></div>
+              <div class="measurement-boundary" id="aj-pruning-boundary">Low activity is evidence for review, not proof that knowledge is useless.</div>
+            </section>
+            <section class="panel panel-pad" aria-labelledby="aj-weights-heading">
+              <div class="panel-heading"><div><h2 id="aj-weights-heading">Adaptive scoring weights</h2><p>Seven-day, task-specific proposals with bounded weights, explicit approval, precision monitoring, rollback, and factory defaults.</p></div><span class="chip" id="aj-weights-count">0 proposals</span></div>
+              <div class="lab-metric-grid" id="aj-weights-metrics"></div>
+              <div class="lab-list" id="aj-weights-list"></div>
+              <div class="measurement-boundary" id="aj-weights-boundary">A staged profile has zero retrieval effect until you approve it.</div>
+            </section>
+          </div>
+
+          <div class="dashboard-grid equal">
+            <section class="panel panel-pad" aria-labelledby="aj-recon-heading">
+              <div class="panel-heading"><div><h2 id="aj-recon-heading">Adaptive reconsolidation</h2><p>Same-task evidence for memories that actually influenced an answer, constrained by a 30-minute lability window.</p></div><span class="chip" id="aj-recon-count">0 proposals</span></div>
+              <div class="lab-metric-grid" id="aj-recon-metrics"></div>
+              <div class="lab-list" id="aj-recon-list"></div>
+              <div class="measurement-boundary" id="aj-recon-boundary">User corrections win. Identity and preference changes require a second explicit confirmation.</div>
+            </section>
+            <section class="panel panel-pad" aria-labelledby="aj-schema-heading">
+              <div class="panel-heading"><div><h2 id="aj-schema-heading">Schema formation</h2><p>Weekly abstractions require three used tasks plus cross-task-type or multi-episode evidence. Every source stays visible.</p></div><span class="chip" id="aj-schema-count">0 proposals</span></div>
+              <div class="lab-metric-grid" id="aj-schema-metrics"></div>
+              <div class="lab-list" id="aj-schema-list"></div>
+              <div class="measurement-boundary" id="aj-schema-boundary">A cluster is not a rule. Applied schemas retain examples, correction propagation, and an undo path.</div>
             </section>
           </div>
 
@@ -2147,6 +2276,24 @@
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context over time</h2><p>Daily estimated memory tokens injected into prompts</p></div><span class="chip" id="recall-window">No samples</span></div><div class="recall-strip" id="recall-strip"></div></div>
           </div>
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">0 outcomes</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
+          <section class="panel panel-pad" aria-labelledby="scoring-health-heading">
+            <div class="panel-heading"><div><h2 id="scoring-health-heading">Scoring health</h2><p>Resolved retrievals only: what Kaya used, what consumed context without attribution, and which ranking signals were strongest.</p></div><span class="chip" id="scoring-policy-status">Shadow · collecting</span></div>
+            <div class="metric-grid" id="scoring-health-metrics"></div>
+            <div class="dashboard-grid equal">
+              <div><svg class="trend-chart" id="scoring-health-chart" viewBox="0 0 900 300" role="img" aria-label="Weekly retrieval precision and token waste"></svg><div class="trend-legend" id="scoring-health-legend"></div></div>
+              <div><div class="panel-heading"><div><h3>Signal contribution</h3><p>Weighted share among resolved used versus unused selections.</p></div></div><div class="mode-ledger" id="scoring-signal-list"></div></div>
+            </div>
+            <div class="measurement-boundary" id="scoring-health-boundary">The candidate policy records scores only; it does not change live recall.</div>
+          </section>
+          <section class="panel panel-pad" aria-labelledby="attention-learning-heading">
+            <div class="panel-heading"><div><h2 id="attention-learning-heading">Topic attention learning</h2><p>Resolved use and ignore outcomes reveal which task topics may deserve richer or leaner recall. The static gate still decides every live request.</p></div><span class="chip" id="attention-learning-status">Disabled by default</span></div>
+            <div class="metric-grid" id="attention-learning-metrics"></div>
+            <div class="dashboard-grid equal">
+              <div><div class="panel-heading"><div><h3>Learned topic evidence</h3><p>Weights require repeated resolved outcomes and lose half their strength every 30 inactive days.</p></div></div><div class="mode-ledger" id="attention-learning-topics"></div></div>
+              <div><div class="panel-heading"><div><h3>Shadow promotion gate</h3><p>Observation volume permits only a controlled exposure—not automatic activation.</p></div></div><div class="gate-checks" id="attention-learning-gate"></div></div>
+            </div>
+            <div class="measurement-boundary" id="attention-learning-boundary">Topic recommendations are observational and never change live recall.</div>
+          </section>
           <section class="panel panel-pad evidence-hierarchy" aria-labelledby="evidence-hierarchy-heading">
             <div class="panel-heading"><div><h2 id="evidence-hierarchy-heading">Evidence-backed hierarchy</h2><p>Raw experience stays addressable; claims show their sources; higher-level bundles require explicit approval before recall.</p></div><span class="chip" id="hierarchy-summary-count">0 supported claims</span></div>
             <div class="hierarchy-flow" id="hierarchy-flow"></div>
@@ -2382,6 +2529,7 @@
       decision: ["Decision memory", "A choice that was made and the context behind it. Cortex recalls decisions to avoid reopening settled questions or contradicting prior direction."],
       prospective: ["Prospective memory", "Something intended for the future: a plan, reminder, commitment, or next step. Cortex keeps it active until it is resolved or no longer relevant."],
       operational: ["Operational memory", "Current technical state such as paths, ports, services, environments, and deployment details. Cortex weighs currentness heavily because these facts can change."],
+      schema: ["Schema memory", "A reviewed abstraction supported by at least three independently used source memories. The examples remain available, corrections mark the schema dirty, and the abstraction can be reversed."],
     };
     const authState = { enabled: true, username: "", currentPassword: "" };
     let sleepPollTimer = null;
@@ -3843,6 +3991,8 @@
       if(!modes.length)modeHost.append(emptyState("No recall decisions yet","Use Hermes normally; attention-gate evidence will appear here."));
       modes.forEach(mode=>{const row=el("div","mode-row"),count=Number(mode.count||0),skipped=Number(mode.abstained||0);row.append(el("div","mode-name",humanize(mode.mode)),el("div","mode-copy",`${modeDescriptions[mode.mode]||"Adaptive recall plan"} · avg ${Math.round(Number(mode.avg_tokens||0))} tokens`),el("div","mode-stat",`${formatNum(count)} · ${percent(skipped,Math.max(1,count))}% empty`));modeHost.append(row);});
       renderBudgetLearning(budgets);
+      renderScoringHealth(d.scoring_health||{});
+      renderAttentionLearning(d.attention_learning||{});
       renderEvidenceHierarchy(d.evidence_hierarchy||{});
       renderSleep(d.sleep_runs||[],d.sleep_proposals||[],d.sleep_runtime||{});
       const strip=document.getElementById("recall-strip"),maxTokens=Math.max(1,...days.map(day=>Number(day.estimated_tokens||0)));strip.replaceChildren();
@@ -3857,6 +4007,46 @@
       const workflowHost=document.getElementById("workflow-feed"),workflows=d.tool_workflows||[];workflowHost.replaceChildren();
       if(!workflows.length)workflowHost.append(emptyState("No repeated workflows yet","A path appears only after the same tool sequence works across distinct tasks."));
       workflows.slice(0,10).forEach(workflow=>{const steps=parseJson(workflow.steps_json,[]),chain=steps.map(step=>`${step.tool}(${(step.argument_keys||[]).join(",")})`).join(" → ")||"Recorded workflow",attempts=Number(workflow.success_count||0)+Number(workflow.failure_count||0),rate=percent(workflow.success_count,Math.max(1,attempts)),row=el("div","lifecycle-row");row.append(el("div","lifecycle-state",humanize(workflow.task_type)));const copy=el("div","lifecycle-copy",chain);copy.append(el("small","",`${formatNum(workflow.distinct_tasks||0)} distinct tasks · ${rate}% observed success`));row.append(copy,el("div","small-meta",timeAgo(new Date(workflow.updated_at))));workflowHost.append(row);});
+    }
+
+    function renderScoringHealth(report) {
+      const current=report.current||{},shadow=report.shadow||{},rate=value=>value===null||value===undefined?"—":`${(Number(value)*100).toFixed(1)}%`;
+      metricCards("scoring-health-metrics",[
+        ["Selection precision",rate(current.precision),`${formatNum(current.used_injections||0)} used of ${formatNum(current.resolved_injections||0)} resolved injections`,"◎"],
+        ["Helpfulness",rate(current.helpfulness),`${formatNum(current.helpful_ratings||0)} Helpful or Essential ratings`,"+"],
+        ["Token waste",rate(current.waste_rate),`${formatNum(current.wasted_tokens||0)} of ${formatNum(current.resolved_tokens||0)} resolved tokens`,"∿"],
+        ["False positives",rate(current.false_positive_rate),`${formatNum(current.false_positive_ratings||0)} negative of ${formatNum(current.evaluated_ratings||0)} evaluated ratings`,"×"]
+      ],true);
+      const status=document.getElementById("scoring-policy-status"),observations=Number(shadow.resolved_observations||0),days=Number(shadow.observed_days||0);status.textContent=shadow.ready_for_selection_experiment?`Shadow ready · ${formatNum(observations)} resolved`:`Shadow · ${formatNum(observations)}/50 · ${days}/7 days`;
+      document.getElementById("scoring-health-boundary").textContent=report.claim_boundary||"The candidate policy records scores only; it does not change live recall.";
+      const signals=report.signals||[],signalHost=document.getElementById("scoring-signal-list");signalHost.replaceChildren();
+      if(!signals.some(item=>Number(item.used_samples||0)+Number(item.unused_samples||0)>0))signalHost.append(emptyState("No resolved signal evidence yet","After Kaya finishes memory-backed tasks, contribution shares will separate used from unused selections."));
+      signals.filter(item=>Number(item.used_samples||0)+Number(item.unused_samples||0)>0).slice(0,8).forEach(item=>{const row=el("div","mode-row"),used=rate(item.used_contribution_share),unused=rate(item.unused_contribution_share),shift=Number(item.shadow_weight||0)-Number(item.weight||0),shiftCopy=Math.abs(shift)<.0001?"unchanged":`${shift>0?"+":""}${shift.toFixed(2)} in shadow`;row.append(el("div","mode-name",humanize(item.signal)),el("div","mode-copy",`Used share ${used} · unused share ${unused}`),el("div","mode-stat",shiftCopy));signalHost.append(row);});
+      const rows=report.weekly||[],svg=document.getElementById("scoring-health-chart"),legend=document.getElementById("scoring-health-legend"),W=900,H=300,L=68,R=28,T=28,B=54,plotW=W-L-R,plotH=H-T-B;svg.replaceChildren();legend.replaceChildren();
+      const desc=svgEl("desc");desc.textContent="Weekly resolved selection precision and estimated token waste rates.";svg.append(desc);
+      [0,.25,.5,.75,1].forEach(value=>{const y=T+(1-value)*plotH;svg.append(svgEl("line",{x1:L,y1:y,x2:W-R,y2:y,stroke:cssVar("--border"),"stroke-width":1}));const label=svgEl("text",{x:L-12,y:y+4,"text-anchor":"end",fill:cssVar("--muted"),"font-size":12});label.textContent=`${Math.round(value*100)}%`;svg.append(label);});
+      if(!rows.length){const label=svgEl("text",{x:W/2,y:H/2,"text-anchor":"middle",fill:cssVar("--muted"),"font-size":15});label.textContent="No resolved weekly scoring evidence yet";svg.append(label);}
+      const x=index=>rows.length<=1?L+plotW/2:L+index/(rows.length-1)*plotW,y=value=>T+(1-Number(value))*plotH,series=[{field:"precision",label:"Selection precision",color:cssVar("--green")},{field:"waste_rate",label:"Token waste",color:cssVar("--amber")}];
+      series.forEach(item=>{let prior=null;rows.forEach((row,index)=>{const value=row[item.field];if(value===null||value===undefined){prior=null;return;}const point={x:x(index),y:y(value)};if(prior)svg.append(svgEl("line",{x1:prior.x,y1:prior.y,x2:point.x,y2:point.y,stroke:item.color,"stroke-width":4,"stroke-linecap":"round"}));svg.append(svgEl("circle",{cx:point.x,cy:point.y,r:5,fill:item.color,stroke:cssVar("--surface"),"stroke-width":2}));prior=point;});const entry=el("span","trend-legend-item"),swatch=el("i","");swatch.style.background=item.color;entry.append(swatch,el("span","",item.label));legend.append(entry);});
+      rows.forEach((row,index)=>{if(index!==0&&index!==rows.length-1&&rows.length>4)return;const label=svgEl("text",{x:x(index),y:H-18,"text-anchor":"middle",fill:cssVar("--muted"),"font-size":12});label.textContent=String(row.week||"").replace(/^\d{4}-/,"");svg.append(label);});
+    }
+
+    function renderAttentionLearning(report) {
+      const summary=report.summary||{},gate=report.promotion_gate||{},weights=report.weights||[],rate=value=>value===null||value===undefined?"—":`${(Number(value)*100).toFixed(1)}%`,resolved=Number(summary.resolved_count||0),days=Number(summary.observed_days||0);
+      metricCards("attention-learning-metrics",[
+        ["Resolved topic turns",formatNum(resolved),`${formatNum(summary.observation_count||0)} total shadow decisions`,"⌁"],
+        ["Attributed use",rate(summary.attributed_use_rate),`${formatNum(summary.used_count||0)} used · ${formatNum(summary.ignored_count||0)} ignored`,"◎"],
+        ["Learned topic modes",formatNum(weights.filter(item=>Number(item.sample_count||0)>=4).length),"At least four resolved samples per topic and mode","◇"],
+        ["Recent shadow changes",formatNum(summary.recent_shadow_changes||0),"Would change mode or token budget; never applied","↯"]
+      ],true);
+      const status=document.getElementById("attention-learning-status");status.textContent=gate.ready?`Eligible for trial · ${formatNum(resolved)} outcomes`:`Shadow · ${formatNum(resolved)}/50 · ${days}/7 days`;
+      document.getElementById("attention-learning-boundary").textContent=report.claim_boundary||"Topic recommendations are observational and never change live recall.";
+      const host=document.getElementById("attention-learning-topics");host.replaceChildren();
+      if(!weights.length)host.append(emptyState("No resolved topic evidence yet","Enable attentional learning, then ordinary attributed turns will populate this shadow ledger."));
+      weights.slice(0,12).forEach(item=>{const samples=Number(item.sample_count||0),delta=Number(item.effective_delta||0),row=el("div","mode-row"),signal=samples<4?"Learning":Math.abs(delta)<.001?"Hold":`${delta>0?"+":""}${Math.round(delta*100)}% budget`;row.append(el("div","mode-name",`${humanize(item.topic_key)} · ${humanize(item.mode)}`),el("div","mode-copy",`${formatNum(item.used_count||0)} used · ${formatNum(item.ignored_count||0)} ignored · ${formatNum(item.helpful_count||0)} helpful · ${formatNum(item.harmful_count||0)} harmful`),el("div","mode-stat",signal));host.append(row);});
+      const gateHost=document.getElementById("attention-learning-gate");gateHost.replaceChildren();const checks=gate.checks||[];
+      if(!checks.length)gateHost.append(emptyState("Promotion evidence unavailable","The shadow policy stays observational until every gate can be measured."));
+      checks.forEach(check=>{const card=el("div",`gate-check ${check.passed?"pass":"fail"}`);card.append(el("span","",check.label||humanize(check.key)),el("strong","",`${check.passed?"Pass":"Hold"} · ${formatNum(check.value||0)} / ${formatNum(check.target||0)}`));gateHost.append(card);});
     }
 
     function renderBudgetLearning(budgets) {
@@ -4012,6 +4202,16 @@
       [formatNum(Number(evaluation.positive_task_outcomes||0)+Number(evaluation.negative_task_outcomes||0)),`${formatNum(evaluation.positive_task_outcomes||0)} positive · ${formatNum(evaluation.negative_task_outcomes||0)} negative explicit task outcomes`]
     ].forEach(([value,label])=>{const card=el("div","tool-evaluation-stat");card.append(el("strong","",value),el("span","",label));host.append(card);});ledger.replaceChildren();const rows=Array.isArray(evaluation.recent)?evaluation.recent:[];if(!rows.length){ledger.append(emptyState("Instrumentation starts with the next guided task","Historical tool calls remain visible above, but Cortex will not pretend old calls were exposed to guidance it did not log."));}rows.slice(0,10).forEach(item=>{const row=el("div","guidance-row"),identity=el("div","");identity.append(el("strong","",`${humanize(item.task_type)} · ${humanize(item.guidance_type)}`),el("span","",item.recommended_tool||item.guidance_key||"Recorded guidance"));row.append(identity,el("span","",item.resolved_at?(Number(item.followed)?"followed":"not followed"):"pending"),el("span","",item.success===null||item.success===undefined?"outcome pending":Number(item.success)?"execution succeeded":"execution failed"),el("span","",item.task_outcome?humanize(item.task_outcome):timeAgo(new Date(item.created_at))));ledger.append(row);});document.getElementById("tool-evaluation-boundary").textContent=String(evaluation.claim_boundary||"Follow-through is observational and does not prove guidance caused the result.");document.getElementById("tool-evaluation-status").textContent=evaluation.ready_for_comparison?"Comparison-ready · observational":"Observational · learning";}
 
+    function brainMechanicsButton(label,payload,{primary=false,confirmation=""}={}){
+      const button=el("button",primary?"primary-btn":"ghost-btn",label);button.type="button";
+      button.addEventListener("click",async event=>{event.stopPropagation();if(confirmation&&!window.confirm(confirmation))return;button.disabled=true;try{await authRequest("/api/brain-mechanics/action",payload);showToast(`${label} saved`);await load(true);}catch(error){showToast(error.message,true);}finally{button.disabled=false;}});
+      return button;
+    }
+
+    function brainMechanicsActions(items){
+      const host=el("div","review-actions");items.filter(Boolean).forEach(item=>host.append(brainMechanicsButton(item.label,item.payload,item.options||{})));return host;
+    }
+
     function renderAutoJudge() {
       if (!app.data) return;
       const d = app.data, aj = d.auto_judge || {};
@@ -4030,6 +4230,87 @@
         card.append(el("strong", "metric-value", val), el("span", "metric-label", label));
         metrics.append(card);
       });
+
+      const consolidation = d.semantic_consolidation || {};
+      const consolidationCounts = consolidation.counts || {};
+      const consolidationFeedback = consolidation.feedback || {};
+      const consolidationDecisions = consolidation.decisions || [];
+      const consolidationMetrics = document.getElementById("aj-consolidation-metrics");
+      const consolidationList = document.getElementById("aj-consolidation-list");
+      consolidationMetrics.replaceChildren();
+      consolidationList.replaceChildren();
+      labMetric(consolidationMetrics, "Proposed", formatNum(consolidationCounts.proposed || 0), "Model judgments awaiting an explicit gate");
+      labMetric(consolidationMetrics, "Applied", formatNum(consolidationCounts.applied || 0), "New canonical memories with preserved source dependencies");
+      labMetric(consolidationMetrics, "Linked", formatNum(consolidationCounts.linked || 0), "Pairs retained separately with an evidence-backed relation");
+      labMetric(consolidationMetrics, "Reversed", formatNum(consolidationCounts.reversed || 0), "Applied merges whose source memories were restored");
+      labMetric(consolidationMetrics, "Reviewed correctness", consolidationFeedback.correctness == null ? "Learning" : `${(Number(consolidationFeedback.correctness) * 100).toFixed(1)}%`, `${formatNum(consolidationFeedback.reviewed || 0)} human labels · target 80%`);
+      document.getElementById("aj-consolidation-count").textContent = `${formatNum(consolidationCounts.proposed || 0)} proposals`;
+      document.getElementById("aj-consolidation-boundary").textContent = String(consolidation.claim_boundary || "A model proposal is not an applied merge.");
+      if (!consolidationDecisions.length) {
+        consolidationList.append(emptyState("No semantic consolidation judgments yet", "Run Auto-Judge with --consolidate to record a bounded shadow batch."));
+      } else {
+        consolidationDecisions.slice(0, 12).forEach((item) => {
+          const row = el("article", "lab-row");
+          const head = el("div", "lab-row-head");
+          head.append(
+            el("strong", "", `${humanize(item.action)} · ${Math.round(Number(item.confidence || 0) * 100)}%`),
+            el("span", "", `${humanize(item.status)} · ${timeAgo(new Date(item.created_at))}`)
+          );
+          row.append(
+            head,
+            el("p", "", `${truncate(cleanMemory(item.left_content || "Unavailable"), 130)} ↔ ${truncate(cleanMemory(item.right_content || "Unavailable"), 130)}`),
+            el("p", "small-meta", `${item.reason || "No judgment reason recorded"}${item.feedback_label ? ` · reviewed ${humanize(item.feedback_label)}` : ""}`)
+          );
+          if(d.review_writes_enabled)row.append(brainMechanicsActions([
+            item.status==="proposed"?{label:"Apply",payload:{mechanic:"consolidation",action:"apply",decision_id:item.decision_id},options:{primary:true,confirmation:"Apply this reversible consolidation?"}}:null,
+            item.status==="applied"?{label:"Undo",payload:{mechanic:"consolidation",action:"undo",decision_id:item.decision_id}}:null,
+            !item.feedback_label?{label:"Correct",payload:{mechanic:"consolidation",action:"feedback",decision_id:item.decision_id,label:"correct"}}:null,
+            !item.feedback_label?{label:"Wrong",payload:{mechanic:"consolidation",action:"feedback",decision_id:item.decision_id,label:"wrong"},options:{confirmation:"Mark this judgment wrong? Applied merges will be undone."}}:null,
+          ]));
+          row.addEventListener("click", () => selectMemory(item.result_memory_id || item.left_id));
+          consolidationList.append(row);
+        });
+      }
+
+      const pruning=d.adaptive_pruning||{},pruningCounts=pruning.counts||{},pruningRegret=pruning.regret||{},pruningRows=pruning.decisions||[],pruningMetrics=document.getElementById("aj-pruning-metrics"),pruningList=document.getElementById("aj-pruning-list");
+      pruningMetrics.replaceChildren();pruningList.replaceChildren();
+      labMetric(pruningMetrics,"Proposed",formatNum(pruningCounts.proposed||0),"Awaiting operator review");
+      labMetric(pruningMetrics,"Applied",formatNum(pruningCounts.applied||0),"Reversible lifecycle or strand changes");
+      labMetric(pruningMetrics,"Reversed",formatNum(pruningCounts.reversed||0),"Restored manually or through regret");
+      labMetric(pruningMetrics,"Regret",pruningRegret.rate==null?"Learning":`${(Number(pruningRegret.rate)*100).toFixed(1)}%`,`Target ≤ ${(Number(pruningRegret.target||.05)*100).toFixed(0)}%`);
+      document.getElementById("aj-pruning-count").textContent=`${formatNum(pruningCounts.proposed||0)} proposals`;document.getElementById("aj-pruning-boundary").textContent=String(pruning.claim_boundary||"No pruning action hard-deletes memory content.");
+      if(!pruningRows.length)pruningList.append(emptyState("No adaptive-pruning judgments yet","Enable the daily shadow pass or run Auto-Judge with --prune."));
+      pruningRows.slice(0,12).forEach(item=>{const row=el("article","lab-row"),head=el("div","lab-row-head");head.append(el("strong","",`${humanize(item.action)} · ${Math.round(Number(item.confidence||0)*100)}%`),el("span","",`${humanize(item.status)} · relevance ${Math.round(Number(item.relevance_score||0)*100)}%`));row.append(head,el("p","",truncate(cleanMemory(item.content||"Unavailable"),180)),el("p","small-meta",item.reason||"No reason recorded"));if(d.review_writes_enabled)row.append(brainMechanicsActions([item.status==="proposed"?{label:"Apply",payload:{mechanic:"pruning",action:"apply",decision_id:item.decision_id},options:{primary:true,confirmation:`Apply reversible ${humanize(item.action)}?`}}:null,item.status==="applied"?{label:"Undo",payload:{mechanic:"pruning",action:"undo",decision_id:item.decision_id}}:null]));row.addEventListener("click",()=>selectMemory(item.memory_id));pruningList.append(row);});
+
+      const weights=d.scoring_weights||{},weightRows=weights.proposals||[],activeWeights=weights.active_profiles||[],weightMetrics=document.getElementById("aj-weights-metrics"),weightList=document.getElementById("aj-weights-list");
+      weightMetrics.replaceChildren();weightList.replaceChildren();
+      labMetric(weightMetrics,"Proposed",formatNum(weightRows.filter(item=>item.status==="proposed").length),"No retrieval effect");
+      labMetric(weightMetrics,"Active",formatNum(activeWeights.length),"Explicitly approved task profiles");
+      labMetric(weightMetrics,"Rolled back",formatNum(weightRows.filter(item=>["rolled_back","auto_reverted"].includes(item.status)).length),"History retained");
+      labMetric(weightMetrics,"Bounds",`${Number(weights.bounds?.floor||.02).toFixed(2)}–${Number(weights.bounds?.ceiling||.30).toFixed(2)}`,"Every signal");
+      document.getElementById("aj-weights-count").textContent=`${formatNum(weightRows.filter(item=>item.status==="proposed").length)} proposals`;document.getElementById("aj-weights-boundary").textContent=String(weights.claim_boundary||"A staged profile has no retrieval effect.");
+      if(!weightRows.length)weightList.append(emptyState("No scoring-weight proposals yet","The weekly audit needs at least eight resolved selections for a task type."));
+      weightRows.slice(0,12).forEach(item=>{const row=el("article","lab-row"),head=el("div","lab-row-head"),baseline=item.baseline_weights||{},proposed=item.proposed_weights||{},changes=Object.keys(proposed).map(key=>[key,Number(proposed[key])-Number(baseline[key]||0)]).filter(([,delta])=>Math.abs(delta)>.0001).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1])).slice(0,4).map(([key,delta])=>`${humanize(key)} ${delta>0?"+":""}${delta.toFixed(2)}`).join(" · ");head.append(el("strong","",`${humanize(item.task_type)} · ${Math.round(Number(item.confidence||0)*100)}%`),el("span","",`${humanize(item.status)}${item.explicit_confirmation_required?" · extra confirmation":""}`));row.append(head,el("p","",changes||"No effective change"),el("p","small-meta",`${item.reason||"No reason recorded"} · baseline precision ${item.baseline_precision==null?"learning":`${(Number(item.baseline_precision)*100).toFixed(1)}%`}`));if(d.review_writes_enabled)row.append(brainMechanicsActions([item.status==="proposed"?{label:item.explicit_confirmation_required?"Confirm & apply":"Apply",payload:{mechanic:"weights",action:"apply",proposal_id:item.proposal_id,confirm_large_change:Boolean(item.explicit_confirmation_required)},options:{primary:true,confirmation:item.explicit_confirmation_required?"At least one weight changes by 0.05 or more. Confirm this task-specific live profile?":"Apply this task-specific scoring profile?"}}:null,item.status==="proposed"?{label:"Reject",payload:{mechanic:"weights",action:"reject",proposal_id:item.proposal_id}}:null,item.status==="approved"?{label:"Rollback",payload:{mechanic:"weights",action:"rollback",proposal_id:item.proposal_id,reason:"operator requested dashboard rollback"},options:{confirmation:"Restore the proposal baseline weights?"}}:null]));weightList.append(row);});
+
+      const recon=d.adaptive_reconsolidation||{},reconCounts=recon.counts||{},reconFeedback=recon.feedback||{},reconRows=recon.proposals||[],reconMetrics=document.getElementById("aj-recon-metrics"),reconList=document.getElementById("aj-recon-list");
+      reconMetrics.replaceChildren();reconList.replaceChildren();
+      labMetric(reconMetrics,"Proposed",formatNum(reconCounts.proposed||0),"Same-task review items");
+      labMetric(reconMetrics,"Applied",formatNum(reconCounts.applied||0),"Versioned or evidenced changes");
+      labMetric(reconMetrics,"Reversed",formatNum(reconCounts.reversed||0),"Prior state restored");
+      labMetric(reconMetrics,"Reviewed accuracy",reconFeedback.correctness==null?"Learning":`${(Number(reconFeedback.correctness)*100).toFixed(1)}%`,`${formatNum(reconFeedback.reviewed||0)} labels · target 90%`);
+      document.getElementById("aj-recon-count").textContent=`${formatNum(reconCounts.proposed||0)} proposals`;document.getElementById("aj-recon-boundary").textContent=String(recon.claim_boundary||"User corrections remain authoritative.");
+      if(!reconRows.length)reconList.append(emptyState("No adaptive reconsolidation proposals yet","A memory must influence a task that creates or updates durable same-task evidence."));
+      reconRows.slice(0,12).forEach(item=>{const row=el("article","lab-row"),head=el("div","lab-row-head");head.append(el("strong","",`${humanize(item.action)} · ${Math.round(Number(item.confidence||0)*100)}%`),el("span","",`${humanize(item.status)}${item.protected_confirmation_required?" · protected":""}`));row.append(head,el("p","",`${truncate(cleanMemory(item.memory_content||"Unavailable"),110)} → ${truncate(cleanMemory(item.evidence_content||"Unavailable"),110)}`),el("p","small-meta",item.reason||"No reason recorded"));if(d.review_writes_enabled)row.append(brainMechanicsActions([item.status==="proposed"?{label:item.protected_confirmation_required?"Confirm protected change":"Apply",payload:{mechanic:"reconsolidation",action:"apply",proposal_id:item.proposal_id,confirm_protected:Boolean(item.protected_confirmation_required)},options:{primary:true,confirmation:item.protected_confirmation_required?"This changes protected identity or preference memory. Confirm explicitly?":"Apply this versioned, reversible reconsolidation?"}}:null,item.status==="applied"?{label:"Undo",payload:{mechanic:"reconsolidation",action:"undo",proposal_id:item.proposal_id}}:null,!item.feedback_label?{label:"Correct",payload:{mechanic:"reconsolidation",action:"feedback",proposal_id:item.proposal_id,label:"correct"}}:null,!item.feedback_label?{label:"Wrong",payload:{mechanic:"reconsolidation",action:"feedback",proposal_id:item.proposal_id,label:"wrong"},options:{confirmation:"Mark wrong and undo if applied?"}}:null]));row.addEventListener("click",()=>selectMemory(item.memory_id));reconList.append(row);});
+
+      const schemas=d.schema_formation||{},schemaCounts=schemas.counts||{},schemaFeedback=schemas.feedback||{},schemaRows=schemas.proposals||[],schemaMetrics=document.getElementById("aj-schema-metrics"),schemaList=document.getElementById("aj-schema-list");
+      schemaMetrics.replaceChildren();schemaList.replaceChildren();
+      labMetric(schemaMetrics,"Proposed",formatNum(schemaCounts.proposed||0),"Abstractions awaiting review");
+      labMetric(schemaMetrics,"Applied",formatNum(schemaCounts.applied||0),"Sources remain live");
+      labMetric(schemaMetrics,"Dirty",formatNum(schemaRows.filter(item=>Number(item.result_dirty)).length),"Source correction requires reevaluation");
+      labMetric(schemaMetrics,"Reviewed accuracy",schemaFeedback.accuracy==null?"Learning":`${(Number(schemaFeedback.accuracy)*100).toFixed(1)}%`,`${formatNum(schemaFeedback.reviewed||0)} labels · target 70%`);
+      document.getElementById("aj-schema-count").textContent=`${formatNum(schemaCounts.proposed||0)} proposals`;document.getElementById("aj-schema-boundary").textContent=String(schemas.claim_boundary||"A cluster and abstraction are review evidence, not a proven rule.");
+      if(!schemaRows.length)schemaList.append(emptyState("No schema proposals yet","The weekly pass requires at least three independently used sources."));
+      schemaRows.slice(0,12).forEach(item=>{const row=el("article","lab-row"),head=el("div","lab-row-head"),evidence=item.evidence||{};head.append(el("strong","",`${humanize(item.action)} · ${Math.round(Number(item.confidence||0)*100)}%`),el("span","",`${humanize(item.status)}${Number(item.result_dirty)?" · dirty":""}`));row.append(head,el("p","",truncate(cleanMemory(item.abstract_content||item.reason||"No abstraction proposed"),190)),el("p","small-meta",`${formatNum(evidence.source_count||item.included_source_ids?.length||0)} sources · ${formatNum(evidence.distinct_tasks||0)} tasks · ${formatNum(evidence.distinct_task_types||0)} task types · ${formatNum(evidence.episode_count||0)} episodes`));if(d.review_writes_enabled)row.append(brainMechanicsActions([item.status==="proposed"?{label:item.action==="no_schema"?"Confirm no schema":"Apply schema",payload:{mechanic:"schemas",action:"apply",proposal_id:item.proposal_id},options:{primary:true,confirmation:item.action==="no_schema"?"Dismiss this cluster as no schema?":"Create this reversible schema and retain every source?"}}:null,item.status==="applied"?{label:"Undo",payload:{mechanic:"schemas",action:"undo",proposal_id:item.proposal_id}}:null,!item.feedback_label?{label:"Correct",payload:{mechanic:"schemas",action:"feedback",proposal_id:item.proposal_id,label:"correct"}}:null,!item.feedback_label?{label:"Wrong",payload:{mechanic:"schemas",action:"feedback",proposal_id:item.proposal_id,label:"wrong"},options:{confirmation:"Mark wrong and archive the schema if applied?"}}:null]));if(item.result_memory_id)row.addEventListener("click",()=>selectMemory(item.result_memory_id));schemaList.append(row);});
 
       // Decision funnel
       const funnel = document.getElementById("aj-funnel");
@@ -4156,10 +4437,16 @@
       configHost.replaceChildren();
       const cfg = aj.config || {};
       const cfgGrid = el("div", "config-grid");
+      const configured=value=>["1","true","yes","on"].includes(String(value??"").toLowerCase())?"✓ Enabled":"Shadow off";
       [
         ["Enabled", cfg.enabled ? "✓ Yes" : "✗ No"],
         ["Model", cfg.model || "—"],
         ["Links enabled", cfg.links_enabled ? "✓ Yes" : "✗ No"],
+        ["Semantic consolidation",configured(cfg.consolidation_enabled)],
+        ["Relevance pruning",configured(cfg.pruning_enabled)],
+        ["Reconsolidation",`${configured(cfg.reconsolidation_enabled)} · ${cfg.lability_minutes||30} min`],
+        ["Schema formation",configured(cfg.schemas_enabled)],
+        ["Weight tuning",configured(cfg.weight_tuning_enabled)],
       ].forEach(([label, val]) => {
         const row = el("div", "config-row");
         row.append(el("span", "config-label", label), el("span", "config-value", val));

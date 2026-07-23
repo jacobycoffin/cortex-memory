@@ -361,111 +361,117 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             store.fail_evaluation_run(run_id, str(error))
 
 
-def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
-    """Query the Cortex DB for auto-judge analytics and decision history."""
-    conn = store._conn
-    now = utc_now()
-    data: dict[str, object] = {
-        "config": {},
-        "summary": {},
-        "recent_decisions": [],
-        "proposals": {},
-        "orphan_linking": {},
-        "edges": {},
-    }
-    try:
-        # Config from env
-        data["config"] = {
-            "enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_ENABLED", "0") in ("1", "true", "True")),
-            "model": os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
-            "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
-            "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
+    def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
+        """Query the Cortex DB for auto-judge analytics and decision history."""
+        conn = store._conn
+        now = utc_now()
+        data: dict[str, object] = {
+            "config": {},
+            "summary": {},
+            "recent_decisions": [],
+            "proposals": {},
+            "orphan_linking": {},
+            "edges": {},
         }
-        # Summary stats
-        summary = dict(conn.execute("""
-            SELECT
-                COUNT(CASE WHEN action='remember' THEN 1 END) AS remembered,
-                COUNT(CASE WHEN action='reject' THEN 1 END) AS rejected,
-                COUNT(CASE WHEN action='evidence_only' THEN 1 END) AS evidence_only,
-                COUNT(*) AS total
-            FROM operator_review_decisions
-            WHERE actor LIKE 'cortex-auto-judge%'
-        """).fetchone())
-        summary["deferred"] = conn.execute("""
-            SELECT COUNT(*) FROM memory_creation_proposals
-            WHERE status='pending' OR status='needs_context'
-        """).fetchone()[0]
-        data["summary"] = dict(summary)
-
-        # Recent decisions
-        recent = conn.execute("""
-            SELECT review_id, item_type, action, decision_scope, created_at, reason_text
-            FROM operator_review_decisions
-            WHERE actor LIKE 'cortex-auto-judge%'
-            ORDER BY created_at DESC LIMIT 20
-        """).fetchall()
-        data["recent_decisions"] = [
-            {
-                "review_id": r[0],
-                "item_type": r[1],
-                "action": r[2],
-                "scope": r[3],
-                "created_at": r[4],
-                "reason": (r[5] or "")[:120],
+        try:
+            # Config from env
+            data["config"] = {
+                "enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_ENABLED", "0") in ("1", "true", "True")),
+                "model": os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
+                "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
+                "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
+                "consolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_CONSOLIDATE", "false"),
+                "pruning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_PRUNE", "false"),
+                "reconsolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_RECONSOLIDATE", "false"),
+                "schemas_enabled": os.environ.get("CORTEX_AUTO_JUDGE_SCHEMAS", "false"),
+                "weight_tuning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_TUNE_WEIGHTS", "false"),
+                "lability_minutes": os.environ.get("CORTEX_LABILITY_WINDOW_MINUTES", "30"),
             }
-            for r in recent
-        ]
+            # Summary stats
+            summary = dict(conn.execute("""
+                SELECT
+                    COUNT(CASE WHEN action='remember' THEN 1 END) AS remembered,
+                    COUNT(CASE WHEN action='reject' THEN 1 END) AS rejected,
+                    COUNT(CASE WHEN action='evidence_only' THEN 1 END) AS evidence_only,
+                    COUNT(*) AS total
+                FROM operator_review_decisions
+                WHERE actor LIKE 'cortex-auto-judge%'
+            """).fetchone())
+            summary["deferred"] = conn.execute("""
+                SELECT COUNT(*) FROM memory_creation_proposals
+                WHERE status='pending' OR status='needs_context'
+            """).fetchone()[0]
+            data["summary"] = dict(summary)
 
-        # Proposal pipeline funnel
-        funnel = dict(conn.execute("""
-            SELECT
-                COUNT(*) AS total,
-                COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
-                COUNT(CASE WHEN status='needs_context' THEN 1 END) AS needs_context,
-                COUNT(CASE WHEN status='remembered' THEN 1 END) AS remembered,
-                COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected,
-                COUNT(CASE WHEN status='evidence_only' THEN 1 END) AS evidence_only
-            FROM memory_creation_proposals
-        """).fetchone())
-        data["proposals"] = dict(funnel)
+            # Recent decisions
+            recent = conn.execute("""
+                SELECT review_id, item_type, action, decision_scope, created_at, reason_text
+                FROM operator_review_decisions
+                WHERE actor LIKE 'cortex-auto-judge%'
+                ORDER BY created_at DESC LIMIT 20
+            """).fetchall()
+            data["recent_decisions"] = [
+                {
+                    "review_id": r[0],
+                    "item_type": r[1],
+                    "action": r[2],
+                    "scope": r[3],
+                    "created_at": r[4],
+                    "reason": (r[5] or "")[:120],
+                }
+                for r in recent
+            ]
 
-        # Orphan linking stats
-        total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-        total_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-        orphans = conn.execute("""
-            SELECT COUNT(*) FROM memories m
-            WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
-            AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
-        """).fetchone()[0]
-        data["orphan_linking"] = {
-            "total_memories": total_memories,
-            "total_edges": total_edges,
-            "orphan_memories": orphans,
-            "linked_percentage": round((total_memories - orphans) / max(total_memories, 1) * 100, 1),
-        }
+            # Proposal pipeline funnel
+            funnel = dict(conn.execute("""
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
+                    COUNT(CASE WHEN status='needs_context' THEN 1 END) AS needs_context,
+                    COUNT(CASE WHEN status='remembered' THEN 1 END) AS remembered,
+                    COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected,
+                    COUNT(CASE WHEN status='evidence_only' THEN 1 END) AS evidence_only
+                FROM memory_creation_proposals
+            """).fetchone())
+            data["proposals"] = dict(funnel)
 
-        # Edge type breakdown
-        edge_relations = conn.execute("""
-            SELECT relation, COUNT(*) AS cnt
-            FROM edges GROUP BY relation ORDER BY cnt DESC
-        """).fetchall()
-        data["edges"]["by_relation"] = {r[0]: r[1] for r in edge_relations}
-        data["edges"]["total"] = total_edges
+            # Orphan linking stats
+            total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+            total_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+            orphans = conn.execute("""
+                SELECT COUNT(*) FROM memories m
+                WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
+                AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+            """).fetchone()[0]
+            data["orphan_linking"] = {
+                "total_memories": total_memories,
+                "total_edges": total_edges,
+                "orphan_memories": orphans,
+                "linked_percentage": round((total_memories - orphans) / max(total_memories, 1) * 100, 1),
+            }
 
-        # Daily decision counts (last 14 days)
-        daily = conn.execute("""
-            SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
-            FROM operator_review_decisions
-            WHERE actor LIKE 'cortex-auto-judge%'
-              AND created_at >= DATE('now', '-14 days')
-            GROUP BY DATE(created_at), action
-            ORDER BY day
-        """).fetchall()
-        data["daily_decisions"] = daily
+            # Edge type breakdown
+            edge_relations = conn.execute("""
+                SELECT relation, COUNT(*) AS cnt
+                FROM edges GROUP BY relation ORDER BY cnt DESC
+            """).fetchall()
+            data["edges"]["by_relation"] = {r[0]: r[1] for r in edge_relations}
+            data["edges"]["total"] = total_edges
 
-    except Exception as exc:
-        data["_error"] = str(exc)
-    return data
+            # Daily decision counts (last 14 days)
+            daily = conn.execute("""
+                SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
+                FROM operator_review_decisions
+                WHERE actor LIKE 'cortex-auto-judge%'
+                  AND created_at >= DATE('now', '-14 days')
+                GROUP BY DATE(created_at), action
+                ORDER BY day
+            """).fetchall()
+            data["daily_decisions"] = daily
+
+        except Exception as exc:
+            data["_error"] = str(exc)
+        return data
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -485,7 +491,9 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                 "/api/snapshot", "/api/memory", "/api/sleep/status",
                 "/api/benchmark/status", "/api/evaluation/status",
                 "/api/refinery/summary", "/api/refinery/items", "/api/refinery/shadow",
-                "/api/recall-sets", "/api/auto-judge",
+                "/api/recall-sets", "/api/auto-judge", "/api/scoring-health",
+                "/api/attention-learning", "/api/semantic-consolidation",
+                "/api/brain-mechanics",
             }:
                 if not self._authorized(complete=True):
                     self._headers_only(HTTPStatus.UNAUTHORIZED, "application/json; charset=utf-8", 0)
@@ -524,6 +532,13 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                 snapshot["sleep_runtime"] = sleep_status()
                 snapshot["sleep_schedule"] = sleep_schedule()
                 snapshot["auto_judge"] = _auto_judge_snapshot(store)
+                snapshot["semantic_consolidation"] = store.semantic_consolidation_snapshot()
+                snapshot["adaptive_pruning"] = store.adaptive_pruning_snapshot()
+                snapshot["scoring_weights"] = store.scoring_weight_snapshot()
+                snapshot["adaptive_reconsolidation"] = (
+                    store.adaptive_reconsolidation_snapshot()
+                )
+                snapshot["schema_formation"] = store.schema_formation_snapshot()
                 self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/sleep/status":
@@ -534,6 +549,54 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                 return
             if parsed.path == "/api/evaluation/status":
                 self._json(HTTPStatus.OK, store.evaluation_snapshot())
+                return
+            if parsed.path == "/api/scoring-health":
+                params = parse_qs(parsed.query)
+                try:
+                    report = store.scoring_health(
+                        weeks=int(params.get("weeks", ["12"])[0]),
+                        limit=int(params.get("limit", ["10000"])[0]),
+                    )
+                except ValueError as error:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                self._json(HTTPStatus.OK, report)
+                return
+            if parsed.path == "/api/attention-learning":
+                params = parse_qs(parsed.query)
+                try:
+                    report = store.attention_learning_summary(
+                        limit=int(params.get("limit", ["100"])[0]),
+                    )
+                except ValueError as error:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                self._json(HTTPStatus.OK, report)
+                return
+            if parsed.path == "/api/semantic-consolidation":
+                params = parse_qs(parsed.query)
+                try:
+                    report = store.semantic_consolidation_snapshot(
+                        limit=int(params.get("limit", ["100"])[0]),
+                    )
+                except ValueError as error:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+                    return
+                self._json(HTTPStatus.OK, report)
+                return
+            if parsed.path == "/api/brain-mechanics":
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "semantic_consolidation": store.semantic_consolidation_snapshot(),
+                        "adaptive_pruning": store.adaptive_pruning_snapshot(),
+                        "scoring_weights": store.scoring_weight_snapshot(),
+                        "adaptive_reconsolidation": (
+                            store.adaptive_reconsolidation_snapshot()
+                        ),
+                        "schema_formation": store.schema_formation_snapshot(),
+                    },
+                )
                 return
             if parsed.path == "/api/memory":
                 raw_id = parse_qs(parsed.query).get("id", [""])[0]
@@ -611,6 +674,7 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                 "/api/recall-sets/preview",
                 "/api/recall-sets/activate",
                 "/api/recall-sets/switch",
+                "/api/brain-mechanics/action",
             }
             if parsed.path not in allowed_paths:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
@@ -630,6 +694,7 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                     "/api/outcome/label", "/api/outcome/undo", "/api/experiment/control",
                     "/api/sleep/trial/start", "/api/sleep/trial/undo", "/api/summary/generate",
                     "/api/summary/review", "/api/prospective/create", "/api/prospective/update",
+                    "/api/brain-mechanics/action",
                 }
             )
             if not self._require_auth(complete=needs_complete_auth):
@@ -737,6 +802,10 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                     return
                 if parsed.path == "/api/policy/action":
                     self._policy_action(payload, actor=actor)
+                    return
+                if parsed.path == "/api/brain-mechanics/action":
+                    result = self._brain_mechanics_action(payload, actor=actor)
+                    self._json(HTTPStatus.OK, {"success": True, "result": result})
                     return
                 if parsed.path == "/api/review/creation":
                     result = store.review_memory_creation(
@@ -956,6 +1025,91 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
                 HTTPStatus.OK,
                 {"success": True, "result": result, "policy_training": store.policy_training_snapshot()},
             )
+
+        def _brain_mechanics_action(
+            self,
+            payload: dict[str, object],
+            *,
+            actor: str,
+        ) -> dict[str, object]:
+            mechanic = str(payload.get("mechanic") or "").casefold()
+            action = str(payload.get("action") or "").casefold()
+            item_id = str(
+                payload.get("proposal_id")
+                or payload.get("decision_id")
+                or ""
+            )
+            reason = str(payload.get("reason") or "")
+            if mechanic == "consolidation":
+                if action == "apply":
+                    return store.apply_semantic_consolidation(item_id, actor=actor)
+                if action == "undo":
+                    return store.undo_semantic_consolidation(item_id)
+                if action == "feedback":
+                    return store.record_semantic_consolidation_feedback(
+                        item_id,
+                        str(payload.get("label") or ""),
+                        reason=reason,
+                        actor=actor,
+                    )
+            elif mechanic == "pruning":
+                if action == "apply":
+                    return store.apply_adaptive_pruning(item_id, actor=actor)
+                if action == "undo":
+                    return store.undo_adaptive_pruning(item_id)
+            elif mechanic == "weights":
+                if action == "apply":
+                    return store.apply_scoring_weight_proposal(
+                        item_id,
+                        actor=actor,
+                        note=reason,
+                        confirm_large_change=bool(payload.get("confirm_large_change")),
+                    )
+                if action == "reject":
+                    return store.reject_scoring_weight_proposal(
+                        item_id,
+                        actor=actor,
+                        note=reason,
+                    )
+                if action == "rollback":
+                    return store.rollback_scoring_weights(
+                        item_id,
+                        reason=reason or "operator requested rollback",
+                        actor=actor,
+                    )
+                if action == "factory_reset":
+                    return store.factory_reset_scoring_weights(
+                        str(payload.get("task_type") or "general"),
+                        actor=actor,
+                        note=reason or "factory reset from dashboard",
+                    )
+            elif mechanic == "reconsolidation":
+                if action == "apply":
+                    return store.apply_adaptive_reconsolidation(
+                        item_id,
+                        actor=actor,
+                        confirm_protected=bool(payload.get("confirm_protected")),
+                    )
+                if action == "undo":
+                    return store.undo_adaptive_reconsolidation(item_id)
+                if action == "feedback":
+                    return store.record_adaptive_reconsolidation_feedback(
+                        item_id,
+                        str(payload.get("label") or ""),
+                        reason=reason,
+                    )
+            elif mechanic == "schemas":
+                if action == "apply":
+                    return store.apply_schema_formation(item_id, actor=actor)
+                if action == "undo":
+                    return store.undo_schema_formation(item_id)
+                if action == "feedback":
+                    return store.record_schema_formation_feedback(
+                        item_id,
+                        str(payload.get("label") or ""),
+                        reason=reason,
+                    )
+            raise ValueError("unsupported brain-mechanics action")
 
         def _start_sleep(self) -> None:
             payload = self._read_json()

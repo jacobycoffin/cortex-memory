@@ -260,6 +260,32 @@ class CortexProviderTests(unittest.TestCase):
         self.assertEqual(proposals[0]["recurrence_count"], 2)
         self.assertEqual(self.call(action="stats")["stats"]["memories"], 0)
 
+    def test_opt_in_attentional_learning_records_only_resolved_shadow_evidence(self) -> None:
+        self.provider._config["attentional_learning"] = True
+        self.provider._store.add_memory(
+            "Plex deploys to the Proxmox server.",
+            kind="procedure",
+            confidence=0.95,
+        )
+        query = "Deploy Plex to the Proxmox server"
+
+        context = self.provider.prefetch(query, session_id="session-1")
+        self.assertIn("Plex deploys", context)
+        pending = self.provider._store.attention_learning_summary()
+        self.assertEqual(pending["summary"]["resolved_count"], 0)
+
+        self.provider.sync_turn(
+            query,
+            "Plex deploys to the Proxmox server.",
+            session_id="session-1",
+        )
+        report = self.provider._store.attention_learning_summary()
+        self.assertEqual(report["summary"]["resolved_count"], 1)
+        self.assertEqual(report["summary"]["used_count"], 1)
+        self.assertEqual(report["recent_observations"][0]["usage_outcome"], "used")
+        self.assertEqual(report["recent_observations"][0]["live_mode"], "procedural")
+        self.assertEqual(report["mode"], "shadow")
+
     def test_builtin_memory_write_is_an_agent_proposal(self) -> None:
         self.provider.on_memory_write(
             "add",

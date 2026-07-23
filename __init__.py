@@ -24,7 +24,7 @@ except ImportError:  # Standalone tests and CLI, outside a Hermes checkout.
 
 from .attribution import attribution_score
 from .client import CortexMemory, RecallBatch, _provenance_label
-from .cognition import plan_recall
+from .cognition import attention_topics, plan_recall
 from .extraction import extract_candidates
 from .harness import (
     CORTEX_BOOTSTRAP_POINTER,
@@ -34,7 +34,14 @@ from .harness import (
     harness_contract_manifest,
 )
 from .metacognition import MetacognitiveAssessment, assess_retrieval
-from .retrieval import MemoryRetriever, RetrievalContext, RetrievalDiagnostics, RetrievalResult
+from .retrieval import (
+    LIVE_SCORING_POLICY_VERSION,
+    SHADOW_SCORING_POLICY_VERSION,
+    MemoryRetriever,
+    RetrievalContext,
+    RetrievalDiagnostics,
+    RetrievalResult,
+)
 from .research import (
     assign_recall_condition,
     complete_agent_tasks,
@@ -56,6 +63,7 @@ DEFAULTS: dict[str, Any] = {
     "retrieval_threshold": 0.16,
     "adaptive_recall": True,
     "adaptive_budget_learning": True,
+    "attentional_learning": False,
     "metacognition_mode": "shadow",
     "query_cache_ttl_seconds": 45,
     "compact_context": True,
@@ -249,6 +257,10 @@ class CortexMemoryProvider(MemoryProvider):
         self._config = dict(DEFAULTS)
         self._config.update(_read_config(hermes_home))
         self._config.update(self._explicit_config)
+        if "CORTEX_ATTENTIONAL_LEARNING" in os.environ:
+            self._config["attentional_learning"] = _as_bool(
+                os.environ["CORTEX_ATTENTIONAL_LEARNING"]
+            )
         raw_path = str(self._config["db_path"])
         raw_path = raw_path.replace("${HERMES_HOME}", str(hermes_home)).replace("$HERMES_HOME", str(hermes_home))
         self._store = CortexStore(Path(raw_path).expanduser())
@@ -366,6 +378,7 @@ class CortexMemoryProvider(MemoryProvider):
                 recall_mode="controlled_no_memory",
                 memory_ids=[],
                 context_tokens=0,
+                requested_budget=0,
                 prepare_ms=prepare_ms,
                 assignment_id=str(assignment["assignment_id"]) if assignment else None,
                 started_monotonic=task_started,
@@ -406,6 +419,7 @@ class CortexMemoryProvider(MemoryProvider):
                 recall_mode=plan.mode,
                 memory_ids=[],
                 context_tokens=0,
+                requested_budget=0,
                 prepare_ms=prepare_ms,
                 assignment_id=str(assignment["assignment_id"]) if assignment else None,
                 started_monotonic=task_started,
@@ -516,6 +530,24 @@ class CortexMemoryProvider(MemoryProvider):
                 if plan.tool_limit
                 else []
             )
+            regret_mode = str(self._config.get("regret_mode", "shadow")).casefold()
+            if regret_mode in {"shadow", "restore"}:
+                stranded = next(
+                    (
+                        result
+                        for result in results
+                        if bool(result.memory.get("stranded"))
+                        and result.score >= min(1.0, plan.threshold + 0.05)
+                    ),
+                    None,
+                )
+                if stranded:
+                    self._store.record_pruning_regret(
+                        stranded.memory["id"],
+                        query=query,
+                        score=stranded.score,
+                        restore=regret_mode == "restore",
+                    )
             if not results and str(self._config.get("regret_mode", "shadow")).casefold() in {
                 "shadow",
                 "restore",
@@ -613,6 +645,7 @@ class CortexMemoryProvider(MemoryProvider):
                 recall_mode=plan.mode,
                 memory_ids=[],
                 context_tokens=0,
+                requested_budget=plan.token_budget,
                 prepare_ms=prepare_ms,
                 assignment_id=str(assignment["assignment_id"]) if assignment else None,
                 started_monotonic=task_started,
@@ -756,6 +789,7 @@ class CortexMemoryProvider(MemoryProvider):
             recall_mode=plan.mode,
             memory_ids=ids,
             context_tokens=(len(context) + 3) // 4,
+            requested_budget=plan.token_budget,
             prepare_ms=prepare_ms,
             assignment_id=str(assignment["assignment_id"]) if assignment else None,
             started_monotonic=task_started,
@@ -1263,6 +1297,12 @@ class CortexMemoryProvider(MemoryProvider):
                 "choices": ["true", "false"],
             },
             {
+                "key": "attentional_learning",
+                "description": "Record per-topic shadow recommendations from resolved retrieval outcomes",
+                "default": "false",
+                "choices": ["true", "false"],
+            },
+            {
                 "key": "metacognition_mode",
                 "description": "Observe or enforce outcome-calibrated use, verify, and abstain judgments",
                 "default": "shadow",
@@ -1485,6 +1525,7 @@ class CortexMemoryProvider(MemoryProvider):
         recall_mode: str,
         memory_ids: list[str],
         context_tokens: int,
+        requested_budget: int,
         prepare_ms: float,
         assignment_id: str | None,
         started_monotonic: float,
@@ -1504,6 +1545,17 @@ class CortexMemoryProvider(MemoryProvider):
             prepare_ms=prepare_ms,
             assignment_id=assignment_id,
         )
+        if _as_bool(self._config.get("attentional_learning", False)):
+            self._store.record_attention_observation(
+                task_id,
+                task_type=task_type,
+                topics=attention_topics(query),
+                live_mode=recall_mode,
+                live_budget=requested_budget,
+                max_budget=int(self._config["token_budget"]),
+                selected_count=len(memory_ids),
+                control=recall_condition in {"fixed", "no_memory"},
+            )
         dropped_pending: list[tuple[list[str], str | None]] = []
         with self._cache_lock:
             self._task_started_monotonic[task_id] = started_monotonic
@@ -1581,6 +1633,8 @@ class CortexMemoryProvider(MemoryProvider):
                 "selected": True,
                 "score": round(float(result.score), 6),
                 "estimated_tokens": int(result.estimated_tokens),
+                "scoring_policy_version": LIVE_SCORING_POLICY_VERSION,
+                "shadow_scoring_policy_version": SHADOW_SCORING_POLICY_VERSION,
                 "components": dict(result.components),
                 "reason": "selected through pruning-regret recovery",
             }

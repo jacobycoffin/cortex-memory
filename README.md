@@ -121,7 +121,7 @@ with CortexMemory("./cortex.db") as memory:
 
 An adapter maps its own session/turn lifecycle into `remember`, `recall`, `RecallBatch.finish`, `record_episode`, and optional offline `sleep`. See the [harness integration guide](docs/INTEGRATION.md).
 
-Inspect recent task traces locally with `cortex-memory traces --limit 20`, summarize observed selection precision with `cortex-memory traces --summary`, or export the append-only ledger with `cortex-memory traces --jsonl`. Use `cortex-memory write-decisions --summary` for storage preflight, `cortex-memory context-feedback` for context-specific adaptation, and `cortex-memory quality-report` for the combined retrieval/health/Sleep view. Raw traces can contain private task text and memory previews; do not commit them.
+Inspect recent task traces locally with `cortex-memory traces --limit 20`, summarize observed selection precision with `cortex-memory traces --summary`, or export the append-only ledger with `cortex-memory traces --jsonl`. Use `cortex-memory write-decisions --summary` for storage preflight, `cortex-memory context-feedback` for context-specific adaptation, `cortex-memory scoring-trend` for weekly retrieval quality, and `cortex-memory attention-learning` for the opt-in topic-salience shadow ledger. `cortex-memory quality-report` combines the retrieval, scoring, attention, health, and Sleep views. Raw traces can contain private task text and memory previews; do not commit them.
 
 ## Hermes adapter
 
@@ -246,6 +246,89 @@ The dashboard keeps **proposed**, **applied**, and **reversed** maintenance reco
 
 The timer reads optional settings from `$HERMES_HOME/cortex/sleep.env`, created mode `0600` with `CORTEX_SLEEP_TOKEN_BUDGET=0`. To test idle reflection later, set `CORTEX_SLEEP_ENDPOINT`, `CORTEX_SLEEP_MODEL`, the token budget, and the API-key variable named by `CORTEX_SLEEP_API_KEY_ENV`; then run one manual shadow cycle before leaving it scheduled.
 
+## Semantic consolidation
+
+The exact-duplicate `consolidate` command remains deterministic and unchanged. A separate Auto-Judge pass can now inspect up to five oldest related-but-distinct pairs, excluding protected identity/preference records, quarantined or contradiction-bearing memories, incompatible scopes, and anything outside ordinary recall. Its default is proposal-only:
+
+```bash
+cortex-memory auto-judge --consolidate
+cortex-memory semantic-consolidation-report
+```
+
+Each judgment is labeled `merge`, `keep_separate`, or `link_as_related` with bounded confidence and a reason. The model sees selected memory text, so a remote Auto-Judge endpoint has the same privacy implications as other provider-backed review. No proposal changes recall until an operator applies its decision ID or explicitly invokes the apply gate:
+
+```bash
+cortex-memory apply-semantic-consolidation DECISION_ID
+cortex-memory undo-semantic-consolidation DECISION_ID
+cortex-memory semantic-consolidation-feedback DECISION_ID correct
+```
+
+An applied merge creates a new canonical memory at the highest source confidence, unions compatible entities, retains both originals as dependencies plus decision-ledger snapshots of their counters, provenance, and edge evidence, and archives rather than deletes the sources. Undo restores both prior source states and archives the consolidated result. Labeling an applied merge `wrong` performs that undo automatically; the report and Auto-Judge dashboard expose reviewed correctness against the plan's 80% target. `auto-judge --consolidate --apply-consolidation` exists for deliberately configured automation, but is never selected by the standard timer command.
+
+## Brain mechanics
+
+The remaining model-assisted mechanics share the same governance boundary: scheduled and manual judge passes create inspectable proposals only. The authenticated Auto-Judge dashboard or an explicit CLI command is required before retrieval state changes.
+
+### Relevance pruning
+
+`cortex-memory auto-judge --prune` reviews at most 50 low-relevance memories using recall recency, attributed use, helpful and harmful outcomes, age, and retention evidence. Protected, pinned, prospective, quarantined, and newly created schema memories are excluded. The available actions are `cool`, `archive`, `quarantine`, `keep`, and `orphan_strand`; none hard-delete content. Stranding reversibly removes graph edges and adds a recall penalty while preserving the memory and edge snapshot. A later matching query records pruning regret and can restore the prior state and edges.
+
+```bash
+cortex-memory pruning-report
+cortex-memory apply-pruning DECISION_ID
+cortex-memory undo-pruning DECISION_ID
+```
+
+The dashboard reports regret against the 5% target separately from proposal counts.
+
+### Adaptive scoring weights
+
+`cortex-memory auto-judge --tune-weights` audits seven days of resolved selected-memory outcomes per task type. It stages complete scoring profiles only after eight resolved observations. Every signal remains between `0.02` and `0.30`, the total weight is preserved, and a change of `0.05` or more requires a second explicit confirmation. Approval creates a versioned task profile; post-activation precision is compared with the recorded baseline and automatically rolls back after enough evidence of a material drop. Immutable code defaults remain available as a factory reset.
+
+```bash
+cortex-memory weight-proposals
+cortex-memory apply-weight-proposal PROPOSAL_ID [--confirm-large-change]
+cortex-memory reject-weight-proposal PROPOSAL_ID
+cortex-memory rollback-weights PROPOSAL_ID --reason "..."
+cortex-memory reset-weights TASK_TYPE
+```
+
+### Adaptive reconsolidation
+
+`cortex-memory auto-judge --reconsolidate` considers only memories that actually influenced a completed task and only new durable evidence created or updated by that same task. Proposals must be opened inside the configurable 30-minute lability window. The model may suggest `supersede`, `extend`, or `conflict`; all remain staged. Supersedes use the existing version-preserving correction path, relationship changes carry inspectable edge evidence, and undo restores the prior version or edge state. User corrections remain authoritative. Identity, preference, or otherwise protected memory requires a separate dashboard or CLI confirmation.
+
+```bash
+cortex-memory reconsolidation-proposals
+cortex-memory apply-reconsolidation PROPOSAL_ID [--confirm-protected]
+cortex-memory undo-reconsolidation PROPOSAL_ID
+cortex-memory reconsolidation-feedback PROPOSAL_ID correct
+```
+
+Human-reviewed correctness is shown against the 90% target.
+
+### Schema formation
+
+`cortex-memory auto-judge --schemas` reviews related clusters only when at least three sources were used across three distinct tasks, with at least two task types or two episodes. The model may return `abstract`, `partial`, or `no_schema`. An approved abstraction creates a distinct `schema` memory plus `abstracts` and `example_of` edges and active source dependencies. Sources remain independently recallable and visible. Generic recall discounts source examples after an active schema exists, while requests for exact examples or episodes remove that discount. Correcting a source marks its schema dirty for reevaluation; undo archives the schema and restores ordinary source weighting. New schemas receive a seven-day pruning grace period.
+
+```bash
+cortex-memory schema-proposals
+cortex-memory apply-schema PROPOSAL_ID
+cortex-memory undo-schema PROPOSAL_ID
+cortex-memory schema-feedback PROPOSAL_ID correct
+```
+
+Human-reviewed abstraction accuracy is shown against the 70% target.
+
+### Opt-in scheduling
+
+The existing five-minute Auto-Judge timer also checks whether enabled mechanics are due. Every switch defaults to `false`; turning on a switch authorizes provider transmission for that pass but still does not authorize applying its proposals. Reconsolidation checks every five minutes, pruning daily, semantic consolidation at its configured 12-hour interval, and scoring weights weekly. Schema formation is weekly and waits for a completed Cortex Sleep cycle newer than its previous run.
+
+```bash
+cortex-memory brain-mechanics
+```
+
+The scheduler reserves each due pass in SQLite, suppresses overlapping work, releases failed claims for retry, and records completion separately from model proposals.
+
 ## Safety model
 
 - no hard-delete operation;
@@ -275,6 +358,7 @@ Read [Privacy and security](docs/PRIVACY.md) before exposing a dashboard or impo
 | `retrieval_threshold` | `0.16` | Minimum non-pinned retrieval score |
 | `adaptive_recall` | `true` | Skip or shrink recall by task |
 | `adaptive_budget_learning` | `true` | Learn bounded task-sensitive budgets from resolved outcomes |
+| `attentional_learning` | `false` | Opt in to per-topic shadow recommendations; never changes live recall |
 | `metacognition_mode` | `shadow` | `off`, observe use/verify/abstain decisions, or experimental `enforce` |
 | `query_cache_ttl_seconds` | `45` | Reuse unchanged retrieval results briefly; `0` disables it |
 | `compact_context` | `true` | Use the lower-token evidence format |

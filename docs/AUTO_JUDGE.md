@@ -153,6 +153,29 @@ one-shot runs).
 | `CORTEX_AUTO_JUDGE_LINKS_ENABLED` | `false` | Set to `true` to enable semantic linking |
 | `CORTEX_AUTO_JUDGE_LINKS_TOP_K` | `5` | How many related memories to retrieve per candidate |
 
+### Brain mechanics (all proposal-only by default)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORTEX_AUTO_JUDGE_CONSOLIDATE` | `false` | Enable due checks for semantic-consolidation proposals |
+| `CORTEX_AUTO_JUDGE_CONSOLIDATE_INTERVAL_HOURS` | `12` | Minimum interval between completed consolidation passes |
+| `CORTEX_AUTO_JUDGE_PRUNE` | `false` | Enable the daily relevance-pruning proposal pass |
+| `CORTEX_AUTO_JUDGE_PRUNE_THRESHOLD` | `0.25` | Maximum relevance score admitted to pruning review |
+| `CORTEX_AUTO_JUDGE_PRUNE_MAX_PER_RUN` | `50` | Hard maximum pruning candidates per pass |
+| `CORTEX_AUTO_JUDGE_RECONSOLIDATE` | `false` | Enable five-minute checks for same-task reconsolidation evidence |
+| `CORTEX_LABILITY_WINDOW_MINUTES` | `30` | Maximum age of a completed, influenced task eligible for a proposal |
+| `CORTEX_AUTO_JUDGE_SCHEMAS` | `false` | Enable weekly post-Sleep schema proposal checks |
+| `CORTEX_AUTO_JUDGE_SCHEMA_MIN_CLUSTER` | `3` | Minimum independently used source memories in a cluster |
+| `CORTEX_AUTO_JUDGE_TUNE_WEIGHTS` | `false` | Enable weekly task-specific scoring-weight proposals |
+| `CORTEX_AUTO_JUDGE_WEIGHT_AUDIT_DAYS` | `7` | Outcome evidence lookback for weight proposals |
+| `CORTEX_ATTENTIONAL_LEARNING` | `false` | Environment override for shadow attentional learning in Hermes |
+| `CORTEX_ATTENTIONAL_DECAY_DAYS` | `30` | Half-life for attentional outcome evidence |
+
+These flags authorize bounded provider review, not mutation. The timer never
+selects an apply flag. Applied pruning, weights, reconsolidation, consolidation,
+and schemas require an authenticated dashboard action or their explicit CLI
+commands. Provider request and response validation remains failure-closed.
+
 ### How thresholds work
 
 The LLM returns a `confidence` score (0.0–1.0) with each decision. The judge

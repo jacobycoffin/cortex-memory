@@ -10,7 +10,7 @@ from tests._bootstrap import ROOT
 
 from cortex import CortexMemoryProvider
 from cortex.attribution import attribution_score
-from cortex.cognition import plan_recall
+from cortex.cognition import attention_topics, plan_recall
 from cortex.retrieval import MemoryRetriever
 from cortex.store import CortexStore
 from cortex.tooling import extract_tool_executions
@@ -30,6 +30,15 @@ class RecallPlannerTests(unittest.TestCase):
         self.assertGreater(deep.token_budget, focused.token_budget)
         self.assertEqual(procedural.mode, "procedural")
         self.assertGreater(procedural.tool_limit, 0)
+
+    def test_explicit_attention_override_is_deep_and_topics_are_bounded(self) -> None:
+        plan = plan_recall("Pay close attention to Plex and Proxmox during this deploy")
+        self.assertEqual(plan.mode, "deep")
+        self.assertIn("explicit user request", plan.reason)
+        self.assertEqual(
+            attention_topics("Pay close attention to Plex and Proxmox during this deploy"),
+            ("plex", "proxmox", "deploy"),
+        )
 
 
 class HybridMemoryTests(unittest.TestCase):

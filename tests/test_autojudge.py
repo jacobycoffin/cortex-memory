@@ -29,7 +29,12 @@ from cortex.autojudge import (
     link_orphan_memories,
 )
 from cortex.cli import main as cli_main
-from cortex.store import CortexStore, StaleCreationProposalError, creation_proposal_revision
+from cortex.store import (
+    SCHEMA_VERSION,
+    CortexStore,
+    StaleCreationProposalError,
+    creation_proposal_revision,
+)
 
 
 class AutoJudgeTests(unittest.TestCase):
@@ -752,7 +757,7 @@ class AutoJudgeTests(unittest.TestCase):
             <= columns
         )
         self.assertIsNotNone(feedback_table)
-        self.assertEqual(self.store.stats()["schema_version"], 26)
+        self.assertEqual(self.store.stats()["schema_version"], SCHEMA_VERSION)
 
     def test_concurrent_duplicate_creation_review_does_not_leave_pending_state(self) -> None:
         """If a duplicate memory exists but is not recall-eligible, review resolves it.
