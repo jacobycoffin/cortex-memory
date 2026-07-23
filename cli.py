@@ -463,12 +463,25 @@ def main() -> int:
                     "--link-orphans, --consolidate, --prune, --tune-weights, "
                     "--reconsolidate, and --schemas are separate bounded passes"
                 )
+            mechanics_config = config
+            if any(
+                (
+                    args.consolidate,
+                    args.prune,
+                    args.tune_weights,
+                    args.reconsolidate,
+                    args.schemas,
+                )
+            ):
+                from .brain_mechanics import brain_mechanics_config
+
+                mechanics_config = brain_mechanics_config(config)
             if args.consolidate:
                 from .semantic_consolidation import run_semantic_consolidation
 
                 result = run_semantic_consolidation(
                     store,
-                    config,
+                    mechanics_config,
                     apply=bool(args.apply_consolidation),
                 )
             elif args.prune:
@@ -476,7 +489,7 @@ def main() -> int:
 
                 result = run_adaptive_pruning(
                     store,
-                    config,
+                    mechanics_config,
                     relevance_threshold=float(
                         os.environ.get("CORTEX_AUTO_JUDGE_PRUNE_THRESHOLD", "0.25")
                     ),
@@ -490,7 +503,7 @@ def main() -> int:
 
                 result = run_adaptive_weight_learning(
                     store,
-                    config,
+                    mechanics_config,
                     lookback_days=int(
                         os.environ.get("CORTEX_AUTO_JUDGE_WEIGHT_AUDIT_DAYS", "7")
                     ),
@@ -500,7 +513,7 @@ def main() -> int:
 
                 result = run_adaptive_reconsolidation(
                     store,
-                    config,
+                    mechanics_config,
                     task_id=args.reconsolidation_task_id,
                     lability_minutes=int(
                         os.environ.get("CORTEX_LABILITY_WINDOW_MINUTES", "30")
@@ -511,7 +524,7 @@ def main() -> int:
 
                 result = run_schema_formation(
                     store,
-                    config,
+                    mechanics_config,
                     minimum_cluster=int(
                         os.environ.get("CORTEX_AUTO_JUDGE_SCHEMA_MIN_CLUSTER", "3")
                     ),

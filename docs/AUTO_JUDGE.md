@@ -125,6 +125,7 @@ one-shot runs).
 | `CORTEX_AUTO_JUDGE_ENABLED` | `false` | Set to `true` to enable |
 | `CORTEX_AUTO_JUDGE_ENDPOINT` | `https://openrouter.ai/api/v1/chat/completions` | Any OpenAI-compatible chat completions URL |
 | `CORTEX_AUTO_JUDGE_MODEL` | `openai/gpt-4o-mini` | Model identifier the endpoint understands |
+| `CORTEX_BRAIN_MECHANICS_MODEL` | same as Auto-Judge | Optional separate model for consolidation, pruning, reconsolidation, schemas, and weight proposals |
 | `CORTEX_AUTO_JUDGE_API_KEY_ENV` | `OPENROUTER_API_KEY` | Name of env var holding the API key |
 | `CORTEX_AUTO_JUDGE_CREDENTIAL_FILE` | — | Path to a dotenv file (optional, alternative to direct env var) |
 

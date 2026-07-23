@@ -9,7 +9,7 @@ from unittest.mock import patch
 from tests._bootstrap import ROOT  # noqa: F401
 
 from cortex.autojudge import AutoJudgeConfig
-from cortex.brain_mechanics import run_due_brain_mechanics
+from cortex.brain_mechanics import brain_mechanics_config, run_due_brain_mechanics
 from cortex.store import CortexStore
 
 
@@ -44,6 +44,17 @@ class BrainMechanicsSchedulerTests(unittest.TestCase):
         self.assertTrue(
             all(item["status"] == "disabled" for item in report["passes"].values())
         )
+
+    def test_separate_model_override_is_bounded_to_mechanics(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CORTEX_BRAIN_MECHANICS_MODEL": "grok-4.5"},
+            clear=False,
+        ):
+            overridden = brain_mechanics_config(self.config)
+
+        self.assertEqual(overridden.model, "grok-4.5")
+        self.assertEqual(self.config.model, "synthetic-mechanics")
 
     def test_due_pass_is_reserved_once_and_always_stays_shadow(self) -> None:
         env = {

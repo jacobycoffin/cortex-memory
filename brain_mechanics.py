@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
@@ -21,6 +22,7 @@ def run_due_brain_mechanics(
 ) -> dict[str, Any]:
     """Run only due, explicitly enabled, proposal-only mechanics passes."""
 
+    config = brain_mechanics_config(config)
     report: dict[str, Any] = {
         "policy_version": "brain_mechanics_scheduler_v1",
         "mode": "shadow",
@@ -124,6 +126,17 @@ def run_due_brain_mechanics(
         _complete_reservation(store, name)
         report["passes"][name] = {"status": "completed", "result": result}
     return report
+
+
+def brain_mechanics_config(config: AutoJudgeConfig) -> AutoJudgeConfig:
+    """Apply the optional model override shared by every mechanics pass."""
+
+    model = os.environ.get("CORTEX_BRAIN_MECHANICS_MODEL", "").strip()
+    if not model:
+        return config
+    overridden = replace(config, model=model)
+    overridden.validate()
+    return overridden
 
 
 def _reserve_if_due(
