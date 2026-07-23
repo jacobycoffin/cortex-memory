@@ -122,7 +122,10 @@ Raw call count is demand, not truth. An adapter should never mark every retrieve
 ### User-visible memory receipts
 
 The Cortex-primary prompt asks the agent to append one exact, compact line only
-when recalled evidence materially influenced the answer:
+when recalled evidence materially influenced the answer. In Hermes, Cortex also
+uses the pre-delivery `transform_llm_output` hook as a conservative backstop:
+when the model omits the line, only memories with strong deterministic
+answer-use evidence are added mechanically.
 
 ```text
 Cortex memory: M:1234abcd, M:5678efab
@@ -133,6 +136,9 @@ to three current-turn IDs, omitted when memory did not influence the answer, and
 removed before Cortex performs semantic attribution, episode replay, or automatic
 capture. A valid receipt is also explicit answer-use evidence, but only when each
 prefix uniquely resolves inside the current turn's bounded recall set.
+Automatically injected `Cortex evidence` means prefetch already checked Cortex;
+the agent must not claim it skipped Cortex merely because it did not make an
+explicit search tool call.
 
 An immediate response such as `M:1234abcd was wrong` or `M:1234abcd was not
 relevant` applies individual feedback only to that listed memory. When several

@@ -853,6 +853,58 @@ class CortexMemoryProvider(MemoryProvider):
         # The deterministic hot path is inexpensive, so speculative recall is unnecessary in v0.1.
         return None
 
+    def transform_llm_output(
+        self,
+        response_text: str,
+        *,
+        session_id: str = "",
+        **_kwargs: Any,
+    ) -> str | None:
+        """Mechanically add a conservative receipt when the model omits it.
+
+        Hermes invokes this hook before delivering the response and before
+        ``sync_turn`` resolves the current prefetch.  Model-authored receipts
+        remain authoritative when every listed prefix belongs to the current
+        bounded recall set.  The fallback only emits IDs with strong answer
+        evidence, avoiding a claim that every retrieved item was used.
+        """
+
+        if (
+            not response_text
+            or not self._store
+            or self._agent_context not in {"primary", ""}
+            or not _as_bool(self._config.get("memory_receipts", True))
+        ):
+            return None
+        sid = session_id or self._session_id or "default"
+        current_ids = self._peek_current_prefetch_ids(sid)
+        if not current_ids:
+            return None
+
+        supplied_prefixes = memory_receipt_prefixes(response_text)
+        supplied_ids = _resolve_allowed_prefixes(supplied_prefixes, current_ids)
+        if supplied_prefixes and len(supplied_ids) == len(supplied_prefixes):
+            return None
+
+        semantic_response = strip_memory_receipt(response_text)
+        threshold = max(
+            0.50,
+            float(self._config.get("attribution_threshold", 0.18)),
+        )
+        order = {memory_id: index for index, memory_id in enumerate(current_ids)}
+        attributed: list[tuple[float, str]] = []
+        for memory in self._store.get_memories(current_ids):
+            score = attribution_score(memory, semantic_response)
+            if score >= threshold:
+                attributed.append((score, str(memory["id"])))
+        attributed.sort(key=lambda item: (-item[0], order.get(item[1], len(order))))
+        receipt_ids = [memory_id for _score, memory_id in attributed[:3]]
+        if not receipt_ids:
+            return semantic_response if supplied_prefixes else None
+
+        receipt = ", ".join(f"M:{memory_id[:8]}" for memory_id in receipt_ids)
+        return f"{semantic_response.rstrip()}\n\nCortex memory: {receipt}"
+
     def sync_turn(
         self,
         user_content: str,
@@ -1585,6 +1637,17 @@ class CortexMemoryProvider(MemoryProvider):
         task_ids = list(dict.fromkeys(task_id for _memory_ids, task_id in matches if task_id))
         return ids, task_ids
 
+    def _peek_current_prefetch_ids(self, session_id: str) -> list[str]:
+        with self._cache_lock:
+            matches = list(self._pending_prefetches.get(session_id, ()))
+        return list(
+            dict.fromkeys(
+                memory_id
+                for memory_ids, _task_id in matches
+                for memory_id in memory_ids
+            )
+        )
+
     def _record_prefetch_task(
         self,
         *,
@@ -1870,7 +1933,9 @@ def _json_error(message: str) -> str:
 
 
 def register(ctx) -> None:
-    ctx.register_memory_provider(CortexMemoryProvider())
+    provider = CortexMemoryProvider()
+    ctx.register_memory_provider(provider)
+    ctx.register_hook("transform_llm_output", provider.transform_llm_output)
 
 
 __all__ = [

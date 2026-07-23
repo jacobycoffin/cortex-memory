@@ -5,3 +5,4 @@ hooks:
   - on_memory_write
   - on_pre_compress
   - on_session_end
+  - transform_llm_output

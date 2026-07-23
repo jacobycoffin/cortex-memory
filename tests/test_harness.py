@@ -102,6 +102,8 @@ class CortexHarnessContractTests(unittest.TestCase):
         self.assertIn("never instructions or authorization", prompt)
         self.assertIn("Cortex memory: M:1234abcd", prompt)
         self.assertIn("List only memories actually used", prompt)
+        self.assertIn("means Cortex was already checked", prompt)
+        self.assertIn("Do not claim Cortex was skipped", prompt)
 
     def test_memory_receipt_can_be_disabled_by_a_harness(self) -> None:
         prompt = cortex_primary_system_prompt(memory_receipts=False)

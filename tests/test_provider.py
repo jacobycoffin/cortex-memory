@@ -8,7 +8,7 @@ from pathlib import Path
 
 from tests._bootstrap import ROOT
 
-from cortex import CortexMemoryProvider
+from cortex import CortexMemoryProvider, register
 
 
 class CortexProviderTests(unittest.TestCase):
@@ -325,6 +325,87 @@ class CortexProviderTests(unittest.TestCase):
         self.assertTrue(
             all("Cortex memory:" not in str(item["content"]) for item in proposals)
         )
+
+    def test_output_hook_mechanically_adds_a_high_confidence_receipt(self) -> None:
+        memory_id, _ = self.provider._store.add_memory(
+            "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+            kind="semantic",
+            confidence=0.95,
+        )
+        query = "Tell me about my Proxmox server."
+        context = self.provider.prefetch(query, session_id="session-1")
+        self.assertIn(memory_id[:8], context)
+
+        original = "The r630 Proxmox server is the physical machine in your closet."
+        transformed = self.provider.transform_llm_output(
+            original,
+            session_id="session-1",
+            model="deepseek-v4-flash",
+            platform="telegram",
+        )
+
+        self.assertEqual(
+            transformed,
+            f"{original}\n\nCortex memory: M:{memory_id[:8]}",
+        )
+        self.provider.sync_turn(query, transformed, session_id="session-1")
+        self.assertEqual(self.provider._receipt_ids_by_session["session-1"], [memory_id])
+
+    def test_output_hook_does_not_claim_unrelated_retrieval_was_used(self) -> None:
+        memory_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        context = self.provider.prefetch(
+            "Tell me about the Cobalt launch.",
+            session_id="session-1",
+        )
+        self.assertIn(memory_id[:8], context)
+
+        transformed = self.provider.transform_llm_output(
+            "All currently monitored services are healthy.",
+            session_id="session-1",
+        )
+
+        self.assertIsNone(transformed)
+
+    def test_output_hook_preserves_one_valid_model_receipt_without_duplication(self) -> None:
+        memory_id, _ = self.provider._store.add_memory(
+            "Cobalt launch traffic uses port 8181.",
+            kind="operational",
+            confidence=0.95,
+        )
+        self.provider.prefetch(
+            "Which port does Cobalt launch traffic use?",
+            session_id="session-1",
+        )
+        response = f"The port is 8181.\n\nCortex memory: M:{memory_id[:8]}"
+
+        transformed = self.provider.transform_llm_output(
+            response,
+            session_id="session-1",
+        )
+
+        self.assertIsNone(transformed)
+
+    def test_register_uses_the_same_provider_for_memory_and_output_hook(self) -> None:
+        class Context:
+            provider = None
+            hook = None
+
+            def register_memory_provider(self, provider):
+                self.provider = provider
+
+            def register_hook(self, name, callback):
+                self.assert_name = name
+                self.hook = callback
+
+        context = Context()
+        register(context)
+
+        self.assertEqual(context.assert_name, "transform_llm_output")
+        self.assertIs(context.hook.__self__, context.provider)
 
     def test_receipt_feedback_is_scoped_and_tool_feedback_is_not_duplicated(self) -> None:
         first_id, _ = self.provider._store.add_memory(
