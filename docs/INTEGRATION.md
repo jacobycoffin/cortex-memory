@@ -147,12 +147,15 @@ attribution, episode replay, and automatic capture. Automatically injected
 it skipped Cortex merely because it did not make an explicit search tool call.
 
 The authenticated trace drawer supports audited per-memory Helpful, Irrelevant,
-Wrong, and Outdated feedback. Individual `M:…` references from the trace remain
-valid for conversational feedback; Cortex does not guess when the target is
-unclear. Replacement content still uses the version-preserving `correct` action.
-Set `memory_receipts: false` to disable the user-visible line, or set
-`memory_receipt_url` to the HTTPS Brain dashboard base URL to enable the trace
-link. The requested trace survives sign-in.
+Wrong, and Outdated feedback. A submitted label can be changed or cleared;
+Cortex reverses its old counter and training signal before recording a
+replacement, while retaining the original decision as reversed audit history.
+Individual `M:…` references from the trace remain valid for conversational
+feedback; Cortex does not guess when the target is unclear. Replacement content
+still uses the version-preserving `correct` action. Set `memory_receipts: false`
+to disable the user-visible line, or set `memory_receipt_url` to the HTTPS Brain
+dashboard base URL to enable the trace link. The requested trace survives
+sign-in.
 
 ## Tool and workflow integration
 

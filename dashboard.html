@@ -4663,7 +4663,8 @@
           open.type="button";open.addEventListener("click",()=>selectMemory(candidate.memory_id));head.append(el("strong","",`${humanize(candidate.kind||"memory")} · score ${Number(candidate.score||0).toFixed(3)}`),el("span","trace-memory-status",status));item.append(head,el("p","",truncate(cleanMemory(candidate.content_preview||candidate.memory_id||"Memory"),210)),el("p","trace-reason",used?.reason||candidate.reason||"No selection reason was recorded."),open);
           if(candidate.selected){
             const actions=el("div","trace-actions"),existing=feedback[candidate.memory_id]?.label||"";
-            [["helpful","Helpful"],["irrelevant","Irrelevant"],["wrong","Wrong"],["outdated","Outdated"]].forEach(([label,text])=>{const button=el("button",`${["wrong","outdated"].includes(label)?"negative ":""}${existing===label?"active":""}`,existing===label?`${text} ✓`:text);button.type="button";button.disabled=Boolean(existing)||payload.review_writes_enabled!==true;button.addEventListener("click",()=>submitTraceMemoryFeedback(taskId,candidate.memory_id,label,actions));actions.append(button);});
+            [["helpful","Helpful"],["irrelevant","Irrelevant"],["wrong","Wrong"],["outdated","Outdated"]].forEach(([label,text])=>{const button=el("button",`${["wrong","outdated"].includes(label)?"negative ":""}${existing===label?"active":""}`,existing===label?`${text} ✓`:text);button.type="button";button.disabled=existing===label||payload.review_writes_enabled!==true;button.addEventListener("click",()=>submitTraceMemoryFeedback(taskId,candidate.memory_id,label,existing,actions));actions.append(button);});
+            if(existing&&payload.review_writes_enabled===true){const clear=el("button","", "Clear label");clear.type="button";clear.addEventListener("click",()=>submitTraceMemoryFeedback(taskId,candidate.memory_id,"clear",existing,actions));actions.append(clear);}
             if(payload.review_writes_enabled!==true&&!existing)actions.append(el("span","small-meta","Feedback is read-only on this host."));
             item.append(actions);
           }
@@ -4673,10 +4674,13 @@
       }catch(error){body.replaceChildren();body.append(emptyState("Could not load this recall trace",error.message));}
     }
 
-    async function submitTraceMemoryFeedback(taskId,memoryId,label,actions){
-      if(["wrong","outdated"].includes(label)&&!window.confirm(`Mark this memory ${label} for this recall trace? This records audited negative feedback.`))return;
+    async function submitTraceMemoryFeedback(taskId,memoryId,label,existing,actions){
+      const changing=Boolean(existing)&&label!=="clear",clearing=label==="clear";
+      if(clearing&&!window.confirm(`Clear the ${existing} label from this memory? Its training signal will be reversed.`))return;
+      if(changing&&!window.confirm(`Change this memory from ${existing} to ${label}? Cortex will reverse the old signal before recording the new one.`))return;
+      if(!existing&&["wrong","outdated"].includes(label)&&!window.confirm(`Mark this memory ${label} for this recall trace? This records audited negative feedback.`))return;
       actions.querySelectorAll("button").forEach(button=>button.disabled=true);
-      try{await authRequest("/api/memory/feedback",{task_id:taskId,memory_id:memoryId,label});showToast(`${humanize(label)} memory feedback recorded.`);await selectTrace(taskId,{updateUrl:false});}catch(error){showToast(`Could not record memory feedback: ${error.message}`,true);actions.querySelectorAll("button").forEach(button=>button.disabled=false);}
+      try{await authRequest("/api/memory/feedback",{task_id:taskId,memory_id:memoryId,label});showToast(clearing?"Memory feedback cleared.":`${humanize(label)} memory feedback recorded.`);await selectTrace(taskId,{updateUrl:false});}catch(error){showToast(`Could not record memory feedback: ${error.message}`,true);actions.querySelectorAll("button").forEach(button=>button.disabled=false);}
     }
 
     async function selectMemory(id, { updateUrl = true } = {}) {

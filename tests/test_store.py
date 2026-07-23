@@ -50,22 +50,113 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual([row["decision"] for row in write_rows], ["updated", "created"])
         self.assertEqual(write_rows[0]["duplicate_memory_id"], memory_id)
 
-    def test_trace_memory_feedback_is_individual_and_audited(self) -> None:
+    def test_trace_memory_feedback_can_be_replaced_and_cleared_without_double_counting(self) -> None:
         memory_id, _ = self.store.add_memory("The receipt trace shows this memory.")
-        self.store.feedback([memory_id], "helpful", session_id="dashboard-trace:task-12345678")
-        self.store.record_operator_review(
-            item_type="memory_feedback",
-            item_key=f"trace:task-12345678:memory:{memory_id}",
-            action="helpful",
-            reason_code="trace_helpful",
+        helpful = self.store.set_trace_memory_feedback(
+            "task-12345678",
+            memory_id,
+            "helpful",
             actor="operator",
-            effect={"task_id": "task-12345678", "memory_id": memory_id},
         )
 
         labels = self.store.trace_memory_feedback("task-12345678")
         self.assertEqual(labels[memory_id]["label"], "helpful")
         self.assertEqual(labels[memory_id]["actor"], "operator")
+        self.assertEqual(labels[memory_id]["review_id"], helpful["review_id"])
         self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+
+        unchanged = self.store.set_trace_memory_feedback(
+            "task-12345678",
+            memory_id,
+            "helpful",
+            actor="operator",
+        )
+        self.assertFalse(unchanged["changed"])
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+
+        replaced = self.store.set_trace_memory_feedback(
+            "task-12345678",
+            memory_id,
+            "outdated",
+            actor="operator",
+        )
+        self.assertEqual(replaced["replaced_label"], "helpful")
+        memory = self.store.get_memory(memory_id)
+        self.assertEqual(memory["helpful_count"], 0)
+        self.assertEqual(memory["harmful_count"], 1)
+        self.assertEqual(memory["false_positive_count"], 1)
+        self.assertEqual(
+            self.store.trace_memory_feedback("task-12345678")[memory_id]["label"],
+            "outdated",
+        )
+
+        cleared = self.store.set_trace_memory_feedback(
+            "task-12345678",
+            memory_id,
+            None,
+            actor="operator",
+        )
+        self.assertEqual(cleared["replaced_label"], "outdated")
+        self.assertEqual(self.store.trace_memory_feedback("task-12345678"), {})
+        memory = self.store.get_memory(memory_id)
+        self.assertEqual(memory["helpful_count"], 0)
+        self.assertEqual(memory["harmful_count"], 0)
+        self.assertEqual(memory["false_positive_count"], 0)
+        with self.store._lock:
+            decisions = self.store._conn.execute(
+                """SELECT action,reversed_at FROM operator_review_decisions
+                   WHERE item_type='memory_feedback' ORDER BY created_at"""
+            ).fetchall()
+            reversed_events = self.store._conn.execute(
+                """SELECT COUNT(*) count FROM access_log
+                   WHERE memory_id=? AND event='feedback_reversed'""",
+                (memory_id,),
+            ).fetchone()["count"]
+        self.assertEqual([str(row["action"]) for row in decisions], ["helpful", "outdated"])
+        self.assertTrue(all(row["reversed_at"] for row in decisions))
+        self.assertEqual(reversed_events, 2)
+
+    def test_trace_feedback_replacement_reverses_legacy_dashboard_signal(self) -> None:
+        memory_id, _ = self.store.add_memory("A legacy trace feedback target.")
+        self.store.feedback(
+            [memory_id],
+            "helpful",
+            session_id="dashboard-trace:legacy-task-12345678",
+        )
+        legacy_review = self.store.record_operator_review(
+            item_type="memory_feedback",
+            item_key=f"trace:legacy-task-12345678:memory:{memory_id}",
+            action="helpful",
+            reason_code="trace_helpful",
+            actor="operator",
+            effect={
+                "task_id": "legacy-task-12345678",
+                "memory_id": memory_id,
+                "label": "helpful",
+            },
+        )
+
+        result = self.store.set_trace_memory_feedback(
+            "legacy-task-12345678",
+            memory_id,
+            "irrelevant",
+            actor="operator",
+        )
+
+        self.assertEqual(result["replaced_label"], "helpful")
+        memory = self.store.get_memory(memory_id)
+        self.assertEqual(memory["helpful_count"], 0)
+        self.assertEqual(memory["false_positive_count"], 1)
+        with self.store._lock:
+            old = self.store._conn.execute(
+                "SELECT reversed_at FROM operator_review_decisions WHERE review_id=?",
+                (legacy_review,),
+            ).fetchone()
+        self.assertTrue(old["reversed_at"])
+        self.assertEqual(
+            self.store.trace_memory_feedback("legacy-task-12345678")[memory_id]["label"],
+            "irrelevant",
+        )
 
     def test_review_inbox_approves_explained_connections_and_undoes_them(self) -> None:
         first_id, _ = self.store.add_memory("The production API runs in the Cortex service.")

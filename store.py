@@ -7928,14 +7928,21 @@ class CortexStore:
     def trace_memory_feedback(self, task_id: str) -> dict[str, dict[str, Any]]:
         """Return the latest audited per-memory label for one recall trace."""
 
-        prefix = f"trace:{normalize_text(task_id)[:120]}:memory:"
+        task_id_value = normalize_text(task_id)[:120]
+        if not re.fullmatch(r"[0-9A-Za-z_-]{8,120}", task_id_value):
+            return {}
+        prefix = f"trace:{task_id_value}:memory:"
+        escaped_prefix = (
+            prefix.replace("!", "!!").replace("%", "!%").replace("_", "!_")
+        )
         with self._lock:
             rows = self._conn.execute(
-                """SELECT item_key,action,reason_code,actor,created_at
+                """SELECT review_id,item_key,action,reason_code,actor,created_at
                    FROM operator_review_decisions
-                   WHERE item_type='memory_feedback' AND item_key LIKE ?
+                   WHERE item_type='memory_feedback' AND reversed_at IS NULL
+                     AND item_key LIKE ? ESCAPE '!'
                    ORDER BY created_at,review_id""",
-                (f"{prefix}%",),
+                (f"{escaped_prefix}%",),
             ).fetchall()
         result: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -7943,12 +7950,247 @@ class CortexStore:
             memory_id = item_key[len(prefix) :]
             if memory_id:
                 result[memory_id] = {
+                    "review_id": str(row["review_id"]),
                     "label": str(row["action"]),
                     "reason_code": str(row["reason_code"]),
                     "actor": str(row["actor"]),
                     "created_at": str(row["created_at"]),
                 }
         return result
+
+    def set_trace_memory_feedback(
+        self,
+        task_id: str,
+        memory_id: str,
+        label: str | None,
+        *,
+        actor: str = "dashboard-operator",
+    ) -> dict[str, Any]:
+        """Set, replace, or clear one audited trace-memory feedback label."""
+
+        task_id_value = normalize_text(task_id)[:120]
+        memory_id_value = normalize_text(memory_id)
+        label_value = normalize_text(label or "").casefold()
+        if not re.fullmatch(r"[0-9A-Za-z_-]{8,120}", task_id_value):
+            raise ValueError("a valid task_id is required")
+        if label_value not in {"", "helpful", "irrelevant", "wrong", "outdated"}:
+            raise ValueError("label must be helpful, irrelevant, wrong, outdated, or clear")
+
+        item_key = f"trace:{task_id_value}:memory:{memory_id_value}"
+        session_id = f"dashboard-trace:{task_id_value}"
+        now = utc_now()
+        new_review_id = str(uuid.uuid4())
+        event_by_label = {
+            "helpful": "helpful",
+            "irrelevant": "irrelevant",
+            "wrong": "wrong",
+            "outdated": "wrong",
+        }
+        replaced_label: str | None = None
+
+        with self.transaction() as conn:
+            memory = conn.execute(
+                """SELECT id,helpful_count,harmful_count,false_positive_count,
+                          last_helpful_at,last_retrieved_at
+                   FROM memories WHERE id=?""",
+                (memory_id_value,),
+            ).fetchone()
+            if not memory:
+                raise ValueError("memory does not exist")
+            existing = conn.execute(
+                """SELECT * FROM operator_review_decisions
+                   WHERE item_type='memory_feedback' AND item_key=? AND reversed_at IS NULL
+                   ORDER BY created_at DESC,review_id DESC LIMIT 1""",
+                (item_key,),
+            ).fetchone()
+            if existing and str(existing["action"]) == label_value:
+                return {
+                    "changed": False,
+                    "review_id": str(existing["review_id"]),
+                    "task_id": task_id_value,
+                    "memory_id": memory_id_value,
+                    "label": label_value,
+                    "replaced_label": None,
+                }
+
+            if existing:
+                replaced_label = str(existing["action"])
+                try:
+                    existing_prior = json.loads(str(existing["prior_json"] or "{}"))
+                    existing_effect = json.loads(str(existing["effect_json"] or "{}"))
+                except json.JSONDecodeError:
+                    existing_prior = {}
+                    existing_effect = {}
+                old_event = event_by_label.get(replaced_label)
+                if old_event == "helpful":
+                    conn.execute(
+                        """UPDATE memories
+                           SET helpful_count=MAX(0,helpful_count-1),
+                               last_helpful_at=CASE
+                                 WHEN last_helpful_at=? THEN ? ELSE last_helpful_at END
+                           WHERE id=?""",
+                        (
+                            existing_effect.get("feedback_at"),
+                            existing_prior.get("last_helpful_at"),
+                            memory_id_value,
+                        ),
+                    )
+                    for prior_event in existing_effect.get("reconsolidation_prior", []):
+                        if not isinstance(prior_event, dict):
+                            continue
+                        conn.execute(
+                            """UPDATE reconsolidation_events
+                               SET status=?,first_reused_at=?
+                               WHERE event_id=? AND status='reexposed' AND first_reused_at=?""",
+                            (
+                                prior_event.get("status") or "pending",
+                                prior_event.get("first_reused_at"),
+                                prior_event.get("event_id"),
+                                existing_effect.get("feedback_at"),
+                            ),
+                        )
+                elif old_event == "irrelevant":
+                    conn.execute(
+                        """UPDATE memories
+                           SET false_positive_count=MAX(0,false_positive_count-1),
+                               last_retrieved_at=CASE
+                                 WHEN last_retrieved_at=? THEN ? ELSE last_retrieved_at END
+                           WHERE id=?""",
+                        (
+                            existing_effect.get("feedback_at"),
+                            existing_prior.get("last_retrieved_at"),
+                            memory_id_value,
+                        ),
+                    )
+                elif old_event == "wrong":
+                    conn.execute(
+                        """UPDATE memories
+                           SET harmful_count=MAX(0,harmful_count-1),
+                               false_positive_count=MAX(0,false_positive_count-1),
+                               last_retrieved_at=CASE
+                                 WHEN last_retrieved_at=? THEN ? ELSE last_retrieved_at END
+                           WHERE id=?""",
+                        (
+                            existing_effect.get("feedback_at"),
+                            existing_prior.get("last_retrieved_at"),
+                            memory_id_value,
+                        ),
+                    )
+                conn.execute(
+                    "UPDATE operator_review_decisions SET reversed_at=? WHERE review_id=?",
+                    (now, existing["review_id"]),
+                )
+                conn.execute(
+                    """INSERT INTO access_log(memory_id,event,query,session_id,score,created_at)
+                       VALUES(?,'feedback_reversed',?,?,NULL,?)""",
+                    (memory_id_value, replaced_label, session_id, now),
+                )
+
+            if not label_value:
+                return {
+                    "changed": bool(existing),
+                    "review_id": None,
+                    "task_id": task_id_value,
+                    "memory_id": memory_id_value,
+                    "label": None,
+                    "replaced_label": replaced_label,
+                }
+
+            current = conn.execute(
+                """SELECT helpful_count,harmful_count,false_positive_count,
+                          last_helpful_at,last_retrieved_at
+                   FROM memories WHERE id=?""",
+                (memory_id_value,),
+            ).fetchone()
+            prior = dict(current)
+            event = event_by_label[label_value]
+            cursor = conn.execute(
+                """INSERT INTO access_log(memory_id,event,query,session_id,score,created_at)
+                   VALUES(?,?,?,?,NULL,?)""",
+                (memory_id_value, event, new_review_id, session_id, now),
+            )
+            reconsolidation_prior: list[dict[str, Any]] = []
+            if event == "helpful":
+                reconsolidation_prior = [
+                    dict(row)
+                    for row in conn.execute(
+                        """SELECT event_id,status,first_reused_at
+                           FROM reconsolidation_events
+                           WHERE memory_id=? AND corrected_at<=? AND status='pending'""",
+                        (memory_id_value, now),
+                    ).fetchall()
+                ]
+                conn.execute(
+                    """UPDATE memories SET helpful_count=helpful_count+1,last_helpful_at=?
+                       WHERE id=?""",
+                    (now, memory_id_value),
+                )
+                from .research import record_reconsolidation_reuse_tx
+
+                record_reconsolidation_reuse_tx(conn, memory_id_value, now)
+            elif event == "irrelevant":
+                conn.execute(
+                    """UPDATE memories
+                       SET false_positive_count=false_positive_count+1,last_retrieved_at=?
+                       WHERE id=?""",
+                    (now, memory_id_value),
+                )
+            else:
+                conn.execute(
+                    """UPDATE memories
+                       SET harmful_count=harmful_count+1,
+                           false_positive_count=false_positive_count+1,last_retrieved_at=?
+                       WHERE id=?""",
+                    (now, memory_id_value),
+                )
+
+            effect = {
+                "task_id": task_id_value,
+                "memory_id": memory_id_value,
+                "label": label_value,
+                "event": event,
+                "feedback_at": now,
+                "access_log_id": int(cursor.lastrowid),
+                "reconsolidation_prior": reconsolidation_prior,
+            }
+            signal = {
+                "item_type": "memory_feedback",
+                "action": label_value,
+                "reason_code": f"trace_{label_value}",
+                "decision_scope": "item_only",
+            }
+            conn.execute(
+                """INSERT INTO operator_review_decisions(
+                   review_id,item_type,item_key,proposal_id,src_id,dst_id,action,reason_code,
+                   reason_text,prior_json,effect_json,learning_signal_json,decision_scope,actor,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    new_review_id,
+                    "memory_feedback",
+                    item_key,
+                    None,
+                    None,
+                    None,
+                    label_value,
+                    f"trace_{label_value}",
+                    None,
+                    json.dumps(prior, sort_keys=True),
+                    json.dumps(effect, sort_keys=True),
+                    json.dumps(signal, sort_keys=True),
+                    "item_only",
+                    normalize_text(actor)[:80] or "dashboard-operator",
+                    now,
+                ),
+            )
+
+        return {
+            "changed": True,
+            "review_id": new_review_id,
+            "task_id": task_id_value,
+            "memory_id": memory_id_value,
+            "label": label_value,
+            "replaced_label": replaced_label,
+        }
 
     def create_usage_batch(
         self,

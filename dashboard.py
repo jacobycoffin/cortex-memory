@@ -1306,10 +1306,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     {"error": "task_id and a valid memory_id are required"},
                 )
                 return
-            if label not in {"helpful", "irrelevant", "wrong", "outdated"}:
+            if label not in {"", "clear", "helpful", "irrelevant", "wrong", "outdated"}:
                 self._json(
                     HTTPStatus.BAD_REQUEST,
-                    {"error": "label must be helpful, irrelevant, wrong, or outdated"},
+                    {"error": "label must be helpful, irrelevant, wrong, outdated, or clear"},
                 )
                 return
             traces = store.memory_traces(limit=1, task_id=task_id)
@@ -1327,38 +1327,22 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     {"error": "feedback is limited to memories injected for this trace"},
                 )
                 return
-            existing = store.trace_memory_feedback(task_id).get(memory_id)
-            if existing:
-                self._json(
-                    HTTPStatus.CONFLICT,
-                    {"error": f"this memory is already labeled {existing['label']} for the trace"},
-                )
-                return
             actor = auth.username() if auth_enabled else "local-operator"
-            updated = store.feedback(
-                [memory_id],
-                label,
-                session_id=f"dashboard-trace:{task_id}",
-            )
-            if updated != 1:
-                self._json(HTTPStatus.CONFLICT, {"error": "memory feedback was not recorded"})
+            try:
+                result = store.set_trace_memory_feedback(
+                    task_id,
+                    memory_id,
+                    None if label in {"", "clear"} else label,
+                    actor=actor,
+                )
+            except ValueError as error:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
                 return
-            store.record_operator_review(
-                item_type="memory_feedback",
-                item_key=f"trace:{task_id}:memory:{memory_id}",
-                action=label,
-                reason_code=f"trace_{label}",
-                actor=actor,
-                effect={"task_id": task_id, "memory_id": memory_id, "label": label},
-                decision_scope="item_only",
-            )
             self._json(
                 HTTPStatus.OK,
                 {
                     "success": True,
-                    "task_id": task_id,
-                    "memory_id": memory_id,
-                    "label": label,
+                    **result,
                 },
             )
 

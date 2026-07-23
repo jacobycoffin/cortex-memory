@@ -251,6 +251,8 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Helpful", html)
         self.assertIn("Irrelevant", html)
         self.assertIn("Outdated", html)
+        self.assertIn("Clear label", html)
+        self.assertIn("reverse the old signal", html)
         self.assertIn("/api/sleep/start", html)
         self.assertIn("function renderTrendChart", html)
         self.assertIn("app.data.memory_timeline_by_day_kind", html)
@@ -437,6 +439,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn('parsed.path == "/api/trace"', server)
         self.assertIn('"/api/memory/feedback"', server)
         self.assertIn("trace_memory_feedback", server)
+        self.assertIn("set_trace_memory_feedback", server)
         # Mutating refinery routes sit behind the same reviews_enabled gate;
         # the read-only preview is dispatched before it.
         preview_index = server.index('parsed.path == "/api/refinery/preview"')
