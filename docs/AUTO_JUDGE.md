@@ -282,7 +282,10 @@ CORTEX_AUTO_JUDGE_DATA_EGRESS_CONSENT=1 \
 ```
 
 Loopback endpoints don't need the consent flag. The timer runs
-`cortex-auto-judge.service` with `--quiet` every 5 minutes.
+`cortex-auto-judge.service` with `--quiet` every 5 minutes. The service allows
+up to 12 minutes for a complete run because several due mechanics passes may
+run sequentially; each provider request remains independently capped at 120
+seconds.
 
 Manage the timer:
 

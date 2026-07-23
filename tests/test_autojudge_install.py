@@ -121,6 +121,7 @@ class AutoJudgeInstallArtifactTests(unittest.TestCase):
         self.assertIn("auto-judge --quiet", service)
         self.assertIn("StandardOutput=null", service)
         self.assertIn("EnvironmentFile=-@@AUTO_JUDGE_ENV@@", service)
+        self.assertIn("TimeoutStartSec=12m", service)
         self.assertNotIn("EnvironmentFile=-@@HERMES_HOME@@/.env", service)
 
     def test_local_install_wires_and_uninstall_removes_the_timer(self) -> None:

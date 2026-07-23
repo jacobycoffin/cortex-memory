@@ -236,6 +236,49 @@ class SchemaFormationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not proposed"):
             self.store.apply_schema_formation(proposal_id)
 
+    def test_no_schema_discards_echoed_sources_and_content(self) -> None:
+        self.source_cluster()
+
+        def provider(_endpoint, _key, payload, _timeout):
+            cluster = json.loads(payload["messages"][1]["content"])["clusters"][0]
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "proposals": [
+                                        {
+                                            "cluster_id": cluster["cluster_id"],
+                                            "action": "no_schema",
+                                            "abstract_content": "Provider content must be discarded.",
+                                            "included_source_ids": [
+                                                source["memory_id"]
+                                                for source in cluster["sources"]
+                                            ],
+                                            "confidence": 0.81,
+                                            "reason": "Examples are too context-specific.",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        report = run_schema_formation(
+            self.store,
+            self.config(),
+            provider_call=provider,
+        )
+        proposal = self.store.schema_formation_snapshot()["proposals"][0]
+
+        self.assertEqual(report["actions"]["no_schema"], 1)
+        self.assertEqual(proposal["action"], "no_schema")
+        self.assertIsNone(proposal["abstract_content"])
+        self.assertEqual(proposal["included_source_ids"], [])
+
 
 if __name__ == "__main__":
     unittest.main()
