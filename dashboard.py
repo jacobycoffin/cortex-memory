@@ -382,6 +382,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     "CORTEX_BRAIN_MECHANICS_MODEL",
                     os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
                 ),
+                "brain_mechanics_timeout_seconds": os.environ.get(
+                    "CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS",
+                    os.environ.get("CORTEX_AUTO_JUDGE_TIMEOUT_SECONDS", "45"),
+                ),
                 "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
                 "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
                 "consolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_CONSOLIDATE", "false"),

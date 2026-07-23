@@ -129,12 +129,25 @@ def run_due_brain_mechanics(
 
 
 def brain_mechanics_config(config: AutoJudgeConfig) -> AutoJudgeConfig:
-    """Apply the optional model override shared by every mechanics pass."""
+    """Apply optional provider overrides shared by every mechanics pass."""
 
     model = os.environ.get("CORTEX_BRAIN_MECHANICS_MODEL", "").strip()
-    if not model:
+    timeout_raw = os.environ.get("CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS", "").strip()
+    if not model and not timeout_raw:
         return config
-    overridden = replace(config, model=model)
+    timeout_seconds = config.timeout_seconds
+    if timeout_raw:
+        try:
+            timeout_seconds = float(timeout_raw)
+        except ValueError as exc:
+            raise ValueError(
+                "CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS must be numeric"
+            ) from exc
+    overridden = replace(
+        config,
+        model=model or config.model,
+        timeout_seconds=timeout_seconds,
+    )
     overridden.validate()
     return overridden
 

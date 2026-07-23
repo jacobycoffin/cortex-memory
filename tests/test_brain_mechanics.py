@@ -48,13 +48,27 @@ class BrainMechanicsSchedulerTests(unittest.TestCase):
     def test_separate_model_override_is_bounded_to_mechanics(self) -> None:
         with patch.dict(
             os.environ,
-            {"CORTEX_BRAIN_MECHANICS_MODEL": "grok-4.5"},
+            {
+                "CORTEX_BRAIN_MECHANICS_MODEL": "qwen3.7-plus",
+                "CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS": "120",
+            },
             clear=False,
         ):
             overridden = brain_mechanics_config(self.config)
 
-        self.assertEqual(overridden.model, "grok-4.5")
+        self.assertEqual(overridden.model, "qwen3.7-plus")
+        self.assertEqual(overridden.timeout_seconds, 120.0)
         self.assertEqual(self.config.model, "synthetic-mechanics")
+        self.assertEqual(self.config.timeout_seconds, 5.0)
+
+    def test_invalid_mechanics_timeout_is_rejected(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS": "forever"},
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "must be numeric"):
+                brain_mechanics_config(self.config)
 
     def test_due_pass_is_reserved_once_and_always_stays_shadow(self) -> None:
         env = {
