@@ -41,6 +41,11 @@ except ModuleNotFoundError:
 
 REPORT_SCHEMA_VERSION = 1
 LABEL_SCHEMA_VERSION = 1
+# The dashboard unlocks its private real-history evaluation at eight active
+# positive cases; the CLI runner holds the same bar so a 1-2 case "report"
+# cannot look authoritative. EVALUATION.md requires more cases for narrow
+# effects — treat this floor as the minimum for any claim, not a target.
+DEFAULT_MIN_CASES = 8
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,17 @@ def parse_args() -> argparse.Namespace:
         help="Include aggregate group names/counts. Group labels may reveal operator metadata.",
     )
     parser.add_argument("--overwrite", action="store_true", help="Replace an existing output report.")
+    parser.add_argument(
+        "--min-cases",
+        type=int,
+        default=DEFAULT_MIN_CASES,
+        help="Refuse to write a report below this many labeled cases (default %(default)s).",
+    )
+    parser.add_argument(
+        "--allow-small-sample",
+        action="store_true",
+        help="Write the report anyway below --min-cases. The report is stamped as a small sample.",
+    )
     return parser.parse_args()
 
 
@@ -124,10 +140,20 @@ def evaluate(
     token_budget: int,
     policy: str,
     include_group_summary: bool = False,
+    min_cases: int = DEFAULT_MIN_CASES,
+    allow_small_sample: bool = False,
 ) -> dict[str, Any]:
     if top_k < 1 or token_budget < 1:
         raise ValueError("top_k and token_budget must be positive")
+    if min_cases < 1:
+        raise ValueError("min_cases must be positive")
     _validate_targets_exist(store, labels)
+    if len(labels) < min_cases and not allow_small_sample:
+        raise ValueError(
+            f"only {len(labels)} labeled case(s); refusing to write a retrieval report "
+            f"below --min-cases={min_cases} (pass --allow-small-sample to stamp it as "
+            "exploratory instead of representative)"
+        )
     retriever = MemoryRetriever(store)
     private_rows: list[tuple[RetrievalLabel, dict[str, Any]]] = []
 
@@ -206,7 +232,58 @@ def evaluate(
     if include_group_summary:
         report["groups"] = _group_summaries(private_rows)
         report["privacy"]["includes_operator_authored_group_names"] = True
+    small_sample = len(rows) < min_cases
+    report["sample_size"] = {
+        "cases": len(rows),
+        "minimum_recommended": min_cases,
+        "small_sample_override": bool(small_sample and allow_small_sample),
+        "representative": not small_sample,
+    }
+    if small_sample:
+        report["sample_size"]["note"] = (
+            "Small sample: treat hit@k/recall/MRR as exploratory diagnostics, "
+            "not representative evidence. Collect more labeled cases before "
+            "making any coverage or quality claim."
+        )
+    _assert_report_privacy(report, private_rows, include_group_summary=include_group_summary)
     return report
+
+
+def _assert_report_privacy(
+    report: dict[str, Any],
+    private_rows: Sequence[tuple[RetrievalLabel, dict[str, Any]]],
+    *,
+    include_group_summary: bool = False,
+) -> None:
+    """Fail closed if any private label text survived into the sanitized report.
+
+    The report contract omits queries, case IDs, memory IDs, and (by default)
+    group names. This check serializes the report and verifies none of those
+    strings appear, so a future refactor cannot silently start leaking them.
+    Only numbered case indexes are named in the error — never private text.
+    """
+    serialized = json.dumps(report, sort_keys=True)
+    leaking_indexes: list[int] = []
+    for index, (label, _row) in enumerate(private_rows, start=1):
+        candidates = [label.query, label.case_id, *label.relevant_memory_ids]
+        if include_group_summary and label.group:
+            candidates = [value for value in candidates if value != label.group]
+        elif label.group:
+            candidates.append(label.group)
+        # Skip trivially short strings: a one-word case ID would match common
+        # report vocabulary by coincidence. Real queries and UUID memory IDs
+        # are far longer than this floor.
+        if any(
+            candidate and len(candidate) >= 8 and candidate in serialized
+            for candidate in candidates
+        ):
+            leaking_indexes.append(index)
+    if leaking_indexes:
+        raise ValueError(
+            "sanitized report failed its privacy self-check: private label text "
+            f"detected in the output for {len(leaking_indexes)} case(s) "
+            f"(case indexes: {leaking_indexes[:10]}); the report was not written"
+        )
 
 
 def _summarize_rows(rows: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -289,6 +366,8 @@ def main() -> int:
                     token_budget=args.token_budget,
                     policy=args.policy,
                     include_group_summary=args.include_group_summary,
+                    min_cases=args.min_cases,
+                    allow_small_sample=args.allow_small_sample,
                 )
             finally:
                 store.close()

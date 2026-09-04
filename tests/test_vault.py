@@ -175,6 +175,31 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertTrue(any("https://brain.jacobycoffin.com" in content for content in tech_memories))
         self.assertTrue(any("zombie sweeps" in content for content in tech_memories))
 
+    def test_build_stamp_notes_are_skipped_and_counted(self) -> None:
+        meta = self.vault / "_meta"
+        meta.mkdir()
+        stamp = meta / "Build Info.md"
+        stamp.write_text(
+            "# Build Info\n\nvault last refreshed 2026-09-04T15:00:00Z\n",
+            encoding="utf-8",
+        )
+        indexer = VaultIndexer(self.store, self.vault)
+        scan, plan = indexer.plan()
+        self.assertEqual(plan["files_scanned"], 2)
+        self.assertEqual(plan["files_skipped"], 2)
+        self.assertNotIn("_meta/Build Info.md", {note.relative_path for note in scan.notes})
+        result = indexer.apply()
+        self.assertTrue(result["audit"]["ok"])
+        self.assertEqual(self.store.document_chunks("_meta/Build Info.md", active_only=True), [])
+        # Rewriting the stamp (as the site rebuild does) must not create memories.
+        stamp.write_text(
+            "# Build Info\n\nvault last refreshed 2026-09-04T15:15:00Z\n",
+            encoding="utf-8",
+        )
+        second = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(second["audit"]["ok"])
+        self.assertEqual(self.store.document_chunks("_meta/Build Info.md", active_only=True), [])
+
 
 if __name__ == "__main__":
     unittest.main()

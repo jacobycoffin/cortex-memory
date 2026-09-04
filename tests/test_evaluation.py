@@ -74,7 +74,12 @@ class RealHistoryEvaluationTests(unittest.TestCase):
                         relevant_memory_ids=(memory_id,),
                     )
                 ]
-                report = evaluate(store, labels, top_k=6, token_budget=700, policy="fixed")
+                # Single-case privacy fixture: explicitly opted into the small-sample
+                # stamp so this mechanics test is not gated by the sample floor.
+                report = evaluate(
+                    store, labels, top_k=6, token_budget=700, policy="fixed",
+                    allow_small_sample=True,
+                )
             finally:
                 store.close()
 
@@ -134,7 +139,10 @@ class ToolCallingEvaluationTests(unittest.TestCase):
             self._observation("sensitive-backup-case", "default_built_in", True, True),
             self._observation("sensitive-backup-case", "cortex", True, True),
         ]
-        report = summarize_observations(rows, evidence_type="operator_recorded_outcomes", seed=11)
+        report = summarize_observations(
+            rows, evidence_type="operator_recorded_outcomes", seed=11,
+            allow_small_sample=True,  # two-pair pairing fixture, not a claim
+        )
         delta = report["paired_deltas_cortex_minus_default"]["tool_selected_correctly"]
         self.assertEqual(report["reproducibility"]["paired_cases"], 2)
         self.assertEqual(delta["cortex_wins"], 1)
@@ -225,6 +233,7 @@ class ToolCallingEvaluationTests(unittest.TestCase):
             evidence_type="live_provider_with_recorded_tool_fixtures",
             seed=7,
             model="example/model",
+            allow_small_sample=True,  # single-scenario replay fixture, not a claim
         )
         serialized = json.dumps(report)
         for private_value in ("private-live-case", "private user prompt", "deploy_service", "not-a-real-secret"):

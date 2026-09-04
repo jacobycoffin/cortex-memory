@@ -241,6 +241,10 @@ def main() -> int:
     schema_feedback.add_argument("label", choices=("correct", "wrong"))
     schema_feedback.add_argument("--reason", default="")
     sub.add_parser("recall-stats", help="Show attention-gate latency and context-budget evidence")
+    sub.add_parser(
+        "recall-set-health",
+        help="Show approval/provenance mix of the active recall set's eligible corpus",
+    )
     traces = sub.add_parser("traces", help="Inspect task-level memory decisions or export append-only JSONL")
     traces.add_argument("--limit", type=int, default=100)
     traces.add_argument("--task-id")
@@ -634,6 +638,8 @@ def main() -> int:
                 "modes": snapshot["recall_modes"],
                 "by_day": snapshot["recall_by_day"],
             }
+        elif args.command == "recall-set-health":
+            result = store.recall_set_health()
         elif args.command == "traces":
             if args.jsonl:
                 print(store.memory_trace_jsonl(limit=args.limit, task_id=args.task_id))

@@ -77,6 +77,9 @@ This is development evidence, not a new public performance claim. Stable install
 
 ## Install the agent-neutral core
 
+> Agents: start with [AGENTS.md](AGENTS.md) — install, configure, verify, and
+> harness-integration steps written for you, in order.
+
 Requirements: Python 3.10+ and SQLite with FTS5 (included in normal Python builds).
 
 ```bash

@@ -22,6 +22,12 @@ IMPORTER_VERSION = "obsidian_vault_importer_v1"
 DEFAULT_MAX_CHARS = 1600
 DEFAULT_MAX_FILE_BYTES = 1_000_000
 _SKIP_PARTS = {".git", ".obsidian", ".trash", "node_modules", "attachments", "assets"}
+# Build-stamp notes are rewritten with a fresh timestamp on every site rebuild,
+# so they always look "changed" to the importer and would spawn a new archived
+# memory each cycle. They carry no knowledge — exclude them from indexing.
+# Paths are matched casefolded against the vault-relative POSIX path. Add future
+# stamp notes here (keep the set small and knowledge-free).
+_SKIP_NOTES = {"_meta/build info.md"}
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _WIKILINK = re.compile(r"!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
@@ -93,6 +99,9 @@ class VaultIndexer:
         for path in sorted(self.vault_path.rglob("*.md")):
             relative = path.relative_to(self.vault_path)
             if path.is_symlink() or any(part.startswith(".") or part in _SKIP_PARTS for part in relative.parts):
+                skipped += 1
+                continue
+            if relative.as_posix().casefold() in _SKIP_NOTES:
                 skipped += 1
                 continue
             # Guard against a symlinked *directory* inside the vault leading rglob

@@ -269,6 +269,35 @@ class RecallSetTests(unittest.TestCase):
         self.assertFalse(self.store.is_memory_recall_eligible(memory_id))
         self.assertTrue(self.store.is_memory_recall_eligible(memory_id, evidence_lookup=True))
 
+    def test_recall_set_health_reports_approval_mix(self) -> None:
+        self.store.add_memory(
+            "Project Cedar uses a blue deployment switch.",
+            kind="decision",
+            approval_state="operator_approved",
+        )
+        self.store.add_memory(
+            "The Cedar manual documents the blue switch on page eight.",
+            kind="semantic",
+        )
+        health = self.store.recall_set_health()
+        self.assertEqual(health["active_set"], "legacy")
+        self.assertEqual(health["eligible_primary"], 2)
+        self.assertEqual(health["approved"], 1)
+        self.assertEqual(health["unreviewed"], 1)
+        self.assertEqual(health["unreviewed_share"], 0.5)
+        self.assertEqual(
+            health["by_approval_state"], {"operator_approved": 1, "unreviewed": 1}
+        )
+        self.assertIn("guidance", health)
+
+    def test_recall_set_health_is_read_only(self) -> None:
+        before = self.store.recall_set_snapshot()
+        self.store.add_memory("Project Cedar uses a blue deployment switch.")
+        self.store.recall_set_health()
+        after = self.store.recall_set_snapshot()
+        self.assertEqual(before["active"]["recall_set_id"], after["active"]["recall_set_id"])
+        self.assertEqual(after["eligible_count"], before["eligible_count"] + 1)
+
 
 if __name__ == "__main__":
     unittest.main()

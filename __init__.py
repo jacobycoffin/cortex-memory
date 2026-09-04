@@ -755,6 +755,7 @@ class CortexMemoryProvider(MemoryProvider):
                 prepare_ms=prepare_ms,
                 abstained=True,
                 task_id=task_id,
+                stage_ms=dict(diagnostics.stage_ms),
             )
             self._record_memory_trace(
                 task_id=task_id,
@@ -899,6 +900,7 @@ class CortexMemoryProvider(MemoryProvider):
             prepare_ms=prepare_ms,
             abstained=False,
             task_id=task_id,
+            stage_ms=dict(diagnostics.stage_ms),
         )
         self._record_memory_trace(
             task_id=task_id,

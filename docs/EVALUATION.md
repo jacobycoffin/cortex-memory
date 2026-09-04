@@ -53,6 +53,26 @@ The failure explorer applies bounded rules to negative labels and observed tool 
 
 Treat a confidence interval that crosses zero as inconclusive. Use at least 30 independent paired cases for exploratory comparison and more for narrow effects. Repeat live runs across seeds and provider conditions before making a public claim.
 
+### Sample-size and privacy gates (built into both runners)
+
+Both checkout-local runners fail closed below a labeled-sample floor so a tiny
+run cannot produce an authoritative-looking report:
+
+- `evaluate_real_history.py` refuses below `--min-cases` (default 8, matching
+  the dashboard gate that unlocks private evaluation). Pass
+  `--allow-small-sample` to run anyway; the report is stamped
+  `sample_size.representative: false` with an exploratory-use note.
+- `benchmark_tool_calling.py` (`recorded` and `live`) refuses below
+  `--min-pairs` (default 8). Live mode checks before any provider call, so a
+  refusal never spends budget. Overrides are stamped the same way, with a note
+  pointing back to the 30-pair exploratory floor above.
+
+The real-history runner also runs a privacy self-check on every report: it
+serializes the sanitized output and proves no query, case ID, memory ID, or
+(unless `--include-group-summary` was passed) group name survived in it. A
+failure aborts before anything is written. This guards future refactors, not
+just current code — still review the report before publishing.
+
 ## 1. Private real-history retrieval
 
 Create the labels outside the repository and restrict their permissions:

@@ -14,7 +14,7 @@ if [[ -d "$TARGET" ]]; then
 fi
 
 mkdir -p "$TARGET"
-for file in __init__.py __main__.py adaptive_reconsolidation.py adaptive_weights.py attribution.py autojudge.py benchmarking.py brain_mechanics.py client.py cli.py cognition.py dashboard.py dashboard_auth.py dashboard.html evaluation.py favicon.svg favicon.ico apple-touch-icon.png extraction.py harness.py metacognition.py refinery.py relevance_pruning.py research.py retrieval.py review_copilot.py schema_formation.py security.py semantic_consolidation.py semantics.py sleep.py store.py tooling.py vault.py plugin.yaml README.md LICENSE CHANGELOG.md; do
+for file in __init__.py __main__.py adaptive_reconsolidation.py adaptive_weights.py attribution.py autojudge.py benchmarking.py brain_mechanics.py client.py cli.py cognition.py dashboard.py dashboard_auth.py dashboard.html evaluation.py favicon.svg favicon.ico apple-touch-icon.png extraction.py harness.py metacognition.py refinery.py relevance_pruning.py research.py retrieval.py review_copilot.py schema_formation.py security.py semantic_consolidation.py semantics.py sleep.py store.py tooling.py vault.py plugin.yaml README.md AGENTS.md LICENSE CHANGELOG.md; do
   cp "$SOURCE_DIR/$file" "$TARGET/$file"
 done
 mkdir -p "$TARGET/scripts"
@@ -54,6 +54,7 @@ chmod +x "$TARGET/scripts/benchmark_social_card.py"
 chmod +x "$TARGET/scripts/benchmark_adaptive.py"
 
 printf 'Installed Cortex to %s\n' "$TARGET"
+printf 'Agent install/configure checklist: %s/AGENTS.md\n' "$TARGET"
 if [[ "${CORTEX_INSTALL_AUTO_JUDGE_TIMER:-0}" == "1" ]]; then
   if command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; then
     HERMES_HOME="$HERMES_HOME" CORTEX_PLUGIN_DIR="$TARGET" \

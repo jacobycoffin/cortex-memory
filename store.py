@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Iterator, Mapping, Sequence
 
 from .refinery import (
     CLARITY_FLAGS,
@@ -479,6 +479,7 @@ class CortexStore:
                 estimated_tokens INTEGER NOT NULL DEFAULT 0,
                 prepare_ms REAL NOT NULL DEFAULT 0,
                 abstained INTEGER NOT NULL DEFAULT 0,
+                stage_ms_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_recall_runs_created ON recall_runs(created_at);
@@ -2137,6 +2138,10 @@ class CortexStore:
         recall_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(recall_runs)")}
         if "task_id" not in recall_columns:
             self._conn.execute("ALTER TABLE recall_runs ADD COLUMN task_id TEXT")
+        if "stage_ms_json" not in recall_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_runs ADD COLUMN stage_ms_json TEXT NOT NULL DEFAULT '{}'"
+            )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_runs_task ON recall_runs(task_id)")
         trace_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memory_traces)")}
         if "retrieval_context_json" not in trace_columns:
@@ -5231,6 +5236,67 @@ class CortexStore:
             "pending_creation_count": int(pending["count"] or 0),
         }
 
+    def recall_set_health(self) -> dict[str, Any]:
+        """Approval and provenance mix of the active recall set's eligible corpus.
+
+        Reports how much of the recall-eligible corpus is operator- or
+        automatic-approved versus unreviewed (typically vault-indexed) text,
+        so an operator can see at a glance whether review debt is diluting
+        retrieval. Read-only; changes nothing.
+        """
+        with self._lock:
+            active = self._active_recall_set_tx(self._conn)
+            rows = self._conn.execute(
+                """SELECT m.approval_state approval_state,
+                          m.source_category source_category,
+                          COUNT(*) count
+                   FROM memory_recall_memberships rm
+                   JOIN memory_recall_sets rs ON rs.recall_set_id=rm.recall_set_id
+                   JOIN memories m ON m.id=rm.memory_id
+                   WHERE rs.status='active' AND rm.revoked_at IS NULL
+                     AND rm.eligibility='primary' AND m.state IN ('active','cold')
+                   GROUP BY m.approval_state, m.source_category
+                   ORDER BY count DESC"""
+            ).fetchall()
+        by_approval: dict[str, int] = {}
+        by_source: dict[str, int] = {}
+        for row in rows:
+            approval = str(row["approval_state"] or "unknown")
+            source = str(row["source_category"] or "unknown")
+            by_approval[approval] = by_approval.get(approval, 0) + int(row["count"])
+            by_source[source] = by_source.get(source, 0) + int(row["count"])
+        eligible = sum(by_approval.values())
+        approved = by_approval.get("operator_approved", 0) + by_approval.get(
+            "automatic_approved", 0
+        )
+        unreviewed = by_approval.get("unreviewed", 0)
+        unreviewed_share = round(unreviewed / eligible, 4) if eligible else 0.0
+        if eligible and unreviewed_share >= 0.5:
+            guidance = (
+                "Most recall-eligible memories are unreviewed. Work the Review "
+                "Inbox and consider promoting a trained recall set so retrieval "
+                "prefers approved knowledge over auto-indexed text."
+            )
+        elif eligible and unreviewed_share >= 0.2:
+            guidance = (
+                "A sizable share of recall-eligible memories is unreviewed. "
+                "Keep reviewing; retrieval is still majority-approved."
+            )
+        elif eligible:
+            guidance = "Recall corpus is mostly reviewed. Maintain the review habit."
+        else:
+            guidance = "No eligible memories in the active recall set."
+        return {
+            "active_set": str(active["kind"]),
+            "eligible_primary": eligible,
+            "approved": approved,
+            "unreviewed": unreviewed,
+            "unreviewed_share": unreviewed_share,
+            "by_approval_state": by_approval,
+            "by_source_category": by_source,
+            "guidance": guidance,
+        }
+
     def preview_trained_recall_set(self) -> dict[str, Any]:
         with self._lock:
             active = self._active_recall_set_tx(self._conn)
@@ -6963,14 +7029,23 @@ class CortexStore:
         prepare_ms: float,
         abstained: bool,
         task_id: str | None = None,
+        stage_ms: Mapping[str, float] | None = None,
     ) -> str:
         recall_id = str(uuid.uuid4())
+        stage_payload = "{}"
+        if stage_ms:
+            try:
+                stage_payload = json.dumps(
+                    {str(key): max(0.0, float(value)) for key, value in dict(stage_ms).items()}
+                )
+            except (TypeError, ValueError):
+                stage_payload = "{}"
         with self.transaction() as conn:
             conn.execute(
                 """INSERT INTO recall_runs(
                    recall_id,task_id,session_id,query,mode,reason,requested_limit,token_budget,
-                   candidate_count,selected_count,estimated_tokens,prepare_ms,abstained,created_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   candidate_count,selected_count,estimated_tokens,prepare_ms,abstained,stage_ms_json,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     recall_id,
                     task_id,
@@ -6985,6 +7060,7 @@ class CortexStore:
                     int(estimated_tokens),
                     max(0.0, float(prepare_ms)),
                     int(abstained),
+                    stage_payload,
                     utc_now(),
                 ),
             )

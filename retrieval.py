@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -170,6 +171,12 @@ class RetrievalDiagnostics:
     estimated_tokens: int
     abstained: bool
     candidate_decisions: tuple[dict[str, Any], ...] = ()
+    # Live-path per-stage timings in milliseconds, keyed by pipeline stage
+    # (fts, feature, context, neighborhood, prospective, merge, scoring,
+    # graph, select). Informational only: summed stages approximate the
+    # provider-measured prepare_ms for the same turn and let operators see
+    # which stage dominates tail latency on their own host and corpus.
+    stage_ms: dict[str, float] = field(default_factory=dict)
 
 
 class MemoryRetriever:
@@ -229,15 +236,21 @@ class MemoryRetriever:
             retrieval_context.scope.get("task_type")
         )
         candidate_limit = max(40, limit * 8)
+        stage_ms: dict[str, float] = {}
+        stage_start = time.perf_counter()
         lexical_candidates = self.store.fts_search(
             expanded_query,
             limit=candidate_limit,
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
+        stage_ms["fts"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         feature_candidates = self.store.feature_search(
             expanded_query, limit=candidate_limit, include_archived=include_archived
         )
+        stage_ms["feature"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         context_candidates = self.store.context_search(
             active_project=retrieval_context.active_project,
             entities=retrieval_context.entities,
@@ -249,12 +262,16 @@ class MemoryRetriever:
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
+        stage_ms["context"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         neighborhood_candidates = self.store.neighborhood_search(
             expanded_query,
             limit=candidate_limit,
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
+        stage_ms["neighborhood"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         prospective_candidates = self.store.due_prospective_memories(limit=min(2, limit))
         candidates_by_id: dict[str, dict[str, Any]] = {}
         for candidate in lexical_candidates:
@@ -301,6 +318,8 @@ class MemoryRetriever:
             candidate["schema_example"] = str(candidate["id"]) in schema_source_ids
         superseded = self.store.superseded_ids(list(candidates_by_id)) if temporal_mode == "current" else set()
         contradicted = self.store.contradicted_ids(list(candidates_by_id))
+        stage_ms["prospective_merge"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         scored: dict[str, RetrievalResult] = {}
         for candidate in candidates:
             result = self._score(
@@ -315,6 +334,8 @@ class MemoryRetriever:
             )
             scored[candidate["id"]] = result
 
+        stage_ms["scoring"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         seeds = sorted(scored.values(), key=lambda r: r.score, reverse=True)[: min(10, len(scored))]
         if seeds:
             graph_scores = self.store.association_scores(
@@ -363,6 +384,8 @@ class MemoryRetriever:
                 )
                 scored[neighbor_id] = result
 
+        stage_ms["graph"] = (time.perf_counter() - stage_start) * 1000
+        stage_start = time.perf_counter()
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
         selected: list[RetrievalResult] = []
         rejection_reasons: dict[str, str] = {}
@@ -426,6 +449,7 @@ class MemoryRetriever:
                 continue
             selected.append(result)
             consumed += result.estimated_tokens
+        stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
         for rank, result in enumerate(ranked, 1):
@@ -474,6 +498,7 @@ class MemoryRetriever:
             estimated_tokens=consumed,
             abstained=not selected,
             candidate_decisions=tuple(candidate_decisions),
+            stage_ms=stage_ms,
         )
 
     def shadow_tiered_comparison(

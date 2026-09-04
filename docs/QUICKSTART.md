@@ -1,5 +1,9 @@
 # Cortex Memory Hermes adapter quickstart
 
+> Agents: [AGENTS.md](../AGENTS.md) is the ordered install/configure/verify
+> checklist. This guide covers the included Hermes adapter, vault migration,
+> Linux services, and rollback in human depth.
+
 For a framework-neutral install and the five-event harness contract, start with the main README and [integration guide](INTEGRATION.md). This guide covers the included Hermes adapter, vault migration, Linux services, and rollback.
 
 ## 1. Back up existing Hermes memory

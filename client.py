@@ -304,6 +304,7 @@ class CortexMemory:
             prepare_ms=0.0,
             abstained=not results,
             task_id=task_id,
+            stage_ms=dict(diagnostics.stage_ms),
         )
         self.store.record_memory_trace_decision(
             task_id=task_id,

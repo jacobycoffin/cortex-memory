@@ -39,6 +39,11 @@ OBSERVATION_SCHEMA_VERSION = 1
 SCENARIO_SCHEMA_VERSION = 1
 CONDITIONS = ("default_built_in", "cortex")
 PROVENANCE_VALUES = {"recorded_live", "recorded_replay", "manual_grade", "live_provider_fixture"}
+# EVALUATION.md treats ~30 pairs as the floor for exploratory paired
+# comparison and more for narrow effects. The runner refuses to stamp an
+# authoritative-looking report below DEFAULT_MIN_PAIRS; use
+# --allow-small-sample for early exploration (the report says so).
+DEFAULT_MIN_PAIRS = 8
 
 
 def parse_args() -> argparse.Namespace:
@@ -50,6 +55,17 @@ def parse_args() -> argparse.Namespace:
     recorded.add_argument("--output", type=Path, required=True)
     recorded.add_argument("--seed", type=int, default=7, help="Bootstrap reproducibility seed.")
     recorded.add_argument("--overwrite", action="store_true")
+    recorded.add_argument(
+        "--min-pairs",
+        type=int,
+        default=DEFAULT_MIN_PAIRS,
+        help="Refuse to write a report below this many complete pairs (default %(default)s).",
+    )
+    recorded.add_argument(
+        "--allow-small-sample",
+        action="store_true",
+        help="Write the report anyway below --min-pairs. The report is stamped as a small sample.",
+    )
 
     live = subparsers.add_parser(
         "live", help="Call an OpenAI-compatible provider and replay recorded tool-result fixtures."
@@ -68,6 +84,17 @@ def parse_args() -> argparse.Namespace:
     live.add_argument("--max-output-tokens", type=int, default=512)
     live.add_argument("--request-delay-ms", type=float, default=150.0)
     live.add_argument("--overwrite", action="store_true")
+    live.add_argument(
+        "--min-pairs",
+        type=int,
+        default=DEFAULT_MIN_PAIRS,
+        help="Refuse to call the provider below this many scenarios (default %(default)s).",
+    )
+    live.add_argument(
+        "--allow-small-sample",
+        action="store_true",
+        help="Run and report anyway below --min-pairs. The report is stamped as a small sample.",
+    )
     return parser.parse_args()
 
 
@@ -171,9 +198,19 @@ def summarize_observations(
     evidence_type: str,
     seed: int,
     model: str | None = None,
+    min_pairs: int = DEFAULT_MIN_PAIRS,
+    allow_small_sample: bool = False,
 ) -> dict[str, Any]:
     _validate_complete_pairs(observations)
     pairs = _pair_rows(observations)
+    if min_pairs < 1:
+        raise ValueError("min_pairs must be positive")
+    if len(pairs) < min_pairs and not allow_small_sample:
+        raise ValueError(
+            f"only {len(pairs)} complete pair(s); refusing to write a paired report "
+            f"below --min-pairs={min_pairs} (pass --allow-small-sample to stamp it as "
+            "exploratory instead of representative)"
+        )
     sanitized_rows = []
     pair_indexes = {pair_id: index for index, pair_id in enumerate(pairs, start=1)}
     for row in observations:
@@ -211,6 +248,19 @@ def summarize_observations(
         },
         "paired_deltas_cortex_minus_default": _paired_summary(pairs, seed=seed),
         "observations": sanitized_rows,
+        "sample_size": {
+            "paired_cases": len(pairs),
+            "minimum_recommended": min_pairs,
+            "small_sample_override": bool(len(pairs) < min_pairs and allow_small_sample),
+            "representative": len(pairs) >= min_pairs,
+            "note": (
+                "Small sample: treat paired deltas as exploratory diagnostics, "
+                "not representative evidence. EVALUATION.md recommends at least "
+                "30 pairs for exploratory comparison and more for narrow effects."
+                if len(pairs) < min_pairs
+                else "See EVALUATION.md claim boundaries before publishing."
+            ),
+        },
         "privacy": {
             "raw_private_text_omitted": True,
             "operator_review_required": True,
@@ -597,12 +647,24 @@ def main() -> int:
     try:
         if args.mode == "recorded":
             observations = load_recorded_observations(args.observations)
-            report = summarize_observations(observations, evidence_type="operator_recorded_outcomes", seed=args.seed)
+            report = summarize_observations(
+                observations,
+                evidence_type="operator_recorded_outcomes",
+                seed=args.seed,
+                min_pairs=args.min_pairs,
+                allow_small_sample=args.allow_small_sample,
+            )
         else:
             api_key = os.environ.get(args.api_key_env)
             if not api_key:
                 raise ValueError(f"set the API key in the {args.api_key_env} environment variable")
             scenarios = load_live_scenarios(args.scenarios)
+            if len(scenarios) < args.min_pairs and not args.allow_small_sample:
+                raise ValueError(
+                    f"only {len(scenarios)} scenario(s); refusing to call the provider "
+                    f"below --min-pairs={args.min_pairs} (pass --allow-small-sample to "
+                    "run anyway and stamp the report as exploratory)"
+                )
             observations = run_live(
                 scenarios,
                 endpoint=_chat_completions_url(args.base_url),
@@ -618,6 +680,8 @@ def main() -> int:
                 evidence_type="live_provider_with_recorded_tool_fixtures",
                 seed=args.seed,
                 model=args.model,
+                min_pairs=args.min_pairs,
+                allow_small_sample=args.allow_small_sample,
             )
         write_report(report, args.output, overwrite=args.overwrite)
     except (OSError, RuntimeError, ValueError) as error:
