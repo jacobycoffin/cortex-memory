@@ -278,6 +278,84 @@ class CortexClientTests(unittest.TestCase):
                 self.assertEqual(affected, [memory_id])
                 self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
 
+    def _use_event_count(self, memory: CortexMemory, task_id: str) -> int:
+        return int(
+            memory.store._conn.execute(
+                "SELECT COUNT(*) FROM memory_experience_events"
+                " WHERE task_id=? AND event_type='memory_used'",
+                (task_id,),
+            ).fetchone()[0]
+        )
+
+    def test_failed_finish_retries_without_duplicate_use_events(self) -> None:
+        """A mid-flight finish failure stays retryable with single attribution.
+
+        Failure injection at the client seam: the store raises once, the
+        retry succeeds, and exactly one memory_used event exists — the failed
+        attempt must not leave a partial reward behind.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory_id, _ = memory.remember(
+                    "The staging deploy key rotates every Sunday.", kind="operational"
+                )
+                batch = memory.recall("When does the staging deploy key rotate?")
+                real = memory.store.resolve_usage_and_apply_outcome
+
+                def _boom_once(task_id: str, attribution: object, outcome: str, **kwargs: object) -> object:
+                    memory.store.resolve_usage_and_apply_outcome = real  # type: ignore[method-assign]
+                    raise RuntimeError("simulated mid-flight failure")
+
+                memory.store.resolve_usage_and_apply_outcome = _boom_once  # type: ignore[method-assign]
+                try:
+                    with self.assertRaises(RuntimeError):
+                        batch.finish([memory_id], outcome="helpful")
+                finally:
+                    memory.store.resolve_usage_and_apply_outcome = real  # type: ignore[method-assign]
+                self.assertEqual(self._use_event_count(memory, batch.task_id), 0)
+                affected = batch.finish([memory_id], outcome="helpful")
+                self.assertEqual(affected, [memory_id])
+                self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
+                self.assertEqual(self._use_event_count(memory, batch.task_id), 1)
+
+    def test_concurrent_finish_resolves_exactly_once(self) -> None:
+        """Two threads racing finish() produce one winner, one RuntimeError."""
+        import threading as _threading
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory_id, _ = memory.remember(
+                    "The racing deploy key rotates every Sunday.", kind="operational"
+                )
+                for iteration in range(10):
+                    batch = memory.recall("When does the racing deploy key rotate?")
+                    self.assertEqual(batch.memories[0]["id"], memory_id)
+                    barrier = _threading.Barrier(2)
+                    outcomes: list[object] = [None, None]
+
+                    def _racer(slot: int) -> None:
+                        barrier.wait()
+                        try:
+                            outcomes[slot] = batch.finish([memory_id], outcome="helpful")
+                        except RuntimeError as exc:
+                            outcomes[slot] = exc
+                        except Exception as exc:  # noqa: BLE001 — surface, never swallow
+                            outcomes[slot] = exc
+
+                    threads = [
+                        _threading.Thread(target=_racer, args=(slot,)) for slot in (0, 1)
+                    ]
+                    for thread in threads:
+                        thread.start()
+                    for thread in threads:
+                        thread.join()
+                    winners = [result for result in outcomes if result == [memory_id]]
+                    losers = [result for result in outcomes if isinstance(result, RuntimeError)]
+                    self.assertEqual(len(winners), 1, f"iteration {iteration}: {outcomes}")
+                    self.assertEqual(len(losers), 1, f"iteration {iteration}: {outcomes}")
+                    self.assertEqual(self._use_event_count(memory, batch.task_id), 1)
+                self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 10)
+
     def test_rendered_memory_ids_partition_batch(self) -> None:
         """Rendered + withheld IDs partition every retrieved memory."""
         memories = [

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -150,6 +151,9 @@ class RecallBatch:
     _rendered_ids: list[str] | None = None
     _last_rendered_tokens: int = 0
     _render_reported: bool = False
+    # Guards finish(): without it two threads can both pass the resolved
+    # check and attribute the same batch twice.
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     # Alias of the store's single outcome vocabulary (client-side fast fail
     # before touching storage; the store re-validates authoritatively).
@@ -273,6 +277,22 @@ class RecallBatch:
 
         if self._resolved:
             raise RuntimeError("recall batch has already been resolved")
+        with self._lock:
+            # Re-check under the lock: a racing thread may have resolved
+            # while this one waited.
+            if self._resolved:
+                raise RuntimeError("recall batch has already been resolved")
+            affected = self._finish_locked(used_memory_ids, outcome=outcome, evidence=evidence)
+            self._resolved = True
+        return affected
+
+    def _finish_locked(
+        self,
+        used_memory_ids: Sequence[str],
+        *,
+        outcome: str | None,
+        evidence: str,
+    ) -> list[str]:
         if evidence not in RecallBatch.EVIDENCE_MODES:
             raise ValueError(f"evidence must be one of {RecallBatch.EVIDENCE_MODES}")
         selected = {str(memory["id"]) for memory in self.memories}
@@ -309,7 +329,6 @@ class RecallBatch:
                 withheld_ids=withheld,
             )
             affected = []
-        self._resolved = True
         return affected
 
 
