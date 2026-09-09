@@ -428,6 +428,89 @@ class MemoryCreationProposalTests(unittest.TestCase):
         self.assertIsNotNone(table)
         self.assertEqual(self.store.stats()["schema_version"], SCHEMA_VERSION)
 
+    def test_review_reuses_duplicate_created_mid_flight(self) -> None:
+        """A duplicate landing between propose and review creates no second memory.
+
+        Converted from repro_race.py: the stored assessment is a snapshot and
+        stays stale (duplicate_memory_id None even after refresh), but the
+        review path re-checks at write time via add_memory, so the racing
+        duplicate is reused instead of duplicated.
+        """
+        content = "The staging deploy key rotates every Sunday."
+        proposal = self.store.propose_memory_creation(content, source_type="assistant_turn")
+        self.assertEqual(proposal["status"], "pending")
+        self.assertIsNone((proposal.get("assessment") or {}).get("duplicate_memory_id"))
+
+        duplicate_id, created = self.store.add_memory(content, source_type="assistant_turn")
+        self.assertTrue(created)
+
+        refreshed = self.store.get_memory_creation_proposal(proposal["proposal_id"])
+        self.assertIsNotNone(refreshed)
+        assert refreshed is not None
+        # Stored assessment is a snapshot: still stale after refresh.
+        self.assertIsNone((refreshed.get("assessment") or {}).get("duplicate_memory_id"))
+
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(refreshed),
+        )
+        self.assertEqual(result["status"], "remembered")
+        self.assertEqual(result["memory_id"], duplicate_id)
+        self.assertFalse(result["memory_created"])
+        rows = self.store._conn.execute(
+            "SELECT COUNT(*) FROM memories WHERE content_hash=? AND state IN ('active','cold')",
+            (self.store.get_memory(duplicate_id)["content_hash"],),
+        ).fetchone()
+        self.assertEqual(int(rows[0]), 1)
+        self.assertEqual(
+            self.store.get_memory_creation_proposal(proposal["proposal_id"])["status"],
+            "remembered",
+        )
+
+    def test_review_with_evidence_only_duplicate_preserves_both_records(self) -> None:
+        """The repro_race.py trained-set variant: concurrent evidence-only
+        duplicate survives review; the proposal still reaches a decision."""
+        content = """{
+  \"server\": \"acorn.example.com\",
+  \"port\": 8642,
+  \"gateway\": \"blue\"
+}"""
+        proposal = self.store.propose_memory_creation(content, source_type="assistant_turn")
+        with self.store._lock:
+            self.store._conn.execute(
+                "UPDATE memory_recall_sets SET kind='trained' WHERE status='active'"
+            )
+            self.store._conn.commit()
+        duplicate_id, created = self.store.add_memory(
+            content,
+            source_category="AGENT_INFERENCE",
+            source_type="assistant_turn",
+            approval_state="unreviewed",
+            record_role="reference",
+        )
+        self.assertTrue(created)
+        self.assertFalse(self.store.is_memory_recall_eligible(duplicate_id))
+        self.assertTrue(self.store.is_memory_recall_eligible(duplicate_id, evidence_lookup=True))
+
+        refreshed = self.store.get_memory_creation_proposal(proposal["proposal_id"])
+        assert refreshed is not None
+        result = self.store.review_memory_creation(
+            proposal["proposal_id"],
+            "remember",
+            actor="cortex-auto-judge:synthetic",
+            approval_authority="automatic",
+            expected_revision=creation_proposal_revision(refreshed),
+        )
+        self.assertEqual(result["status"], "remembered")
+        self.assertIsNotNone(result["memory_id"])
+        # The racing duplicate is preserved untouched, not absorbed or altered.
+        survivor = self.store.get_memory(duplicate_id)
+        self.assertEqual(survivor["record_role"], "reference")
+        self.assertEqual(survivor["approval_state"], "unreviewed")
+
 
 if __name__ == "__main__":
     unittest.main()
