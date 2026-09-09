@@ -46,6 +46,13 @@ class DashboardAuth:
         self.path = Path(path).expanduser()
         self._lock = threading.RLock()
         self._state: dict[str, Any] | None = None
+        # (mtime_ns, size) of the auth file `_state` was read from. The file
+        # can be rewritten by a *separate* process (e.g. a password reset via
+        # the CLI while the dashboard keeps running), so every load compares
+        # the on-disk stat and re-reads on change instead of trusting the
+        # cache indefinitely. Without this, a running instance keeps accepting
+        # the old password/sessions and rejects the new password.
+        self._stat: tuple[int, int] | None = None
 
     @property
     def configured(self) -> bool:
@@ -174,17 +181,32 @@ class DashboardAuth:
         os.chmod(temporary, 0o600)
         temporary.replace(self.path)
         self._state = state
+        self._stat = self._current_stat()
+
+    def _current_stat(self) -> tuple[int, int] | None:
+        """Return the auth file's identity probe, or None if it is unreadable."""
+        try:
+            st = self.path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
 
     def _load(self, *, optional: bool = False) -> dict[str, Any] | None:
-        if self._state is not None:
+        if self._state is not None and self._current_stat() == self._stat:
             return self._state
+        # Cache miss or the file changed under us (another process reset the
+        # password) — re-read so this instance enforces the current password
+        # and session version. A deleted file fails closed via _require_state.
         if optional and not self.path.exists():
+            self._state = None
+            self._stat = None
             return None
         state = json.loads(self.path.read_text(encoding="utf-8"))
         required = {"username", "salt", "password_hash", "session_secret", "session_version"}
         if not required.issubset(state):
             raise ValueError("dashboard auth file is incomplete")
         self._state = state
+        self._stat = self._current_stat()
         return state
 
     def _require_state(self) -> dict[str, Any]:

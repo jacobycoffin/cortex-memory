@@ -57,6 +57,28 @@ class DashboardAuthTests(unittest.TestCase):
             self.assertTrue(auth.verify_password("viewer", "a-new-secure-password"))
             self.assertIsNotNone(auth.session_from_cookie(f"other=1; {SESSION_COOKIE}={new_session}"))
 
+    def test_reset_by_separate_instance_revokes_old_credentials(self) -> None:
+        """A password reset from another process must take effect here.
+
+        Regression test: DashboardAuth used to cache its state indefinitely,
+        so a running dashboard kept accepting the old password/sessions and
+        rejected the new password after an external reset.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dashboard-auth.json"
+            dashboard = DashboardAuth(path)
+            old_password = dashboard.reset(username="viewer")
+            old_session = dashboard.issue_session(now=100)
+            self.assertIsNotNone(dashboard.verify_session(old_session, now=101))
+
+            cli = DashboardAuth(path)
+            new_password = cli.reset(username="viewer")
+
+            self.assertFalse(dashboard.verify_password("viewer", old_password))
+            self.assertTrue(dashboard.verify_password("viewer", new_password))
+            self.assertIsNone(dashboard.verify_session(old_session, now=101))
+            self.assertTrue(dashboard.must_change_password())
+
 
 class DashboardInterfaceTests(unittest.TestCase):
     def test_dashboard_server_factory_reaches_request_handler_and_serve_loop(self) -> None:

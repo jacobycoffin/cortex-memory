@@ -71,6 +71,11 @@ class RecallBatch:
     _store: CortexStore
     _resolved: bool = False
 
+    # Mirrors the outcome vocabulary enforced by
+    # CortexStore.apply_task_outcome. Validated here, before any writes, so a
+    # failed finish() leaves no partial learning state behind.
+    VALID_OUTCOMES = frozenset({"helpful", "harmful", "validated", "corrected"})
+
     def context(self) -> str:
         """Return a compact, clearly labeled evidence block for an agent prompt."""
 
@@ -99,6 +104,13 @@ class RecallBatch:
         used = set(used_memory_ids)
         if not used <= selected:
             raise ValueError("used memory IDs must come from this recall batch")
+        if outcome is not None and outcome not in RecallBatch.VALID_OUTCOMES:
+            # Validate before touching storage: resolve_usage() commits
+            # immediately, so an invalid outcome used to leave usage attributed
+            # while the outcome raised — and a retry then rewarded memories
+            # the caller never marked used. Fail here and nothing is written,
+            # so the batch stays cleanly retryable.
+            raise ValueError("invalid task outcome")
         self._store.resolve_usage(
             self.task_id,
             {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},

@@ -152,6 +152,32 @@ class CortexClientTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     batch.finish()
 
+    def test_recall_batch_invalid_outcome_writes_nothing_and_stays_retryable(self) -> None:
+        """A failed finish() must not partially attribute learning data.
+
+        Regression test: finish() used to commit usage attribution before
+        validating the outcome, so finish([id], outcome="bogus") raised AFTER
+        marking the memory used — and a retry with no used IDs still rewarded
+        that memory via apply_task_outcome.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory_id, _ = memory.remember(
+                    "The staging deploy key rotates every Sunday.", kind="operational"
+                )
+                batch = memory.recall("When does the staging deploy key rotate?")
+                self.assertEqual(batch.memories[0]["id"], memory_id)
+                with self.assertRaises(ValueError):
+                    batch.finish([memory_id], outcome="bogus-outcome")
+                rows = memory.store._conn.execute(
+                    "SELECT outcome FROM usage_records WHERE task_id=?", (batch.task_id,)
+                ).fetchall()
+                self.assertTrue(rows)
+                self.assertTrue(all(row["outcome"] == "pending" for row in rows))
+                affected = batch.finish([memory_id], outcome="helpful")
+                self.assertEqual(affected, [memory_id])
+                self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
+
     def test_agent_neutral_api_passes_explicit_project_and_system_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with CortexMemory(Path(tmp) / "cortex.db") as memory:
