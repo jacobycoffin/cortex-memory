@@ -487,6 +487,9 @@ class CortexStore:
                 prepare_ms REAL NOT NULL DEFAULT 0,
                 abstained INTEGER NOT NULL DEFAULT 0,
                 stage_ms_json TEXT NOT NULL DEFAULT '{}',
+                rendered_count INTEGER NOT NULL DEFAULT 0,
+                withheld_count INTEGER NOT NULL DEFAULT 0,
+                rendered_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_recall_runs_created ON recall_runs(created_at);
@@ -2148,6 +2151,18 @@ class CortexStore:
         if "stage_ms_json" not in recall_columns:
             self._conn.execute(
                 "ALTER TABLE recall_runs ADD COLUMN stage_ms_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "rendered_count" not in recall_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_runs ADD COLUMN rendered_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "withheld_count" not in recall_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_runs ADD COLUMN withheld_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "rendered_tokens" not in recall_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_runs ADD COLUMN rendered_tokens INTEGER NOT NULL DEFAULT 0"
             )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_runs_task ON recall_runs(task_id)")
         trace_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memory_traces)")}
@@ -7037,6 +7052,9 @@ class CortexStore:
         abstained: bool,
         task_id: str | None = None,
         stage_ms: Mapping[str, float] | None = None,
+        rendered_count: int = 0,
+        withheld_count: int = 0,
+        rendered_tokens: int = 0,
     ) -> str:
         recall_id = str(uuid.uuid4())
         stage_payload = "{}"
@@ -7051,8 +7069,9 @@ class CortexStore:
             conn.execute(
                 """INSERT INTO recall_runs(
                    recall_id,task_id,session_id,query,mode,reason,requested_limit,token_budget,
-                   candidate_count,selected_count,estimated_tokens,prepare_ms,abstained,stage_ms_json,created_at
-                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   candidate_count,selected_count,estimated_tokens,prepare_ms,abstained,stage_ms_json,
+                   rendered_count,withheld_count,rendered_tokens,created_at
+                   ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     recall_id,
                     task_id,
@@ -7068,10 +7087,76 @@ class CortexStore:
                     max(0.0, float(prepare_ms)),
                     int(abstained),
                     stage_payload,
+                    max(0, int(rendered_count)),
+                    max(0, int(withheld_count)),
+                    max(0, int(rendered_tokens)),
                     utc_now(),
                 ),
             )
         return recall_id
+
+    def record_recall_render(
+        self,
+        task_id: str,
+        *,
+        rendered_ids: Sequence[str] = (),
+        withheld_ids: Sequence[str] = (),
+        rendered_tokens: int = 0,
+        token_budget: int = 0,
+    ) -> dict[str, Any]:
+        """Record what context() actually injected for one recall batch.
+
+        Updates the recall_runs row with the final rendered/withheld counts
+        and rendered token estimate, and — only when the budget withheld
+        something — appends one render_decision trace event explaining the
+        cut. Never touches usage or learning tables: rendering is not
+        feedback, so repeated reports add no training signal. Callers report
+        once per batch (RecallBatch guards this); re-calls only refresh the
+        same counters.
+        """
+
+        rendered = [str(memory_id) for memory_id in rendered_ids]
+        withheld = [str(memory_id) for memory_id in withheld_ids]
+        tokens = max(0, int(rendered_tokens))
+        budget = max(0, int(token_budget))
+        now = utc_now()
+        event: dict[str, Any] | None = None
+        with self.transaction() as conn:
+            conn.execute(
+                """UPDATE recall_runs SET rendered_count=?,withheld_count=?,rendered_tokens=?
+                   WHERE task_id=?""",
+                (len(rendered), len(withheld), tokens, task_id),
+            )
+            if withheld:
+                if rendered:
+                    reason = (
+                        f"Retrieval selected {len(rendered) + len(withheld)} memories but the "
+                        f"rendering budget of {budget} tokens fit {len(rendered)} "
+                        f"(best-score-first); {len(withheld)} withheld from the injected evidence."
+                    )
+                else:
+                    reason = (
+                        f"Retrieval found {len(withheld)} candidate(s) but the rendering budget "
+                        f"of {budget} tokens could not fit even the header + withheld note, "
+                        "so no memory evidence was injected."
+                    )
+                event = {
+                    "rendered_memory_ids": rendered,
+                    "withheld_memory_ids": withheld,
+                    "rendered_count": len(rendered),
+                    "withheld_count": len(withheld),
+                    "rendered_tokens": tokens,
+                    "token_budget": budget,
+                    "reason": reason,
+                }
+                self._append_memory_trace_event_tx(conn, task_id, "render_decision", event, now)
+        return {
+            "task_id": task_id,
+            "rendered_count": len(rendered),
+            "withheld_count": len(withheld),
+            "rendered_tokens": tokens,
+            "event": event,
+        }
 
     def record_memory_trace_decision(
         self,

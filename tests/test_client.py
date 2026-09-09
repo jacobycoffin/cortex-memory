@@ -404,6 +404,83 @@ class CortexClientTests(unittest.TestCase):
         self.assertEqual(estimate_text_tokens("abcde"), 2)
         self.assertEqual(estimate_text_tokens(""), 1)
 
+    def _recall_three(self, memory: CortexMemory) -> Any:
+        for content in (
+            "The staging deploy key rotates every Sunday at midnight UTC, "
+            "and the rotation checklist lives with the release captain.",
+            "Production deploys require a verified backup plus a health "
+            "check against staging before any traffic is shifted over.",
+            "Gateway rotation happens after midnight UTC once the deploy "
+            "train has fully cleared the staging environment and checks.",
+        ):
+            memory.remember(content, kind="operational")
+        return memory.recall(
+            "What are the deploy key rotation, production deploy check, "
+            "and gateway rotation procedures?",
+            token_budget=100,
+        )
+
+    def _render_events(self, memory: CortexMemory, task_id: str) -> list[dict[str, Any]]:
+        import json as _json
+
+        return [
+            _json.loads(line)
+            for line in memory.store.memory_trace_jsonl(task_id=task_id).splitlines()
+            if _json.loads(line)["event_type"] == "render_decision"
+        ]
+
+    def test_context_reports_render_metrics_once(self) -> None:
+        """The first render records counts/tokens; repeats add no signals."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                batch = self._recall_three(memory)
+                self.assertGreaterEqual(len(batch.memories), 2)
+                first = batch.context()
+                second = batch.context()
+                self.assertEqual(first, second)
+                row = memory.store._conn.execute(
+                    "SELECT selected_count, rendered_count, withheld_count, rendered_tokens"
+                    " FROM recall_runs WHERE task_id=?",
+                    (batch.task_id,),
+                ).fetchone()
+                self.assertIsNotNone(row)
+                self.assertEqual(row["rendered_count"] + row["withheld_count"], row["selected_count"])
+                self.assertEqual(row["rendered_count"], len(batch.rendered_memory_ids))
+                self.assertEqual(row["withheld_count"], len(batch.dropped_memory_ids))
+                self.assertEqual(row["rendered_tokens"], batch.context_tokens())
+                self.assertEqual(len(self._render_events(memory, batch.task_id)), 1)
+
+    def test_render_decision_explains_budget_cut(self) -> None:
+        """A cut trace names rendered/withheld IDs and the budget reason."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                batch = self._recall_three(memory)
+                batch.token_budget = 0
+                self.assertEqual(batch.context(), "")
+                events = self._render_events(memory, batch.task_id)
+                self.assertEqual(len(events), 1)
+                payload = events[0]["payload"]
+                self.assertEqual(payload["rendered_count"], 0)
+                self.assertGreater(payload["withheld_count"], 0)
+                self.assertEqual(set(payload["withheld_memory_ids"]), set(batch.dropped_memory_ids))
+                self.assertIn("budget", payload["reason"])
+
+    def test_full_render_emits_no_cut_event(self) -> None:
+        """Nothing withheld means nothing new to explain in the trace."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory.remember("The staging deploy key rotates every Sunday.")
+                batch = memory.recall("When does the staging deploy key rotate?")
+                batch.context()
+                self.assertEqual(batch.dropped_memory_ids, [])
+                self.assertEqual(self._render_events(memory, batch.task_id), [])
+                row = memory.store._conn.execute(
+                    "SELECT rendered_count, withheld_count FROM recall_runs WHERE task_id=?",
+                    (batch.task_id,),
+                ).fetchone()
+                self.assertEqual(row["withheld_count"], 0)
+                self.assertGreaterEqual(row["rendered_count"], 1)
+
     def test_recall_batch_context_enforces_rendered_token_budget(self) -> None:
         """The budget bounds the FINAL rendered block, not just raw content.
 

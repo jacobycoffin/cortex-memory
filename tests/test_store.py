@@ -1642,6 +1642,48 @@ class CortexStoreTests(unittest.TestCase):
         # Recreate the fixture store so tearDown remains idempotent.
         self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
 
+    def test_recall_runs_render_columns_migrated_for_old_db(self) -> None:
+        """Pre-existing databases gain the render-metric columns on open."""
+        import sqlite3 as _sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = _sqlite3.connect(path)
+            conn.execute(
+                """CREATE TABLE recall_runs (
+                     recall_id TEXT PRIMARY KEY, task_id TEXT, session_id TEXT,
+                     query TEXT, mode TEXT NOT NULL, reason TEXT,
+                     requested_limit INTEGER NOT NULL, token_budget INTEGER NOT NULL,
+                     candidate_count INTEGER NOT NULL DEFAULT 0,
+                     selected_count INTEGER NOT NULL DEFAULT 0,
+                     estimated_tokens INTEGER NOT NULL DEFAULT 0,
+                     prepare_ms REAL NOT NULL DEFAULT 0,
+                     abstained INTEGER NOT NULL DEFAULT 0,
+                     stage_ms_json TEXT NOT NULL DEFAULT '{}',
+                     created_at TEXT NOT NULL
+                   )"""
+            )
+            conn.commit()
+            conn.close()
+            store = CortexStore(path)
+            try:
+                columns = {
+                    row["name"]
+                    for row in store._conn.execute("PRAGMA table_info(recall_runs)").fetchall()
+                }
+                self.assertTrue(
+                    {"rendered_count", "withheld_count", "rendered_tokens"} <= columns
+                )
+                report = store.record_recall_render(
+                    "task-old", rendered_ids=["a"], withheld_ids=["b", "c"],
+                    rendered_tokens=12, token_budget=100,
+                )
+                self.assertEqual(report["rendered_count"], 1)
+                self.assertEqual(report["withheld_count"], 2)
+                self.assertIsNotNone(report["event"])
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
