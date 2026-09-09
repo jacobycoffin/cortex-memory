@@ -178,6 +178,138 @@ class CortexClientTests(unittest.TestCase):
                 self.assertEqual(affected, [memory_id])
                 self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
 
+    def test_finish_rejects_withheld_memory_ids(self) -> None:
+        """finish() must not credit memories the budget withheld from context.
+
+        Regression: finish() attributed over every retrieved memory, so a
+        caller crediting batch.memories could reward a memory the model never
+        saw. Withheld IDs are rejected and the batch stays retryable.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                ids = []
+                for content in (
+                    "The staging deploy key rotates every Sunday at midnight UTC, "
+                    "and the rotation checklist lives with the release captain.",
+                    "Production deploys require a verified backup plus a health "
+                    "check against staging before any traffic is shifted over.",
+                    "Gateway rotation happens after midnight UTC once the deploy "
+                    "train has fully cleared the staging environment and checks.",
+                ):
+                    memory_id, _ = memory.remember(content, kind="operational")
+                    ids.append(memory_id)
+                batch = memory.recall(
+                    "What are the deploy key rotation, production deploy check, "
+                    "and gateway rotation procedures?",
+                    token_budget=100,
+                )
+                self.assertGreaterEqual(len(batch.memories), 2)
+                batch.context()
+                self.assertTrue(batch.dropped_memory_ids)
+                withheld = batch.dropped_memory_ids[0]
+                rendered = batch.rendered_memory_ids
+                self.assertTrue(rendered)
+                self.assertNotIn(withheld, rendered)
+                with self.assertRaises(ValueError):
+                    batch.finish([withheld], outcome="helpful")
+                for memory_id in ids:
+                    self.assertEqual(
+                        memory.store.get_memory(memory_id)["helpful_count"], 0
+                    )
+                affected = batch.finish([rendered[0]], outcome="helpful")
+                self.assertEqual(affected, [rendered[0]])
+
+    def test_finish_marks_withheld_distinct_from_ignored(self) -> None:
+        """Budget-withheld memories must not train as shown-but-ignored.
+
+        Regression: withheld rows resolved as "ignored", which feeds the
+        context-feedback usefulness penalty for evidence the model never saw.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                for content in (
+                    "The staging deploy key rotates every Sunday at midnight UTC, "
+                    "and the rotation checklist lives with the release captain.",
+                    "Production deploys require a verified backup plus a health "
+                    "check against staging before any traffic is shifted over.",
+                    "Gateway rotation happens after midnight UTC once the deploy "
+                    "train has fully cleared the staging environment and checks.",
+                ):
+                    memory.remember(content, kind="operational")
+                batch = memory.recall(
+                    "What are the deploy key rotation, production deploy check, "
+                    "and gateway rotation procedures?",
+                    token_budget=100,
+                )
+                self.assertGreaterEqual(len(batch.memories), 2)
+                batch.context()
+                self.assertTrue(batch.dropped_memory_ids)
+                self.assertTrue(batch.rendered_memory_ids)
+                shown_unused = [
+                    memory_id
+                    for memory_id in batch.rendered_memory_ids[1:]
+                ]
+                batch.finish([batch.rendered_memory_ids[0]], outcome="helpful")
+                rows = {
+                    str(row["memory_id"]): str(row["outcome"])
+                    for row in memory.store._conn.execute(
+                        "SELECT memory_id, outcome FROM usage_records WHERE task_id=?",
+                        (batch.task_id,),
+                    ).fetchall()
+                }
+                self.assertEqual(rows[batch.rendered_memory_ids[0]], "helpful")
+                for memory_id in batch.dropped_memory_ids:
+                    self.assertEqual(rows[memory_id], "withheld")
+                for memory_id in shown_unused:
+                    self.assertEqual(rows[memory_id], "ignored")
+
+    def test_structured_evidence_explicit_without_context(self) -> None:
+        """Callers consuming batch.memories directly keep an explicit path."""
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory_id, _ = memory.remember(
+                    "The staging deploy key rotates every Sunday.", kind="operational"
+                )
+                batch = memory.recall("When does the staging deploy key rotate?")
+                affected = batch.finish(
+                    [memory_id], outcome="helpful", evidence="structured"
+                )
+                self.assertEqual(affected, [memory_id])
+                self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
+
+    def test_rendered_memory_ids_partition_batch(self) -> None:
+        """Rendered + withheld IDs partition every retrieved memory."""
+        memories = [
+            {
+                "id": f"memory-part-{index:04d}-abcdef",
+                "kind": "semantic",
+                "score": 0.9 - index * 0.05,
+                "content": (
+                    "The production deploy procedure requires a health check, "
+                    f"a verified backup, and gateway rotation step {index}."
+                ),
+                "source_type": "conversation",
+                "source_category": "USER_EXPLICIT",
+                "source_ref": f"session-42-turn-{index}-with-a-long-reference-tail",
+                "approval_state": "operator_approved",
+            }
+            for index in range(4)
+        ]
+        batch = RecallBatch(
+            task_id="task-partition",
+            query="What does production deploy require?",
+            memories=memories,
+            _store=object(),
+            token_budget=120,
+        )
+        batch.context()
+        rendered = batch.rendered_memory_ids
+        dropped = batch.dropped_memory_ids
+        self.assertTrue(rendered)
+        self.assertTrue(dropped)
+        self.assertEqual(set(rendered) | set(dropped), {str(item["id"]) for item in memories})
+        self.assertFalse(set(rendered) & set(dropped))
+
     def test_recall_batch_context_enforces_rendered_token_budget(self) -> None:
         """The budget bounds the FINAL rendered block, not just raw content.
 

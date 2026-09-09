@@ -134,12 +134,13 @@ class HarnessTurn:
         used_memory_ids: Sequence[str] = (),
         *,
         outcome: str | None = None,
+        evidence: str = "auto",
     ) -> list[str]:
         if not self.batch:
             if used_memory_ids:
                 raise ValueError("this turn did not recall Cortex memories")
             return []
-        return self.batch.finish(used_memory_ids, outcome=outcome)
+        return self.batch.finish(used_memory_ids, outcome=outcome, evidence=evidence)
 
 
 class CortexHarnessAdapter:

@@ -139,22 +139,47 @@ class RecallBatch:
     # injected.
     token_budget: int = 700
     _dropped_ids: list[str] = field(default_factory=list)
+    _rendered_ids: list[str] | None = None
     _last_rendered_tokens: int = 0
 
     # Alias of the store's single outcome vocabulary (client-side fast fail
     # before touching storage; the store re-validates authoritatively).
     VALID_OUTCOMES = TASK_OUTCOMES
 
+    # Evidence selectors accepted by finish().
+    EVIDENCE_MODES = ("auto", "rendered", "structured")
+
+    def __post_init__(self) -> None:
+        if int(self.token_budget) < 0:
+            raise ValueError("token_budget must be >= 0")
+
     def context(self) -> str:
         """Return a compact evidence block that fits the rendered budget.
 
         Memories are fitted best-score-first; anything beyond the budget is
         withheld and listed in dropped_memory_ids so the harness sees the
-        cut instead of silently overrunning its context window.
+        cut instead of silently overrunning its context window. When even
+        the minimum envelope (header + withheld note) cannot fit, the text
+        is empty and the withholding detail stays in metadata only.
         """
 
         if not self.memories:
             self._dropped_ids = []
+            self._rendered_ids = []
+            self._last_rendered_tokens = 0
+            return ""
+        budget_chars = max(0, int(self.token_budget) * 4)
+        min_envelope = (
+            len(_CONTEXT_HEADER)
+            + 1
+            + len(_withheld_note(len(self.memories), self.token_budget))
+        )
+        if min_envelope > budget_chars:
+            # The budget cannot carry evidence AND an honest account of the
+            # cut. Emit nothing rather than an over-budget block; callers
+            # read dropped_memory_ids / rendered_memory_ids for the detail.
+            self._dropped_ids = [str(memory["id"]) for memory in self.memories]
+            self._rendered_ids = []
             self._last_rendered_tokens = 0
             return ""
         # Two passes: first fit against the bare budget; if anything drops,
@@ -164,9 +189,19 @@ class RecallBatch:
         if dropped:
             lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=True)
         text = "\n".join(lines)
+        dropped_set = set(dropped)
         self._dropped_ids = dropped
+        self._rendered_ids = [
+            str(memory["id"]) for memory in self.memories if str(memory["id"]) not in dropped_set
+        ]
         self._last_rendered_tokens = estimate_text_tokens(text)
         return text
+
+    @property
+    def rendered_memory_ids(self) -> list[str]:
+        """IDs actually present in the last context() render ([] if none)."""
+
+        return list(self._rendered_ids) if self._rendered_ids is not None else []
 
     @property
     def dropped_memory_ids(self) -> list[str]:
@@ -184,31 +219,55 @@ class RecallBatch:
         used_memory_ids: Sequence[str] = (),
         *,
         outcome: str | None = None,
+        evidence: str = "auto",
     ) -> list[str]:
-        """Resolve selected evidence and optionally record the task outcome once."""
+        """Resolve selected evidence and optionally record the task outcome once.
+
+        evidence selects which IDs may be credited: "rendered" (default
+        whenever context() ran — only IDs the model actually saw),
+        "structured" (every retrieved ID, for callers that consume
+        batch.memories directly without rendering), or "auto" (rendered when
+        context() ran, otherwise structured). Withheld IDs are resolved as
+        "withheld", never as shown-but-ignored, so budget cuts do not train
+        relevance or usefulness downward.
+        """
 
         if self._resolved:
             raise RuntimeError("recall batch has already been resolved")
+        if evidence not in RecallBatch.EVIDENCE_MODES:
+            raise ValueError(f"evidence must be one of {RecallBatch.EVIDENCE_MODES}")
         selected = {str(memory["id"]) for memory in self.memories}
         used = set(used_memory_ids)
-        if not used <= selected:
-            raise ValueError("used memory IDs must come from this recall batch")
+        if evidence == "structured" or (evidence == "auto" and self._rendered_ids is None):
+            basis = selected
+        elif self._rendered_ids is None:
+            raise ValueError("call context() before finishing with rendered evidence")
+        else:
+            basis = set(self._rendered_ids)
+        if not used <= basis:
+            raise ValueError("used memory IDs must come from rendered evidence, not withheld memories")
         if outcome is not None and outcome not in RecallBatch.VALID_OUTCOMES:
             # Fast fail before touching storage (the store re-validates
             # authoritatively inside the atomic method below).
             raise ValueError("invalid task outcome")
+        attribution = {
+            memory_id: 1.0 if memory_id in used else 0.0 for memory_id in basis
+        }
+        withheld = sorted(selected - basis)
         if outcome is not None:
             # One transaction covers attribution + outcome: a mid-flight
             # failure rolls back both, so the batch stays retryable.
             _, affected = self._store.resolve_usage_and_apply_outcome(
                 self.task_id,
-                {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},
+                attribution,
                 outcome,
+                withheld_ids=withheld,
             )
         else:
             self._store.resolve_usage(
                 self.task_id,
-                {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},
+                attribution,
+                withheld_ids=withheld,
             )
             affected = []
         self._resolved = True

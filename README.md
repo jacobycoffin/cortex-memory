@@ -118,8 +118,13 @@ with CortexMemory("./cortex.db") as memory:
     )
     agent_context = recall.context()
 
-    # After the harness finishes the task, credit only evidence it actually used.
-    used_ids = [item["id"] for item in recall.memories]
+    # After the harness finishes the task, credit only evidence the answer
+    # actually used: intersect the harness-observed IDs with the rendered
+    # set. finish() rejects withheld IDs — crediting batch.memories directly
+    # would reward evidence the model never saw.
+    harness_observed_ids = [...]  # IDs your harness saw the answer cite
+    rendered_ids = set(recall.rendered_memory_ids)
+    used_ids = [mid for mid in harness_observed_ids if mid in rendered_ids]
     recall.finish(used_ids, outcome="helpful")
 ```
 

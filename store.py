@@ -7691,6 +7691,7 @@ class CortexStore:
         attribution_by_id: dict[str, float],
         retrieval_context: dict[str, Any],
         now: str,
+        withheld_ids: frozenset[str] = frozenset(),
     ) -> None:
         context_key, context_value = _retrieval_context_key(retrieval_context)
         for candidate in candidates:
@@ -7698,6 +7699,20 @@ class CortexStore:
                 continue
             memory_id = str(candidate.get("memory_id") or "")
             if not memory_id:
+                continue
+            if memory_id in withheld_ids:
+                # Never rendered: record the withholding without marking the
+                # memory shown, used, or ignored, so budget cuts neither earn
+                # credit nor train usefulness downward.
+                conn.execute(
+                    """INSERT INTO memory_context_outcomes(
+                         task_id,memory_id,context_key,context_json,selected,used,outcome,updated_at
+                       ) VALUES(?,?,?,?,0,0,'withheld',?)
+                       ON CONFLICT(task_id,memory_id) DO UPDATE SET
+                         context_key=excluded.context_key,context_json=excluded.context_json,
+                         selected=0,used=0,outcome='withheld',updated_at=excluded.updated_at""",
+                    (task_id, memory_id, context_key, _trace_json(context_value), now),
+                )
                 continue
             used = _clamp(float(attribution_by_id.get(memory_id, 0.0))) > 0.0
             conn.execute(
@@ -7739,6 +7754,7 @@ class CortexStore:
         attribution_by_id: dict[str, float],
         memory_actions: Sequence[dict[str, Any]],
         now: str,
+        withheld_ids: frozenset[str] | set[str] = frozenset(),
     ) -> None:
         row = conn.execute("SELECT * FROM memory_traces WHERE task_id=?", (task_id,)).fetchone()
         if not row:
@@ -7752,6 +7768,7 @@ class CortexStore:
             attribution_by_id,
             retrieval_context,
             now,
+            frozenset(withheld_ids),
         )
         influence: list[dict[str, Any]] = []
         evaluations: list[dict[str, Any]] = []
@@ -7759,6 +7776,37 @@ class CortexStore:
             if not bool(candidate.get("selected")):
                 continue
             memory_id = str(candidate.get("memory_id") or "")
+            if memory_id in withheld_ids:
+                # Never rendered: keep it out of the used/ignored ratings so
+                # budget cuts do not inflate the false-positive rate.
+                influence.append(
+                    {
+                        "memory_id": memory_id,
+                        "influenced": False,
+                        "attribution_score": 0.0,
+                        "reason": (
+                            "withheld from rendered evidence by the context "
+                            "budget; never shown to the model"
+                        ),
+                    }
+                )
+                evaluations.append(
+                    {
+                        "memory_id": memory_id,
+                        "rating": "Withheld",
+                        "improved_outcome": False,
+                        "prevented_error": False,
+                        "introduced_incorrect_assumption": False,
+                        "duplicated_another_memory": False,
+                        "retrieved_but_never_used": False,
+                        "withheld_by_budget": True,
+                        "reason": (
+                            "The memory was retrieved but the rendering budget "
+                            "withheld it, so no answer-use evidence exists."
+                        ),
+                    }
+                )
+                continue
             attribution = _clamp(float(attribution_by_id.get(memory_id, 0.0)))
             influenced = attribution > 0.0
             influence.append(
@@ -8385,15 +8433,33 @@ class CortexStore:
         attribution_by_id: dict[str, float],
         *,
         memory_actions: Sequence[dict[str, Any]] = (),
+        withheld_ids: Sequence[str] = (),
     ) -> int:
         now = utc_now()
         resolved = 0
+        # IDs the rendering budget withheld never reached the model, so they
+        # must not resolve as shown-but-ignored: that outcome trains
+        # relevance and usefulness downward for unseen evidence.
+        withheld = {str(memory_id) for memory_id in withheld_ids}
         with self.transaction() as conn:
             rows = conn.execute(
                 "SELECT memory_id FROM usage_records WHERE task_id=? AND outcome='pending'", (task_id,)
             ).fetchall()
             for row in rows:
                 memory_id = row["memory_id"]
+                if memory_id in withheld:
+                    conn.execute(
+                        """UPDATE usage_records SET used=0,attribution=0.0,outcome='withheld',resolved_at=?
+                           WHERE task_id=? AND memory_id=?""",
+                        (now, task_id, memory_id),
+                    )
+                    conn.execute(
+                        """UPDATE metacognitive_predictions SET outcome='withheld',resolved_at=?
+                           WHERE task_id=? AND memory_id=? AND outcome='pending'""",
+                        (now, task_id, memory_id),
+                    )
+                    resolved += 1
+                    continue
                 attribution = _clamp(attribution_by_id.get(memory_id, 0.0))
                 used = attribution > 0.0
                 conn.execute(
@@ -8461,6 +8527,7 @@ class CortexStore:
                 attribution_by_id,
                 memory_actions,
                 now,
+                withheld_ids=withheld,
             )
         return resolved
 
@@ -8552,6 +8619,7 @@ class CortexStore:
         outcome: str,
         *,
         memory_actions: Sequence[dict[str, Any]] = (),
+        withheld_ids: Sequence[str] = (),
     ) -> tuple[int, list[str]]:
         """Resolve usage attribution and record the task outcome atomically.
 
@@ -8566,7 +8634,8 @@ class CortexStore:
             raise ValueError("invalid task outcome")
         with self.transaction():
             resolved = self.resolve_usage(
-                task_id, attribution_by_id, memory_actions=memory_actions
+                task_id, attribution_by_id, memory_actions=memory_actions,
+                withheld_ids=withheld_ids,
             )
             affected = self.apply_task_outcome(task_id, outcome)
         return resolved, affected
