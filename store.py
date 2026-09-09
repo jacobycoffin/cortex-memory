@@ -37,6 +37,13 @@ from .semantics import feature_similarity, semantic_features
 SCHEMA_VERSION = 32
 
 
+# Single source of truth for the task-outcome vocabulary accepted by
+# resolve/apply/label paths and RecallBatch.finish(). A new outcome must be
+# added here (plus the CHECK constraints in the schema) — never as another
+# inline set literal — or the API boundary and storage will disagree.
+TASK_OUTCOMES = frozenset({"helpful", "harmful", "validated", "corrected"})
+
+
 logger = logging.getLogger(__name__)
 
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
@@ -4864,7 +4871,7 @@ class CortexStore:
             return
         final = (
             outcome
-            if outcome in {"helpful", "harmful", "validated", "corrected"}
+            if outcome in TASK_OUTCOMES
             else "pending"
         )
         conn.execute(
@@ -7882,7 +7889,7 @@ class CortexStore:
         prior_outcome: str,
         now: str,
     ) -> None:
-        if prior_outcome in {"helpful", "harmful", "validated", "corrected"}:
+        if prior_outcome in TASK_OUTCOMES:
             self._update_memory_trace_outcome_tx(
                 conn,
                 task_id,
@@ -7927,7 +7934,7 @@ class CortexStore:
             """UPDATE memory_context_outcomes SET outcome=?,updated_at=?
                WHERE task_id=? AND used=1""",
             (
-                prior_outcome if prior_outcome in {"helpful", "harmful", "validated", "corrected"} else "used",
+                prior_outcome if prior_outcome in TASK_OUTCOMES else "used",
                 now,
                 task_id,
             ),
@@ -8458,7 +8465,7 @@ class CortexStore:
         return resolved
 
     def apply_task_outcome(self, task_id: str, outcome: str) -> list[str]:
-        if outcome not in {"helpful", "harmful", "validated", "corrected"}:
+        if outcome not in TASK_OUTCOMES:
             raise ValueError("invalid task outcome")
         from .research import sync_task_outcome_tx
 
@@ -8538,10 +8545,36 @@ class CortexStore:
             self.log_access(memory_id, outcome if outcome != "harmful" else "wrong")
         return ids
 
+    def resolve_usage_and_apply_outcome(
+        self,
+        task_id: str,
+        attribution_by_id: dict[str, float],
+        outcome: str,
+        *,
+        memory_actions: Sequence[dict[str, Any]] = (),
+    ) -> tuple[int, list[str]]:
+        """Resolve usage attribution and record the task outcome atomically.
+
+        A single outer transaction wraps both phases (the inner per-method
+        transactions degrade to savepoints), so a failure in the outcome
+        phase rolls back the attribution phase too — callers never observe
+        "used but unlabeled" partial state. Validation happens before any
+        write, keeping failed calls cleanly retryable.
+        """
+
+        if outcome not in TASK_OUTCOMES:
+            raise ValueError("invalid task outcome")
+        with self.transaction():
+            resolved = self.resolve_usage(
+                task_id, attribution_by_id, memory_actions=memory_actions
+            )
+            affected = self.apply_task_outcome(task_id, outcome)
+        return resolved, affected
+
     def label_task_outcome(self, task_id: str, outcome: str, *, actor: str) -> dict[str, Any]:
         """Apply one auditable, reversible outcome label to a used recall task."""
 
-        if outcome not in {"helpful", "harmful", "validated", "corrected"}:
+        if outcome not in TASK_OUTCOMES:
             raise ValueError("outcome must be helpful, harmful, validated, or corrected")
         actor_value = normalize_text(actor)[:80] or "dashboard-operator"
         now = utc_now()

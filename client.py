@@ -10,7 +10,7 @@ from .metacognition import assess_retrieval
 from .retrieval import MemoryRetriever, RetrievalContext
 from .security import sanitize_memory
 from .sleep import SleepConfig, run_sleep
-from .store import CortexStore
+from .store import CortexStore, TASK_OUTCOMES
 
 
 _SOURCE_LABELS = {
@@ -71,10 +71,9 @@ class RecallBatch:
     _store: CortexStore
     _resolved: bool = False
 
-    # Mirrors the outcome vocabulary enforced by
-    # CortexStore.apply_task_outcome. Validated here, before any writes, so a
-    # failed finish() leaves no partial learning state behind.
-    VALID_OUTCOMES = frozenset({"helpful", "harmful", "validated", "corrected"})
+    # Alias of the store's single outcome vocabulary (client-side fast fail
+    # before touching storage; the store re-validates authoritatively).
+    VALID_OUTCOMES = TASK_OUTCOMES
 
     def context(self) -> str:
         """Return a compact, clearly labeled evidence block for an agent prompt."""
@@ -105,19 +104,23 @@ class RecallBatch:
         if not used <= selected:
             raise ValueError("used memory IDs must come from this recall batch")
         if outcome is not None and outcome not in RecallBatch.VALID_OUTCOMES:
-            # Validate before touching storage: resolve_usage() commits
-            # immediately, so an invalid outcome used to leave usage attributed
-            # while the outcome raised — and a retry then rewarded memories
-            # the caller never marked used. Fail here and nothing is written,
-            # so the batch stays cleanly retryable.
+            # Fast fail before touching storage (the store re-validates
+            # authoritatively inside the atomic method below).
             raise ValueError("invalid task outcome")
-        self._store.resolve_usage(
-            self.task_id,
-            {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},
-        )
-        affected: list[str] = []
         if outcome is not None:
-            affected = self._store.apply_task_outcome(self.task_id, outcome)
+            # One transaction covers attribution + outcome: a mid-flight
+            # failure rolls back both, so the batch stays retryable.
+            _, affected = self._store.resolve_usage_and_apply_outcome(
+                self.task_id,
+                {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},
+                outcome,
+            )
+        else:
+            self._store.resolve_usage(
+                self.task_id,
+                {memory_id: 1.0 if memory_id in used else 0.0 for memory_id in selected},
+            )
+            affected = []
         self._resolved = True
         return affected
 
