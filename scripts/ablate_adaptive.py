@@ -4,17 +4,20 @@
 Compares recall behavior with adaptive mechanisms enabled versus disabled,
 using only synthetic temp-DB corpora. No network, no LLM, no live database.
 
-Conditions (all through public APIs):
+Tier: smoke-baseline. Conditions:
   baseline         — defaults, Sleep shadow (no-op preview)
-  sleep_apply      — one Sleep apply cycle before measuring (consolidation)
-  attention_policy — attention observations recorded + resolved before
-                     measuring (salience-weight refresh)
+  sleep_apply      — training co-use signals + one Sleep apply cycle, with
+                     an assertion that usage replay actually ran
+  attention_policy — training attention observations, with an assertion that
+                     the shadow recommendation actually moved
   combined         — sleep_apply + attention_policy
 
-Cases per condition: exact query, paraphrase, corrected-fact wording,
-wrong-project scope, and a no-memory greeting. Metrics are sanitized
-aggregates only (counts, rates, token estimates, milliseconds) — the report
-never contains memory content, queries, or IDs.
+Measurement recalls never resolve usage: eval data stays out of the
+training tables (no auto-ignored labels). Cases per condition: exact
+query, paraphrase, corrected-fact wording, wrong-project scope, and a
+no-memory greeting. Metrics are sanitized aggregates only (counts, rates,
+token estimates, milliseconds) — the report never contains memory
+content, queries, or IDs.
 
 Local embeddings are out of scope (a future optional experiment, not part
 of this baseline).
@@ -91,18 +94,100 @@ def _seed(memory: CortexMemory) -> dict[str, str]:
     return ids
 
 
-def _apply_condition(memory: CortexMemory, condition: str) -> None:
+def _seed_sleep_training(memory: CortexMemory, ids: dict[str, str]) -> int:
+    """Write resolved helpful co-use tasks Sleep usage-replay can consume.
+
+    Store-level and fully deterministic (no retrieval variance): two tasks
+    where the deploy-key and backup memories were used together with a
+    helpful outcome. Returns the training task count.
+    """
+    pair = [ids["deploy-key"], ids["backup"]]
+    for index in range(2):
+        task_id = memory.store.create_usage_batch(
+            [(pair[0], 0.9), (pair[1], 0.8)],
+            query="training co-use",
+            session_id=f"ablation-sleep-train-{index}",
+            task_type="deployment",
+            recall_mode="focused",
+            requested_budget=700,
+            estimated_tokens=600,
+        )
+        memory.store.resolve_usage(task_id, {pair[0]: 1.0, pair[1]: 1.0})
+        memory.store.apply_task_outcome(task_id, "helpful")
+    return 2
+
+
+def _seed_attention_training(memory: CortexMemory, ids: dict[str, str]) -> int:
+    """Write resolved attention observations that move the shadow policy.
+
+    Four used samples on one topic/mode (two helpful) clear the weight
+    threshold, so the shadow recommendation for a lean live mode must flip
+    to the previously useful procedural mode. Public API only — the same
+    shape as the adaptive-efficiency tests. Returns the sample count.
+    """
+    anchor = ids["deploy-key"]
+    for index in range(4):
+        task_id = memory.store.create_usage_batch(
+            [(anchor, 0.9)],
+            query="training attention",
+            session_id="ablation-attention",
+            task_type="deployment",
+            recall_mode="procedural",
+            requested_budget=600,
+            estimated_tokens=520,
+        )
+        memory.store.record_attention_observation(
+            task_id, task_type="deployment", topics=["acorn"],
+            live_mode="procedural", live_budget=600, max_budget=700,
+            selected_count=1,
+        )
+        memory.store.resolve_usage(task_id, {anchor: 1.0})
+        if index < 2:
+            memory.store.apply_task_outcome(task_id, "helpful")
+    return 4
+
+
+def _apply_condition(memory: CortexMemory, ids: dict[str, str], condition: str) -> dict[str, Any]:
+    """Engage the condition's mechanism and prove it ran (fail fast)."""
+    activation: dict[str, Any] = {
+        "sleep_usage_tasks_replayed": 0,
+        "sleep_evidence_added": 0,
+        "attention_used_samples": 0,
+        "attention_shadow_mode": "lean",
+    }
     if condition in {"sleep_apply", "combined"}:
-        memory.sleep(SleepConfig(mode="apply"))
+        _seed_sleep_training(memory, ids)
+        report = memory.sleep(SleepConfig(mode="apply"))
+        activation["sleep_usage_tasks_replayed"] = int(report["usage_tasks_replayed"])
+        activation["sleep_evidence_added"] = int(report["evidence_added"])
+        assert activation["sleep_usage_tasks_replayed"] >= 1, (
+            f"{condition}: Sleep usage replay ran zero tasks — fixture broken"
+        )
+        assert activation["sleep_evidence_added"] >= 1, (
+            f"{condition}: Sleep added zero evidence — fixture broken"
+        )
     if condition in {"attention_policy", "combined"}:
-        for index, topic in enumerate(("acorn", "beacon")):
-            task_id = f"ablation-attention-{topic}"
-            memory.store.record_attention_observation(
-                task_id, task_type="deployment", topics=[topic],
-                live_mode="adaptive", live_budget=700, max_budget=4000,
-                selected_count=2,
-            )
-            memory.store.resolve_usage(task_id, {})
+        pre = memory.store.attention_recommendation(
+            "deployment", ("acorn",), "lean", 600, max_budget=700
+        )
+        assert pre["shadow_mode"] == "lean", pre
+        _seed_attention_training(memory, ids)
+        post = memory.store.attention_recommendation(
+            "deployment", ("acorn",), "lean", 600, max_budget=700
+        )
+        weights = memory.store._conn.execute(
+            "SELECT used_count FROM attention_weights"
+            " WHERE task_type='deployment' AND topic_key='acorn'"
+        ).fetchall()
+        activation["attention_used_samples"] = sum(int(row["used_count"]) for row in weights)
+        activation["attention_shadow_mode"] = str(post["shadow_mode"])
+        assert activation["attention_used_samples"] >= 4, (
+            f"{condition}: attention training wrote no used samples — fixture broken"
+        )
+        assert post["shadow_mode"] == "procedural", (
+            f"{condition}: shadow policy did not move — fixture broken: {post}"
+        )
+    return activation
 
 
 def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, Any]:
@@ -141,7 +226,10 @@ def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, 
                 no_memory_cases += 1
                 if selected:
                     false_positives += 1
-            batch.finish([], outcome=None)
+            # Deliberately unresolved: measurement recalls must not train.
+            # finish() would label every measured batch used/ignored and
+            # pollute the learning tables (and move the very weights under
+            # test). Temp DBs are discarded with rows still pending.
     latencies.sort()
     mid = len(latencies) // 2
     p50 = latencies[mid] if latencies else 0.0
@@ -166,10 +254,13 @@ def run(*, reps: int = 3) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as tmp:
             with CortexMemory(Path(tmp) / "cortex.db") as memory:
                 ids = _seed(memory)
-                _apply_condition(memory, condition)
-                conditions[condition] = _measure(memory, ids, reps)
+                activation = _apply_condition(memory, ids, condition)
+                metrics = _measure(memory, ids, reps)
+                metrics["activation"] = activation
+                conditions[condition] = metrics
     return {
         "benchmark": "cortex_adaptive_ablation",
+        "tier": "smoke-baseline",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "reps_per_case": reps,
         "cases_per_condition": len(CASES) * reps,

@@ -1,8 +1,23 @@
-# Adaptive-feature ablation baseline
+# Adaptive-feature ablation baseline (tier: smoke-baseline)
 
 Local, deterministic, synthetic-only. No network, no LLM, no live database,
 no private histories. Run: `python3 scripts/ablate_adaptive.py --reps 5`
 (optional `--output report.json`). Test: `python3 -m unittest tests.test_ablation`.
+
+## Fixtures (each condition proves its mechanism ran)
+
+- `sleep_apply` / `combined`: two resolved helpful co-use tasks over the
+  same memory pair, then one Sleep apply cycle. The runner asserts usage
+  replay processed tasks AND added association evidence (fail fast
+  otherwise) and publishes both counts as `activation`.
+- `attention_policy` / `combined`: four used attention samples on one
+  topic/mode (two helpful). The runner asserts the weight row holds ≥4
+  used samples AND the shadow recommendation for a lean live mode flips
+  to procedural (fail fast otherwise).
+- Measurement recalls never call `finish()`: eval batches stay pending in
+  the discarded temp DB, so no auto-ignored labels pollute the training
+  tables (or move the weights under test). Training signals come only
+  from the explicit fixtures above.
 
 ## What was measured
 
@@ -20,14 +35,14 @@ rendered context), `false_positive_rate` (selection on no-memory cases,
 with that 2-case subset as denominator), mean selected/rendered size, and
 p50/p95 `recall()` wall latency.
 
-## Results (2026-09-09, reps=5, 25 recalls/condition)
+## Results (2026-09-09, reps=5, 25 recalls/condition, tier smoke-baseline)
 
-| condition | retr_hit@3 | rend_hit@3 | fp_rate | sel/recall | tok/recall | p50 ms | p95 ms |
-|-----------|------------|------------|---------|------------|------------|--------|--------|
-| baseline | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.347 | 9.200 |
-| sleep_apply | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.557 | 8.733 |
-| attention_policy | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.466 | 8.301 |
-| combined | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.036 | 6.691 |
+| condition | retr_hit@3 | rend_hit@3 | fp_rate | sel/recall | tok/recall | p50 ms | p95 ms | activation |
+|-----------|------------|------------|---------|------------|------------|--------|--------|------------|
+| baseline | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.935 | 8.748 | — |
+| sleep_apply | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.664 | 8.256 | replay ≥1 task, evidence ≥1 |
+| attention_policy | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.853 | 7.698 | 4 used samples, shadow → procedural |
+| combined | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.650 | 8.496 | both of the above |
 
 Note: the old `irrelevant_recall_rate` (0.2) used all cases as denominator;
 `false_positive_rate` (0.5) uses the no-memory subset — same underlying
@@ -38,13 +53,17 @@ are noise on temp-DB millisecond-scale runs, not evidence.
 
 ## Limitations
 
-- 5-memory synthetic corpus: Sleep apply has nothing worth consolidating
-  (episodes also fall under the 12 h minimum age), so `sleep_apply`
-  exercises the code path, not a real merge decision.
-- No model in the loop: "accuracy" is retrieval placement, not answer
-  quality; "irrelevant" is selection on unanswerable cases, not observed
-  non-use.
-- Latency is temp-DB wall time (~5 ms scale), incomparable with the live
+- 5-memory synthetic corpus with ceiling hits (1.0): quality deltas between
+  conditions cannot appear at this scale, so quality verdicts stay
+  insufficient-evidence by construction. What this tier proves is mechanism
+  engagement (activation assertions), training/eval separation, and metric
+  honesty — not which feature wins.
+- Sleep apply replays usage evidence; consolidation preview, lifecycle, and
+  reflection paths are exercised but produce no eligible candidates here.
+- No model in the loop: `retrieval_hit_at_3` is placement, not answer
+  quality; `false_positive_rate` is selection on unanswerable cases, not
+  observed non-use.
+- Latency is temp-DB wall time (~6 ms scale), incomparable with the live
   ~1 s tail the stage-latency work investigates.
 - Metacognitive calibration and adaptive weight proposals have no
   retrieval-visible toggle at this scale (both record shadow evidence only),

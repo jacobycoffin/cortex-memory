@@ -13,7 +13,7 @@ from tests._bootstrap import ROOT  # noqa: F401
 
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from ablate_adaptive import CORPUS, run  # noqa: E402
+from ablate_adaptive import CORPUS, _measure, _seed, run  # noqa: E402
 
 
 class AblationRunnerTests(unittest.TestCase):
@@ -21,9 +21,10 @@ class AblationRunnerTests(unittest.TestCase):
         report = run(reps=1)
         self.assertEqual(
             set(report),
-            {"benchmark", "created_at", "reps_per_case", "cases_per_condition",
+            {"benchmark", "tier", "created_at", "reps_per_case", "cases_per_condition",
              "local_only", "conditions"},
         )
+        self.assertEqual(report["tier"], "smoke-baseline")
         self.assertTrue(report["local_only"])
         self.assertEqual(
             set(report["conditions"]),
@@ -35,9 +36,16 @@ class AblationRunnerTests(unittest.TestCase):
                 {"cases", "retrieval_hit_at_3", "rendered_hit_at_3",
                  "false_positive_rate",
                  "mean_selected_per_recall", "mean_rendered_tokens",
-                 "prepare_p50_ms", "prepare_p95_ms"},
+                 "prepare_p50_ms", "prepare_p95_ms", "activation"},
             )
-            for value in metrics.values():
+            for key, value in metrics.items():
+                if key == "activation":
+                    self.assertEqual(
+                        set(value),
+                        {"sleep_usage_tasks_replayed", "sleep_evidence_added",
+                         "attention_used_samples", "attention_shadow_mode"},
+                    )
+                    continue
                 self.assertIsInstance(value, (int, float))
         # Privacy: no seeded content, query text, project name, or ID leaks.
         rendered = json.dumps(report)
@@ -46,6 +54,48 @@ class AblationRunnerTests(unittest.TestCase):
             self.assertNotIn(item["project"], rendered)
         for token in ("acorn staging deploy key", "Beacon API quota", "hello there"):
             self.assertNotIn(token, rendered)
+
+    def test_conditions_activate_their_mechanisms(self) -> None:
+        """Each experimental condition proves its mechanism ran."""
+        report = run(reps=1)
+        sleep = report["conditions"]["sleep_apply"]["activation"]
+        self.assertGreaterEqual(sleep["sleep_usage_tasks_replayed"], 1)
+        self.assertGreaterEqual(sleep["sleep_evidence_added"], 1)
+        attention = report["conditions"]["attention_policy"]["activation"]
+        self.assertGreaterEqual(attention["attention_used_samples"], 4)
+        self.assertEqual(attention["attention_shadow_mode"], "procedural")
+        combined = report["conditions"]["combined"]["activation"]
+        self.assertGreaterEqual(combined["sleep_evidence_added"], 1)
+        self.assertEqual(combined["attention_shadow_mode"], "procedural")
+        baseline = report["conditions"]["baseline"]["activation"]
+        self.assertEqual(baseline["sleep_evidence_added"], 0)
+        self.assertEqual(baseline["attention_shadow_mode"], "lean")
+
+    def test_measurement_recalls_create_no_training_signal(self) -> None:
+        """Eval recalls stay pending: no auto-ignored labels in training tables."""
+        import tempfile
+        from pathlib import Path as _Path
+
+        from cortex.client import CortexMemory as _CortexMemory
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with _CortexMemory(_Path(tmp) / "cortex.db") as memory:
+                ids = _seed(memory)
+                _measure(memory, ids, reps=1)
+                pending_budgets = memory.store._conn.execute(
+                    "SELECT COUNT(*) FROM recall_budget_observations WHERE outcome<>'pending'"
+                ).fetchone()[0]
+                self.assertEqual(int(pending_budgets), 0)
+                pending_usage = memory.store._conn.execute(
+                    "SELECT COUNT(*) FROM usage_records WHERE outcome<>'pending'"
+                ).fetchone()[0]
+                self.assertEqual(int(pending_usage), 0)
+                self.assertEqual(
+                    memory.store._conn.execute(
+                        "SELECT COUNT(*) FROM attention_observations"
+                    ).fetchone()[0],
+                    0,
+                )
 
     def test_runner_is_deterministic(self) -> None:
         first = run(reps=1)
