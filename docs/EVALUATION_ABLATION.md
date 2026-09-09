@@ -14,18 +14,24 @@ Five cases per condition: exact query, paraphrase, corrected-fact wording,
 wrong-project scope, no-memory greeting.
 
 Metrics (aggregates only — no content, queries, or IDs leave the machine):
-answer accuracy on the 3 answerable cases (expected memory in top-3),
-irrelevant-recall rate (selection on the 2 unanswerable cases), mean
-selected/rendered size, and p50/p95 `recall()` wall latency.
+`retrieval_hit_at_3` (expected memory in selected top-3 — placement, not
+answer accuracy), `rendered_hit_at_3` (expected memory actually present in
+rendered context), `false_positive_rate` (selection on no-memory cases,
+with that 2-case subset as denominator), mean selected/rendered size, and
+p50/p95 `recall()` wall latency.
 
 ## Results (2026-09-09, reps=5, 25 recalls/condition)
 
-| condition | accuracy | irrelevant | sel/recall | tok/recall | p50 ms | p95 ms |
-|-----------|----------|------------|------------|------------|--------|--------|
-| baseline | 1.0 | 0.2 | 2.0 | 91.8 | 5.347 | 9.200 |
-| sleep_apply | 1.0 | 0.2 | 2.0 | 91.8 | 5.557 | 8.733 |
-| attention_policy | 1.0 | 0.2 | 2.0 | 91.8 | 5.466 | 8.301 |
-| combined | 1.0 | 0.2 | 2.0 | 91.8 | 5.036 | 6.691 |
+| condition | retr_hit@3 | rend_hit@3 | fp_rate | sel/recall | tok/recall | p50 ms | p95 ms |
+|-----------|------------|------------|---------|------------|------------|--------|--------|
+| baseline | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.347 | 9.200 |
+| sleep_apply | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.557 | 8.733 |
+| attention_policy | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.466 | 8.301 |
+| combined | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.036 | 6.691 |
+
+Note: the old `irrelevant_recall_rate` (0.2) used all cases as denominator;
+`false_positive_rate` (0.5) uses the no-memory subset — same underlying
+selections (the greeting abstains, wrong-project selects), honest denominator.
 
 Quality metrics are identical across conditions; latency deltas (~0.5 ms)
 are noise on temp-DB millisecond-scale runs, not evidence.

@@ -32,7 +32,8 @@ class AblationRunnerTests(unittest.TestCase):
         for metrics in report["conditions"].values():
             self.assertEqual(
                 set(metrics),
-                {"cases", "accuracy", "irrelevant_recall_rate",
+                {"cases", "retrieval_hit_at_3", "rendered_hit_at_3",
+                 "false_positive_rate",
                  "mean_selected_per_recall", "mean_rendered_tokens",
                  "prepare_p50_ms", "prepare_p95_ms"},
             )
@@ -50,12 +51,29 @@ class AblationRunnerTests(unittest.TestCase):
         first = run(reps=1)
         second = run(reps=1)
         for condition in first["conditions"]:
-            for metric in ("accuracy", "irrelevant_recall_rate",
+            for metric in ("retrieval_hit_at_3", "rendered_hit_at_3",
+                           "false_positive_rate",
                            "mean_selected_per_recall", "mean_rendered_tokens"):
                 self.assertEqual(
                     first["conditions"][condition][metric],
                     second["conditions"][condition][metric],
                 )
+
+    def test_metric_names_match_documented_definitions(self) -> None:
+        """retrieval_hit_at_3 is placement; rendered_hit_at_3 needs rendering.
+
+        With the default budget everything selected is rendered, so the two
+        hits agree; the false-positive rate uses the no-memory subset as its
+        denominator (2 of 5 cases), not all cases.
+        """
+        report = run(reps=2)
+        metrics = report["conditions"]["baseline"]
+        self.assertEqual(metrics["cases"], 10)
+        self.assertEqual(metrics["retrieval_hit_at_3"], 1.0)
+        self.assertEqual(metrics["rendered_hit_at_3"], 1.0)
+        # 2 no-memory cases x 2 reps = 4; FP rate denominator is that subset.
+        self.assertGreaterEqual(metrics["false_positive_rate"], 0.0)
+        self.assertLessEqual(metrics["false_positive_rate"], 1.0)
 
 
 if __name__ == "__main__":

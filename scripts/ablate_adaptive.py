@@ -107,9 +107,11 @@ def _apply_condition(memory: CortexMemory, condition: str) -> None:
 
 def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, Any]:
     latencies: list[float] = []
-    correct = 0
+    retrieval_hits = 0
+    rendered_hits = 0
     answerable = 0
-    irrelevant_selected = 0
+    false_positives = 0
+    no_memory_cases = 0
     total_selected = 0
     rendered_tokens = 0
     for case in CASES:
@@ -127,13 +129,18 @@ def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, 
             text = batch.context()
             rendered_tokens += batch.context_tokens()
             assert text is not None
+            rendered = set(batch.rendered_memory_ids)
             expected = case["expect_key"]
             if case["needs_memory"]:
                 answerable += 1
                 if expected is not None and ids.get(expected) in selected[:3]:
-                    correct += 1
-            elif selected:
-                irrelevant_selected += 1
+                    retrieval_hits += 1
+                if expected is not None and ids.get(expected) in rendered:
+                    rendered_hits += 1
+            else:
+                no_memory_cases += 1
+                if selected:
+                    false_positives += 1
             batch.finish([], outcome=None)
     latencies.sort()
     mid = len(latencies) // 2
@@ -141,9 +148,10 @@ def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, 
     p95 = latencies[min(len(latencies) - 1, int(len(latencies) * 0.95))] if latencies else 0.0
     return {
         "cases": len(CASES) * reps,
-        "accuracy": round(correct / answerable, 4) if answerable else None,
-        "irrelevant_recall_rate": (
-            round(irrelevant_selected / (len(CASES) * reps), 4) if CASES else None
+        "retrieval_hit_at_3": round(retrieval_hits / answerable, 4) if answerable else None,
+        "rendered_hit_at_3": round(rendered_hits / answerable, 4) if answerable else None,
+        "false_positive_rate": (
+            round(false_positives / no_memory_cases, 4) if no_memory_cases else None
         ),
         "mean_selected_per_recall": round(total_selected / (len(CASES) * reps), 3),
         "mean_rendered_tokens": round(rendered_tokens / (len(CASES) * reps), 1),
@@ -181,13 +189,14 @@ def main() -> int:
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
     header = (
-        f"{'condition':<18}{'accuracy':>10}{'irrelevant':>12}"
+        f"{'condition':<18}{'retr_hit@3':>10}{'rend_hit@3':>10}{'fp_rate':>9}"
         f"{'sel/recall':>11}{'tok/recall':>11}{'p50_ms':>9}{'p95_ms':>9}"
     )
     print(header)
     for name, metrics in report["conditions"].items():
         print(
-            f"{name:<18}{metrics['accuracy']:>10}{metrics['irrelevant_recall_rate']:>12}"
+            f"{name:<18}{metrics['retrieval_hit_at_3']:>10}{metrics['rendered_hit_at_3']:>10}"
+            f"{metrics['false_positive_rate']:>9}"
             f"{metrics['mean_selected_per_recall']:>11}{metrics['mean_rendered_tokens']:>11}"
             f"{metrics['prepare_p50_ms']:>9}{metrics['prepare_p95_ms']:>9}"
         )
