@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 from tests._bootstrap import ROOT
 
@@ -309,6 +310,99 @@ class CortexClientTests(unittest.TestCase):
         self.assertTrue(dropped)
         self.assertEqual(set(rendered) | set(dropped), {str(item["id"]) for item in memories})
         self.assertFalse(set(rendered) & set(dropped))
+
+    def _budget_memories(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"memory-small-{index:04d}-abcdef",
+                "kind": "semantic",
+                "score": 0.9 - index * 0.05,
+                "content": (
+                    "The production deploy procedure requires a health check, "
+                    f"a verified backup, and gateway rotation step {index}."
+                ),
+                "source_type": "conversation",
+                "source_category": "USER_EXPLICIT",
+                "source_ref": f"session-42-turn-{index}-with-a-long-reference-tail",
+                "approval_state": "operator_approved",
+            }
+            for index in range(4)
+        ]
+
+    def test_zero_budget_returns_empty_context_with_metadata(self) -> None:
+        """A zero budget carries no envelope: empty text, full metadata."""
+        batch = RecallBatch(
+            task_id="task-zero",
+            query="What does production deploy require?",
+            memories=self._budget_memories(),
+            _store=object(),
+            token_budget=0,
+        )
+        self.assertEqual(batch.context(), "")
+        self.assertEqual(batch.context_tokens(), 0)
+        self.assertEqual(batch.rendered_memory_ids, [])
+        self.assertEqual(len(batch.dropped_memory_ids), 4)
+
+    def test_tiny_budgets_return_empty_context(self) -> None:
+        """Budgets below the header+note envelope emit nothing (0, 1, 13, 20)."""
+        for budget in (1, 13, 20):
+            with self.subTest(token_budget=budget):
+                batch = RecallBatch(
+                    task_id=f"task-tiny-{budget}",
+                    query="What does production deploy require?",
+                    memories=self._budget_memories(),
+                    _store=object(),
+                    token_budget=budget,
+                )
+                text = batch.context()
+                self.assertEqual(text, "")
+                self.assertEqual(batch.context_tokens(), 0)
+                self.assertEqual(batch.rendered_memory_ids, [])
+                self.assertEqual(len(batch.dropped_memory_ids), 4)
+                self.assertLessEqual(estimate_text_tokens(text or " ") - 1, budget)
+
+    def test_exact_boundary_budget(self) -> None:
+        """A budget fitting the full render keeps everything; one less cuts."""
+        batch = RecallBatch(
+            task_id="task-boundary",
+            query="What does production deploy require?",
+            memories=self._budget_memories(),
+            _store=object(),
+            token_budget=4000,
+        )
+        full_text = batch.context()
+        self.assertEqual(batch.dropped_memory_ids, [])
+        full_budget = estimate_text_tokens(full_text)
+        batch.token_budget = full_budget
+        self.assertEqual(batch.context(), full_text)
+        self.assertEqual(batch.dropped_memory_ids, [])
+        batch.token_budget = full_budget - 1
+        cut_text = batch.context()
+        self.assertTrue(batch.dropped_memory_ids)
+        self.assertIn("withheld", cut_text)
+        self.assertLessEqual(estimate_text_tokens(cut_text), full_budget - 1)
+
+    def test_negative_budget_rejected(self) -> None:
+        """Negative budgets fail fast instead of silently clamping to zero."""
+        with self.assertRaises(ValueError):
+            RecallBatch(
+                task_id="task-negative",
+                query="What does production deploy require?",
+                memories=self._budget_memories(),
+                _store=object(),
+                token_budget=-1,
+            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory.remember("The staging deploy key rotates every Sunday.")
+                with self.assertRaises(ValueError):
+                    memory.recall("When does the key rotate?", token_budget=-5)
+
+    def test_estimate_text_tokens_is_len_over_four_heuristic(self) -> None:
+        """The len/4 rule is a documented heuristic, verified behaviorally."""
+        self.assertEqual(estimate_text_tokens("abcd"), 1)
+        self.assertEqual(estimate_text_tokens("abcde"), 2)
+        self.assertEqual(estimate_text_tokens(""), 1)
 
     def test_recall_batch_context_enforces_rendered_token_budget(self) -> None:
         """The budget bounds the FINAL rendered block, not just raw content.
