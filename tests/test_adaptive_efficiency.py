@@ -85,6 +85,103 @@ class OutcomeDrivenBudgetTests(unittest.TestCase):
         self.assertEqual(aggregate["sample_count"], 8)
         self.assertEqual(aggregate["ignored_count"], 8)
 
+    def test_fully_withheld_batches_never_train_budget_learning(self) -> None:
+        """Eight fully-withheld recalls must not shrink the budget.
+
+        Regression: fully withheld batches resolved as "ignored" in
+        recall_budget_observations, so recommend_token_budget() read eight
+        ignored samples and shrank 700 -> 595 for evidence never delivered.
+        Withheld batches must resolve as "withheld" and stay out of both
+        the ignored count and the learning sample threshold.
+        """
+        for _index in range(8):
+            task_id = self.store.create_usage_batch(
+                [(self.memory_id, 0.8)],
+                query="What is the release theme?",
+                session_id="budget-test",
+                task_type="withheld_task",
+                recall_mode="focused",
+                requested_budget=700,
+                estimated_tokens=630,
+            )
+            self.store.resolve_usage(task_id, {}, withheld_ids=[self.memory_id])
+        rows = self.store._conn.execute(
+            "SELECT outcome, used_count FROM recall_budget_observations"
+            " WHERE task_type='withheld_task'"
+        ).fetchall()
+        self.assertEqual(len(rows), 8)
+        self.assertTrue(all(row["outcome"] == "withheld" for row in rows))
+        self.assertTrue(all(int(row["used_count"]) == 0 for row in rows))
+        diagnostics = self.store.recommend_token_budget("withheld_task", "focused", 700)
+        self.assertEqual(diagnostics["sample_count"], 0)
+        self.assertEqual(diagnostics["adjustment"], "hold")
+        self.assertEqual(diagnostics["budget"], 700)
+
+    def test_partially_withheld_batch_trains_from_delivered_evidence(self) -> None:
+        """Partial cuts resolve delivered use normally and record the render.
+
+        The rendered memory trains as used/ignored; the withheld one stays
+        "withheld"; the budget row carries the delivered render size so the
+        fill signal reflects injected evidence, not the retrieval estimate.
+        """
+        second_id, _ = self.store.add_memory("The release theme is teal.", kind="decision")
+        task_id = self.store.create_usage_batch(
+            [(self.memory_id, 0.9), (second_id, 0.8)],
+            query="What is the release theme?",
+            session_id="budget-test",
+            task_type="partial_task",
+            recall_mode="focused",
+            requested_budget=700,
+            estimated_tokens=630,
+        )
+        self.store.record_recall_run(
+            session_id="budget-test",
+            query="What is the release theme?",
+            mode="external_adapter",
+            reason="test",
+            requested_limit=2,
+            token_budget=700,
+            candidate_count=2,
+            selected_count=2,
+            estimated_tokens=630,
+            prepare_ms=1.0,
+            abstained=False,
+            task_id=task_id,
+        )
+        self.store.record_recall_render(
+            task_id,
+            rendered_ids=[self.memory_id],
+            withheld_ids=[second_id],
+            rendered_tokens=90,
+            token_budget=700,
+        )
+        self.store.resolve_usage(
+            task_id, {self.memory_id: 1.0}, withheld_ids=[second_id]
+        )
+        outcomes = {
+            row["memory_id"]: row["outcome"]
+            for row in self.store._conn.execute(
+                "SELECT memory_id, outcome FROM usage_records WHERE task_id=?",
+                (task_id,),
+            ).fetchall()
+        }
+        self.assertEqual(outcomes[self.memory_id], "used")
+        self.assertEqual(outcomes[second_id], "withheld")
+        budget = self.store._conn.execute(
+            "SELECT outcome, used_count, rendered_count, rendered_tokens"
+            " FROM recall_budget_observations WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        self.assertEqual(budget["outcome"], "used")
+        self.assertEqual(int(budget["used_count"]), 1)
+        self.assertEqual(int(budget["rendered_count"]), 1)
+        self.assertEqual(int(budget["rendered_tokens"]), 90)
+        diagnostics = self.store.recommend_token_budget(
+            "partial_task", "focused", 700, min_samples=2
+        )
+        self.assertEqual(diagnostics["sample_count"], 1)
+        self.assertAlmostEqual(diagnostics["average_fill"], 90 / 700, places=4)
+
     def test_helpful_saturated_context_can_expand_within_cap(self) -> None:
         for index in range(8):
             self._observation("helpful_task", used=True, helpful=index < 3)
@@ -242,6 +339,69 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
         self.assertEqual(report["summary"]["resolved_count"], 0)
         self.assertEqual(report["summary"]["no_context_count"], 1)
         self.assertFalse(report["weights"])
+
+    def test_fully_withheld_attention_marks_no_context_without_downweight(self) -> None:
+        """A fully-withheld batch must not downweight attention topics.
+
+        Regression (same root cause as the budget shrink): fully withheld
+        batches resolved attention usage as "ignored", feeding the ignored
+        side of the salience aggregates for evidence never shown. They must
+        resolve as "no_context" — already excluded from weight training —
+        while a genuinely shown-but-ignored batch still trains normally.
+        """
+        withheld_task = self.store.create_usage_batch(
+            [(self.memory_id, 0.8)],
+            query="Deploy Plex to Proxmox",
+            session_id="attention-test",
+            task_type="tool_execution",
+            recall_mode="focused",
+            requested_budget=600,
+            estimated_tokens=520,
+        )
+        self.store.record_attention_observation(
+            withheld_task,
+            task_type="tool_execution",
+            topics=("plex",),
+            live_mode="focused",
+            live_budget=600,
+            max_budget=700,
+            selected_count=1,
+        )
+        self.store.resolve_usage(withheld_task, {}, withheld_ids=[self.memory_id])
+        outcome = self.store._conn.execute(
+            "SELECT usage_outcome FROM attention_observations WHERE task_id=?",
+            (withheld_task,),
+        ).fetchone()["usage_outcome"]
+        self.assertEqual(outcome, "no_context")
+        self.assertFalse(
+            self.store.attention_learning_summary()["weights"],
+            "withholding alone must not create weight evidence",
+        )
+
+        ignored_task = self.store.create_usage_batch(
+            [(self.memory_id, 0.8)],
+            query="Deploy Plex to Proxmox",
+            session_id="attention-test",
+            task_type="tool_execution",
+            recall_mode="focused",
+            requested_budget=600,
+            estimated_tokens=520,
+        )
+        self.store.record_attention_observation(
+            ignored_task,
+            task_type="tool_execution",
+            topics=("plex",),
+            live_mode="focused",
+            live_budget=600,
+            max_budget=700,
+            selected_count=1,
+        )
+        self.store.resolve_usage(ignored_task, {})
+        outcome = self.store._conn.execute(
+            "SELECT usage_outcome FROM attention_observations WHERE task_id=?",
+            (ignored_task,),
+        ).fetchone()["usage_outcome"]
+        self.assertEqual(outcome, "ignored")
 
     def test_dashboard_outcome_label_and_undo_rebuild_attention_counts(self) -> None:
         task_id = self._observation(mode="focused", used=True)

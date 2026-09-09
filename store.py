@@ -768,6 +768,8 @@ class CortexStore:
                 selected_count INTEGER NOT NULL,
                 used_count INTEGER NOT NULL DEFAULT 0,
                 outcome TEXT NOT NULL DEFAULT 'pending',
+                rendered_count INTEGER NOT NULL DEFAULT 0,
+                rendered_tokens INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 resolved_at TEXT
             );
@@ -2165,6 +2167,15 @@ class CortexStore:
                 "ALTER TABLE recall_runs ADD COLUMN rendered_tokens INTEGER NOT NULL DEFAULT 0"
             )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_runs_task ON recall_runs(task_id)")
+        budget_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(recall_budget_observations)")}
+        if "rendered_count" not in budget_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_budget_observations ADD COLUMN rendered_count INTEGER NOT NULL DEFAULT 0"
+            )
+        if "rendered_tokens" not in budget_columns:
+            self._conn.execute(
+                "ALTER TABLE recall_budget_observations ADD COLUMN rendered_tokens INTEGER NOT NULL DEFAULT 0"
+            )
         trace_columns = {row[1] for row in self._conn.execute("PRAGMA table_info(memory_traces)")}
         if "retrieval_context_json" not in trace_columns:
             self._conn.execute(
@@ -4504,9 +4515,9 @@ class CortexStore:
         required = max(2, int(min_samples))
         with self._lock:
             exact = self._conn.execute(
-                """SELECT requested_budget,estimated_tokens,selected_count,used_count,outcome
+                """SELECT requested_budget,estimated_tokens,rendered_tokens,selected_count,used_count,outcome
                    FROM recall_budget_observations
-                   WHERE task_type=? AND mode=? AND outcome<>'pending'
+                   WHERE task_type=? AND mode=? AND outcome NOT IN ('pending','withheld')
                    ORDER BY created_at DESC LIMIT 80""",
                 (task_type, mode),
             ).fetchall()
@@ -4514,9 +4525,9 @@ class CortexStore:
             scope = "task_mode"
             if len(rows) < required:
                 rows = self._conn.execute(
-                    """SELECT requested_budget,estimated_tokens,selected_count,used_count,outcome
+                    """SELECT requested_budget,estimated_tokens,rendered_tokens,selected_count,used_count,outcome
                        FROM recall_budget_observations
-                       WHERE mode=? AND outcome<>'pending'
+                       WHERE mode=? AND outcome NOT IN ('pending','withheld')
                        ORDER BY created_at DESC LIMIT 120""",
                     (mode,),
                 ).fetchall()
@@ -4529,7 +4540,11 @@ class CortexStore:
         negative_count = sum(1 for row in rows if row["outcome"] in {"harmful", "corrected"})
         ignored_count = sum(1 for row in rows if row["outcome"] == "ignored")
         fill_values = [
-            min(1.0, int(row["estimated_tokens"]) / max(1, int(row["requested_budget"])))
+            min(
+                1.0,
+                (int(row["rendered_tokens"]) or int(row["estimated_tokens"]))
+                / max(1, int(row["requested_budget"])),
+            )
             for row in rows
         ]
         used_ratio = used_count / sample_count if sample_count else 0.0
@@ -8579,17 +8594,55 @@ class CortexStore:
                 for row in rows
                 if _clamp(attribution_by_id.get(str(row["memory_id"]), 0.0)) > 0.0
             )
-            conn.execute(
-                """UPDATE recall_budget_observations
-                   SET used_count=?,outcome=?,resolved_at=?
-                   WHERE task_id=? AND outcome='pending'""",
-                (used_count, "used" if used_count else "ignored", now, task_id),
-            )
+            pending_ids = [str(row["memory_id"]) for row in rows]
+            rendered_ids = [memory_id for memory_id in pending_ids if memory_id not in withheld]
+            # A fully withheld batch delivered no evidence to the model: it
+            # must not resolve as ignored-context anywhere, or budget and
+            # attention learning train on evidence never shown.
+            fully_withheld = bool(pending_ids) and not rendered_ids
+            render_row = conn.execute(
+                "SELECT rendered_count, rendered_tokens FROM recall_runs WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+            if render_row is not None:
+                delivered_count = max(0, int(render_row["rendered_count"] or 0))
+                delivered_tokens = max(0, int(render_row["rendered_tokens"] or 0))
+            else:
+                delivered_count = len(rendered_ids)
+                delivered_tokens = 0
+            if fully_withheld:
+                conn.execute(
+                    """UPDATE recall_budget_observations
+                       SET used_count=0,outcome='withheld',rendered_count=0,rendered_tokens=0,resolved_at=?
+                       WHERE task_id=? AND outcome='pending'""",
+                    (now, task_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE recall_budget_observations
+                       SET used_count=?,outcome=?,rendered_count=?,rendered_tokens=?,resolved_at=?
+                       WHERE task_id=? AND outcome='pending'""",
+                    (
+                        used_count,
+                        "used" if used_count else "ignored",
+                        delivered_count,
+                        delivered_tokens,
+                        now,
+                        task_id,
+                    ),
+                )
             attention = conn.execute(
                 """SELECT task_type,topics_json FROM attention_observations
                    WHERE task_id=? AND usage_outcome='pending'""",
                 (task_id,),
             ).fetchone()
+            if attention and fully_withheld:
+                conn.execute(
+                    """UPDATE attention_observations SET usage_outcome='no_context',resolved_at=?
+                       WHERE task_id=? AND usage_outcome='pending'""",
+                    (now, task_id),
+                )
+                attention = None
             if attention:
                 conn.execute(
                     """UPDATE attention_observations SET usage_outcome=?,resolved_at=?

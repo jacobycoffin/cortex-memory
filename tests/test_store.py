@@ -1684,6 +1684,58 @@ class CortexStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_budget_observations_render_columns_migrated_for_old_db(self) -> None:
+        """Pre-existing databases gain budget render-metric columns on open."""
+        import sqlite3 as _sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = str(Path(tmp) / "old.db")
+            conn = _sqlite3.connect(path)
+            conn.execute(
+                """CREATE TABLE recall_budget_observations (
+                     task_id TEXT PRIMARY KEY, task_type TEXT NOT NULL,
+                     mode TEXT NOT NULL, requested_budget INTEGER NOT NULL,
+                     estimated_tokens INTEGER NOT NULL,
+                     selected_count INTEGER NOT NULL,
+                     used_count INTEGER NOT NULL DEFAULT 0,
+                     outcome TEXT NOT NULL DEFAULT 'pending',
+                     created_at TEXT NOT NULL, resolved_at TEXT
+                   )"""
+            )
+            conn.commit()
+            conn.close()
+            store = CortexStore(path)
+            try:
+                columns = {
+                    row["name"]
+                    for row in store._conn.execute(
+                        "PRAGMA table_info(recall_budget_observations)"
+                    ).fetchall()
+                }
+                self.assertTrue(
+                    {"rendered_count", "rendered_tokens"} <= columns
+                )
+                memory_id, _ = store.add_memory("The release theme is amber.")
+                task_id = store.create_usage_batch(
+                    [(memory_id, 0.8)],
+                    query="What is the release theme?",
+                    session_id="migration-test",
+                    task_type="migration",
+                    recall_mode="focused",
+                    requested_budget=600,
+                    estimated_tokens=540,
+                )
+                store.resolve_usage(task_id, {memory_id: 1.0})
+                row = store._conn.execute(
+                    "SELECT outcome, used_count, rendered_count, rendered_tokens"
+                    " FROM recall_budget_observations WHERE task_id=?",
+                    (task_id,),
+                ).fetchone()
+                self.assertEqual(row["outcome"], "used")
+                self.assertEqual(int(row["rendered_count"]), 1)
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
