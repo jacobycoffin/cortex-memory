@@ -1736,6 +1736,28 @@ class CortexStoreTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_serializers_stage_zero_keeps_store_facade(self) -> None:
+        """Stage-0 extraction: helpers live in serializers, store re-exports."""
+        from cortex import serializers as _serializers
+        from cortex import store as _store_module
+
+        for name in (
+            "_trace_json",
+            "_trace_json_list",
+            "_trace_json_array",
+            "_trace_json_object",
+        ):
+            self.assertTrue(callable(getattr(_serializers, name)), name)
+            self.assertIs(
+                getattr(_store_module, name), getattr(_serializers, name), name
+            )
+        self.assertEqual(_store_module._trace_json({"b": 1, "a": 2}), '{"a":2,"b":1}')
+        self.assertEqual(
+            _store_module._trace_json_list('[{"x": 1}, 2]'), [{"x": 1}]
+        )
+        self.assertEqual(_store_module._trace_json_array("nope"), [])
+        self.assertEqual(_store_module._trace_json_object("nope"), {})
+
 
 if __name__ == "__main__":
     unittest.main()

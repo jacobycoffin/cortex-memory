@@ -32,6 +32,12 @@ from .refinery import (
 )
 from .security import normalize_text, sanitize_memory
 from .semantics import feature_similarity, semantic_features
+from .serializers import (
+    _trace_json,
+    _trace_json_array,
+    _trace_json_list,
+    _trace_json_object,
+)
 
 
 SCHEMA_VERSION = 32
@@ -16846,10 +16852,6 @@ class CortexStore:
             self._conn.close()
 
 
-def _trace_json(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
-
-
 def _association_transitions(edge: dict[str, Any]) -> list[tuple[str, str, float]]:
     """Translate a typed edge into allowed positive activation paths.
 
@@ -17230,28 +17232,6 @@ def _decode_edge(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item["evidence_records"] = int(item.get("evidence_records") or 0)
     item["explainable"] = item["evidence_type"] != "legacy_unattributed"
     return item
-
-
-def _trace_json_list(value: Any) -> list[dict[str, Any]]:
-    return [dict(item) for item in _trace_json_array(value) if isinstance(item, dict)]
-
-
-def _trace_json_array(value: Any) -> list[Any]:
-    try:
-        parsed = json.loads(str(value or "[]"))
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return []
-    if not isinstance(parsed, list):
-        return []
-    return parsed
-
-
-def _trace_json_object(value: Any) -> dict[str, Any]:
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (json.JSONDecodeError, TypeError, ValueError):
-        return {}
-    return dict(parsed) if isinstance(parsed, dict) else {}
 
 
 def connection_policy_selector(
