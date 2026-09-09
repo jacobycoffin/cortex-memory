@@ -110,7 +110,8 @@ Full contract: [docs/INTEGRATION.md](docs/INTEGRATION.md).
 ## Build / contribute
 
 ```bash
-python3 -m pytest tests/ -q        # full suite, must stay green
+python -m unittest discover -s tests       # full suite, must stay green (matches CI; works on system python3)
+python3 -m pytest tests/ -q                # same suite via pytest (needs pytest installed)
 python3 scripts/check_repository.py # privacy + packaging gates before push
 ```
 

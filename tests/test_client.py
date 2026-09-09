@@ -7,7 +7,7 @@ from pathlib import Path
 
 from tests._bootstrap import ROOT
 
-from cortex.client import CortexMemory, RecallBatch
+from cortex.client import CortexMemory, RecallBatch, estimate_text_tokens
 from cortex.retrieval import MemoryRetriever, RetrievalResult
 
 
@@ -151,6 +151,83 @@ class CortexClientTests(unittest.TestCase):
                 self.assertTrue(all(item["rating"] == "Irrelevant" for item in trace["evaluations"]))
                 with self.assertRaises(RuntimeError):
                     batch.finish()
+
+    def test_recall_batch_invalid_outcome_writes_nothing_and_stays_retryable(self) -> None:
+        """A failed finish() must not partially attribute learning data.
+
+        Regression test: finish() used to commit usage attribution before
+        validating the outcome, so finish([id], outcome="bogus") raised AFTER
+        marking the memory used — and a retry with no used IDs still rewarded
+        that memory via apply_task_outcome.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexMemory(Path(tmp) / "cortex.db") as memory:
+                memory_id, _ = memory.remember(
+                    "The staging deploy key rotates every Sunday.", kind="operational"
+                )
+                batch = memory.recall("When does the staging deploy key rotate?")
+                self.assertEqual(batch.memories[0]["id"], memory_id)
+                with self.assertRaises(ValueError):
+                    batch.finish([memory_id], outcome="bogus-outcome")
+                rows = memory.store._conn.execute(
+                    "SELECT outcome FROM usage_records WHERE task_id=?", (batch.task_id,)
+                ).fetchall()
+                self.assertTrue(rows)
+                self.assertTrue(all(row["outcome"] == "pending" for row in rows))
+                affected = batch.finish([memory_id], outcome="helpful")
+                self.assertEqual(affected, [memory_id])
+                self.assertEqual(memory.store.get_memory(memory_id)["helpful_count"], 1)
+
+    def test_recall_batch_context_enforces_rendered_token_budget(self) -> None:
+        """The budget bounds the FINAL rendered block, not just raw content.
+
+        Regression test: retrieval estimated content length plus a fixed
+        overhead, but context() rendered variable provenance labels on top,
+        so the configured budget never actually bounded injected context.
+        """
+        memories = [
+            {
+                "id": f"memory-budget-{index:04d}-abcdef",
+                "kind": "semantic",
+                "score": 0.9 - index * 0.05,
+                "content": (
+                    "The production deploy procedure requires a health check, "
+                    f"a verified backup, and gateway rotation step {index}."
+                ),
+                "source_type": "conversation",
+                "source_category": "USER_EXPLICIT",
+                "source_ref": f"session-42-turn-{index}-with-a-long-reference-tail",
+                "approval_state": "operator_approved",
+            }
+            for index in range(4)
+        ]
+        batch = RecallBatch(
+            task_id="task-budget",
+            query="What does production deploy require?",
+            memories=memories,
+            _store=object(),
+            token_budget=120,
+        )
+        text = batch.context()
+        self.assertLessEqual(estimate_text_tokens(text), 120)
+        self.assertEqual(batch.context_tokens(), estimate_text_tokens(text))
+        dropped = batch.dropped_memory_ids
+        self.assertTrue(dropped)
+        self.assertIn("withheld", text)
+        # Best-score-first: at this budget the top memory survives the cut.
+        self.assertNotIn(str(memories[0]["id"]), dropped)
+        self.assertIn(str(memories[0]["id"])[:8], text)
+        # A repeat render is stable and the default budget fits everything.
+        self.assertEqual(batch.context(), text)
+        full = RecallBatch(
+            task_id="task-budget-full",
+            query="What does production deploy require?",
+            memories=memories,
+            _store=object(),
+        )
+        full_text = full.context()
+        self.assertEqual(full.dropped_memory_ids, [])
+        self.assertNotIn("withheld", full_text)
 
     def test_agent_neutral_api_passes_explicit_project_and_system_context(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

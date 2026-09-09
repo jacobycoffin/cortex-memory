@@ -1340,6 +1340,63 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(usage_outcome, "helpful")
         self.assertEqual(reversed_by, "second-dashboard-user")
 
+    def test_resolve_usage_and_apply_outcome_is_atomic(self) -> None:
+        """Attribution + outcome commit together or not at all.
+
+        Regression test: usage resolution and outcome labeling used to run
+        in separate transactions, so a mid-flight failure left "used but
+        unlabeled" partial learning state behind.
+        """
+        from cortex import research
+
+        memory_id, _ = self.store.add_memory("The night deploy train leaves at 0200.")
+        task_id = self.store.create_usage_batch(
+            [(memory_id, 0.9)],
+            query="When does the night deploy train leave?",
+            session_id="session-atomic",
+            task_type="deployment",
+            recall_mode="focused",
+            requested_budget=700,
+            estimated_tokens=80,
+        )
+
+        def pending_outcomes() -> list[str]:
+            rows = self.store._conn.execute(
+                "SELECT outcome FROM usage_records WHERE task_id=?", (task_id,)
+            ).fetchall()
+            return [str(row["outcome"]) for row in rows]
+
+        # Invalid outcome: nothing written, usage stays pending.
+        with self.assertRaises(ValueError):
+            self.store.resolve_usage_and_apply_outcome(task_id, {memory_id: 1.0}, "bogus")
+        outcomes = pending_outcomes()
+        self.assertTrue(outcomes)
+        self.assertTrue(all(outcome == "pending" for outcome in outcomes))
+
+        # Mid-flight failure in the outcome phase rolls back attribution too.
+        real_sync = research.sync_task_outcome_tx
+
+        def _boom(conn: object, failed_task_id: str, outcome: str, **kwargs: object) -> None:
+            raise RuntimeError("simulated outcome-phase failure")
+
+        research.sync_task_outcome_tx = _boom  # type: ignore[assignment]
+        try:
+            with self.assertRaises(RuntimeError):
+                self.store.resolve_usage_and_apply_outcome(task_id, {memory_id: 1.0}, "helpful")
+        finally:
+            research.sync_task_outcome_tx = real_sync
+        outcomes = pending_outcomes()
+        self.assertTrue(outcomes)
+        self.assertTrue(all(outcome == "pending" for outcome in outcomes))
+
+        # Retry after the transient failure succeeds cleanly.
+        resolved, affected = self.store.resolve_usage_and_apply_outcome(
+            task_id, {memory_id: 1.0}, "helpful"
+        )
+        self.assertGreaterEqual(resolved, 1)
+        self.assertEqual(affected, [memory_id])
+        self.assertEqual(self.store.get_memory(memory_id)["helpful_count"], 1)
+
     def test_private_evaluation_lifecycle_is_sanitized_in_snapshot(self) -> None:
         run_id = self.store.begin_evaluation_run(
             suite="cortex-private-real-history",
