@@ -93,6 +93,12 @@ SHADOW_SCORE_PENALTIES = {
 _GRAPH_EXPANSION_WEIGHT = 0.10
 _SHADOW_GRAPH_EXPANSION_WEIGHT = 0.14
 
+# Reciprocal-rank-fusion constant for combining the semantic ranking with the
+# native scoring. 60 is the standard value from the RRF literature and is what
+# the evaluation that justified this feature used (see plans/Cortex Semantic
+# Fusion results, 2026-09-10).
+_SEMANTIC_RRF_K = 60
+
 # Shadow-only role tiering. This version string names the exact proposed
 # policy compared against live retrieval; nothing here changes live results.
 SHADOW_ROLE_POLICY_VERSION = "role_tier_shadow_v1"
@@ -183,9 +189,22 @@ class RetrievalDiagnostics:
 class MemoryRetriever:
     """FTS + utility + one-hop associative graph retrieval."""
 
-    def __init__(self, store: CortexStore, *, threshold: float = 0.16):
+    def __init__(
+        self,
+        store: CortexStore,
+        *,
+        threshold: float = 0.16,
+        semantic_weight: float = 0.0,
+        semantic_pool: int = 20,
+        semantic_model_id: str | None = None,
+    ):
         self.store = store
         self.threshold = threshold
+        # Semantic fusion is OFF by default: 0.0 reproduces the previous
+        # behaviour exactly, so enabling it is an explicit, reversible choice.
+        self.semantic_weight = max(0.0, float(semantic_weight))
+        self.semantic_pool = max(1, int(semantic_pool))
+        self.semantic_model_id = semantic_model_id
 
     def search(
         self,
@@ -387,6 +406,26 @@ class MemoryRetriever:
 
         stage_ms["graph"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
+
+        # Optional semantic fusion. This AUGMENTS the candidate pool rather than
+        # merely re-ranking it: the measured gain comes from embeddings finding
+        # memories the lexical signals never surfaced, which re-ranking alone
+        # cannot do. Inert (empty dict) unless semantic_weight > 0.
+        semantic_rank: dict[str, int] = {}
+        if self.semantic_weight > 0.0:
+            semantic_rank = self._inject_semantic_candidates(
+                query,
+                scored,
+                limit=limit,
+                temporal_mode=temporal_mode,
+                as_of=as_of,
+                retrieval_context=retrieval_context,
+                scoring_profile=scoring_profile,
+                include_archived=include_archived,
+                evidence_lookup=evidence_lookup,
+            )
+        stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
         selected: list[RetrievalResult] = []
         rejection_reasons: dict[str, str] = {}
@@ -401,6 +440,8 @@ class MemoryRetriever:
                     if selected and all(prior.memory["kind"] != result.memory["kind"] for prior in selected)
                     else 0.0
                 )
+                # The semantic contribution is already folded into result.score
+                # by _inject_semantic_candidates; do not count it twice here.
                 return result.score + type_bonus - 0.16 * similarity
 
             result = max(remaining, key=diversified_value)
@@ -422,6 +463,12 @@ class MemoryRetriever:
                 result.components.get("relevance_penalty", 0.0) > 0.0
                 and graph_depth <= 1
                 and result.memory.get("kind") not in {"procedure", "prospective"}
+                # A candidate surfaced by the semantic signal is direct evidence
+                # of relevance in its own right — it has low lexical overlap by
+                # construction, which is precisely why the embedding found it and
+                # the lexical pass did not. Without this exemption the fusion
+                # could never contribute a memory, only reorder existing ones.
+                and not result.components.get("semantic_fusion")
             ):
                 # Focused/lean recall requires direct evidence. Indirect low-
                 # overlap associations are reserved for the planner's deep,
@@ -641,6 +688,104 @@ class MemoryRetriever:
             eligible = True
             reason = "canonical records keep normal eligibility"
         return {"eligible": eligible, "reason": reason}
+
+    def _inject_semantic_candidates(
+        self,
+        query: str,
+        scored: dict[str, RetrievalResult],
+        *,
+        limit: int,
+        temporal_mode: str,
+        as_of: str | None,
+        retrieval_context: RetrievalContext | None,
+        scoring_profile: dict[str, Any],
+        include_archived: bool,
+        evidence_lookup: bool,
+    ) -> dict[str, int]:
+        """Union the semantic top-N into the candidate pool; return ``id -> rank``.
+
+        Only the semantic top-``semantic_pool`` ids get a fused rank, and only
+        ones that pass the same eligibility gates as every other candidate are
+        scored. Returns ``{}`` — meaning "no semantic signal" — whenever the
+        model or the stored vectors are unavailable, so retrieval falls back to
+        exactly the previous behaviour instead of failing.
+        """
+
+        try:
+            from .embeddings import get_embedder
+
+            embedder = get_embedder()
+            if not embedder.available:
+                return {}
+            model_id = self.semantic_model_id or embedder.model_id
+            vector = embedder.embed_one(query)
+            if not vector:
+                return {}
+            hits = self.store.semantic_top_ids(
+                vector, model_id, limit=max(int(self.semantic_pool), int(limit))
+            )
+        except Exception:                                        # noqa: BLE001
+            return {}
+        if not hits:
+            return {}
+
+        allowed_states = (
+            {"active", "cold", "archived"} if include_archived else {"active", "cold"}
+        )
+        semantic_rank: dict[str, int] = {}
+        for rank, (memory_id, _similarity) in enumerate(hits):
+            # The fusion contribution must land in the SCORE, not only in the
+            # selector's ordering value: the threshold and relevance gates below
+            # read `result.score`, so a boost applied later is invisible to them
+            # and a semantically-found memory gets rejected for having — by
+            # definition — little lexical overlap. (Caught by
+            # tests/test_semantic_fusion_integration.py.)
+            bonus = self.semantic_weight * (1.0 / (_SEMANTIC_RRF_K + rank + 1))
+
+            existing = scored.get(memory_id)
+            if existing is not None:
+                components = dict(existing.components)
+                components["semantic_fusion"] = bonus
+                scored[memory_id] = RetrievalResult(
+                    existing.memory,
+                    min(1.0, existing.score + bonus),
+                    components,
+                    existing.estimated_tokens,
+                )
+                semantic_rank[memory_id] = rank
+                continue
+
+            try:
+                memory = self.store.get_memory(memory_id)
+            except Exception:                                    # noqa: BLE001
+                continue
+            if not memory or str(memory.get("state")) not in allowed_states:
+                continue
+            if not self.store.is_memory_recall_eligible(
+                memory_id,
+                evidence_lookup=evidence_lookup,
+                include_archived=include_archived,
+            ):
+                continue
+            result = self._score(
+                query,
+                memory,
+                graph=0.0,
+                temporal_mode=temporal_mode,
+                as_of=as_of,
+                context=retrieval_context,
+                scoring_weights=scoring_profile["weights"],
+            )
+            components = dict(result.components)
+            components["semantic_fusion"] = bonus
+            scored[memory_id] = RetrievalResult(
+                result.memory,
+                min(1.0, result.score + bonus),
+                components,
+                result.estimated_tokens,
+            )
+            semantic_rank[memory_id] = rank
+        return semantic_rank
 
     def _score(
         self,

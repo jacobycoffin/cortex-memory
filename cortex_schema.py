@@ -21,7 +21,7 @@ from .security import normalize_text
 from .semantics import semantic_features
 
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 # Moved verbatim out of ``CortexStore._create_schema`` (indentation included,
 # so the stored DDL is byte-identical). It stays a single ``executescript``
