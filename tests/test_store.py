@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-
+from unittest import mock
 
 from tests._bootstrap import ROOT
 
@@ -1757,6 +1757,74 @@ class CortexStoreTests(unittest.TestCase):
         )
         self.assertEqual(_store_module._trace_json_array("nope"), [])
         self.assertEqual(_store_module._trace_json_object("nope"), {})
+
+    def test_schema_stage_one_keeps_store_facade(self) -> None:
+        """Stage-1 extraction: the schema cluster lives in cortex_schema."""
+        import inspect
+
+        from cortex import cortex_schema as _schema
+        from cortex import store as _store_module
+
+        # Re-exported names: `from cortex.store import ...` keeps working.
+        self.assertEqual(_store_module.SCHEMA_VERSION, _schema.SCHEMA_VERSION)
+        for name in (
+            "_create_schema",
+            "_migrate_columns",
+            "_backfill_memory_features",
+            "_index_features_tx",
+            "_index_context_terms_tx",
+            "_rebuild_feature_stats",
+        ):
+            self.assertTrue(callable(getattr(_schema, name)), name)
+            self.assertIs(getattr(_store_module, name), getattr(_schema, name), name)
+            self.assertTrue(callable(getattr(CortexStore, name)), name)
+
+        # The class entry points ARE the extracted functions, not stale copies.
+        self.assertIs(CortexStore._index_features_tx, _schema._index_features_tx)
+        self.assertIs(
+            CortexStore._index_context_terms_tx, _schema._index_context_terms_tx
+        )
+
+        # Moved writers take the caller's connection — never one of their own.
+        self.assertEqual(
+            list(inspect.signature(_schema._migrate_columns).parameters), ["conn"]
+        )
+        self.assertEqual(
+            list(inspect.signature(_schema._backfill_memory_features).parameters),
+            ["conn"],
+        )
+        self.assertEqual(
+            list(inspect.signature(_schema._index_features_tx).parameters),
+            ["conn", "memory_id", "content"],
+        )
+
+        # The DDL the store runs is the module's single SCHEMA_SQL script.
+        for table in (
+            "meta",
+            "memories",
+            "edges",
+            "recall_runs",
+            "memory_traces",
+            "feature_stats",
+        ):
+            self.assertIn(f"CREATE TABLE IF NOT EXISTS {table} (", _schema.SCHEMA_SQL)
+
+        # A feature write through the class entry point runs in the module.
+        memory_id, _ = self.store.add_memory("Stage-one schema facade sentinel.")
+        with mock.patch.object(
+            _schema, "semantic_features", return_value={"stage1_spy": 1.0}
+        ) as spy:
+            CortexStore._index_features_tx(
+                self.store._conn, memory_id, "stage-one spy content"
+            )
+        self.assertTrue(spy.called, "class facade did not reach cortex_schema")
+        features = {
+            row["feature"]
+            for row in self.store._conn.execute(
+                "SELECT feature FROM memory_features WHERE memory_id=?", (memory_id,)
+            )
+        }
+        self.assertEqual(features, {"stage1_spy"})
 
 
 if __name__ == "__main__":

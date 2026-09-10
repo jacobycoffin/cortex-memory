@@ -37,6 +37,7 @@ for relative_path in \
   brain_mechanics.py \
   cli.py \
   client.py \
+  cortex_schema.py \
   dashboard.py \
   dashboard_auth.py \
   dashboard.html \
