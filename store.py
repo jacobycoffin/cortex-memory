@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Mapping, Sequence
 
@@ -346,6 +346,23 @@ class CortexStore:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_access_memory ON access_log(memory_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS access_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                accessed_at TEXT NOT NULL,
+                task_type TEXT,
+                context_hash TEXT,
+                context_summary TEXT,
+                outcome TEXT NOT NULL DEFAULT 'pending',
+                event TEXT NOT NULL DEFAULT 'retrieved',
+                reconsolidated INTEGER NOT NULL DEFAULT 0,
+                shadow INTEGER NOT NULL DEFAULT 1,
+                strength_before REAL,
+                strength_after REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_access_history_memory ON access_history(memory_id, accessed_at);
+            CREATE INDEX IF NOT EXISTS idx_access_history_shadow ON access_history(shadow, accessed_at);
 
             CREATE TABLE IF NOT EXISTS episodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2075,6 +2092,8 @@ class CortexStore:
             "helpful_count": "INTEGER NOT NULL DEFAULT 0",
             "harmful_count": "INTEGER NOT NULL DEFAULT 0",
             "last_helpful_at": "TEXT",
+            "strength": "REAL NOT NULL DEFAULT 1.0",
+            "lability_until": "TEXT",
             "context_mode": "TEXT NOT NULL DEFAULT 'standalone'",
             "scope_json": "TEXT NOT NULL DEFAULT '{}'",
             "entities_json": "TEXT NOT NULL DEFAULT '[]'",
@@ -7057,6 +7076,134 @@ class CortexStore:
             if event in {"used", "successful", "confirmed", "validated", "helpful"}:
                 record_reconsolidation_reuse_tx(conn, memory_id, now)
 
+    # v0 reconsolidation trace machinery (Governing Principle §0,
+    # schematics §1-4). Shadow-first: record_access_trace writes the
+    # would-be trace without changing memory behavior unless apply=True.
+    # ------------------------------------------------------------------
+
+    STRENGTH_DELTAS = {
+        "retrieved": 0.15,
+        "selected": 0.15,
+        "used": 0.15,
+        "helpful": 0.30,
+        "successful": 0.30,
+        "confirmed": 0.30,
+        "validated": 0.30,
+        "ignored": -0.20,
+        "wrong": -0.50,
+        "irrelevant": -0.50,
+        "correction": -0.10,
+    }
+    STRENGTH_DECAY_PER_DAY = 0.995
+
+    def strength_delta(self, event: str) -> float:
+        """Deterministic plasticity delta for an access event (§4 model)."""
+        return self.STRENGTH_DELTAS.get(event, 0.0)
+
+    def _decayed_strength(self, strength: float, last_access: str | None, created: str, at: str) -> float:
+        base = strength if strength is not None else 1.0
+        anchor = last_access or created
+        anchor_dt = parse_iso8601(anchor) or utc_now_dt()
+        at_dt = parse_iso8601(at) or utc_now_dt()
+        days = max(0.0, (at_dt - anchor_dt).total_seconds() / 86400.0)
+        return max(0.0, base * (self.STRENGTH_DECAY_PER_DAY ** days))
+
+    def compute_strength(self, memory_id: str, *, at: str | None = None) -> dict[str, Any] | None:
+        """Return the decayed current strength of a memory (no mutation)."""
+        at = at or utc_now()
+        row = self._conn.execute(
+            "SELECT strength, created_at, last_retrieved_at, updated_at FROM memories WHERE id=?",
+            (memory_id,),
+        ).fetchone()
+        if not row:
+            return None
+        strength = self._decayed_strength(row["strength"], row["last_retrieved_at"], row["created_at"], at)
+        return {"memory_id": memory_id, "strength": round(strength, 4), "as_of": at}
+
+    def record_access_trace(
+        self,
+        memory_id: str,
+        *,
+        event: str = "retrieved",
+        task_type: str | None = None,
+        context_summary: str | None = None,
+        context_hash: str | None = None,
+        outcome: str = "pending",
+        apply: bool = False,
+        lability_minutes: int | None = None,
+    ) -> dict[str, Any]:
+        """Step A trace update. Shadow by default: logs the would-be change
+        (shadow=1) without mutating memories. With apply=True, updates
+        strength and optionally opens a lability window."""
+        at = utc_now()
+        row = self._conn.execute(
+            "SELECT strength, created_at, last_retrieved_at FROM memories WHERE id=?",
+            (memory_id,),
+        ).fetchone()
+        if not row:
+            return {"memory_id": memory_id, "error": "memory not found"}
+        before = self._decayed_strength(row["strength"], row["last_retrieved_at"], row["created_at"], at)
+        delta = self.strength_delta(event)
+        after = max(0.0, before + delta)
+        lability_until = None
+        if lability_minutes is not None and delta < 0:
+            lability_until = (utc_now_dt() + timedelta(minutes=lability_minutes)).isoformat()
+
+        with self.transaction() as conn:
+            conn.execute(
+                """INSERT INTO access_history(
+                     memory_id,accessed_at,task_type,context_hash,context_summary,outcome,event,
+                     reconsolidated,shadow,strength_before,strength_after
+                   ) VALUES(?,?,?,?,?,?,?,0,?,?,?)""",
+                (memory_id, at, task_type, context_hash, context_summary, outcome, event,
+                 int(not apply), round(before, 4), round(after, 4)),
+            )
+            if apply:
+                if lability_until is not None:
+                    conn.execute(
+                        "UPDATE memories SET strength=?, lability_until=?, updated_at=updated_at WHERE id=?",
+                        (round(after, 4), lability_until, memory_id),
+                    )
+                else:
+                    conn.execute(
+                        "UPDATE memories SET strength=?, updated_at=updated_at WHERE id=?",
+                        (round(after, 4), memory_id),
+                    )
+        return {
+            "memory_id": memory_id,
+            "event": event,
+            "shadow": int(not apply),
+            "strength_before": round(before, 4),
+            "strength_after": round(after, 4),
+            "delta": round(after - before, 4),
+            "lability_until": lability_until,
+        }
+
+    def access_history(self, memory_id: str | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+        """Recent access-history rows (dashboard read view)."""
+        if memory_id:
+            rows = self._conn.execute(
+                """SELECT * FROM access_history WHERE memory_id=? ORDER BY accessed_at DESC LIMIT ?""",
+                (memory_id, limit),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT * FROM access_history ORDER BY accessed_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def pending_reconsolidation_candidates(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        """Memories currently inside a lability window (v1 Step C input)."""
+        now = utc_now()
+        rows = self._conn.execute(
+            """SELECT id, content, strength, lability_until FROM memories
+               WHERE lability_until IS NOT NULL AND lability_until > ? AND state='active'
+               ORDER BY lability_until LIMIT ?""",
+            (now, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def record_recall_run(
         self,
         *,
@@ -8674,6 +8821,53 @@ class CortexStore:
                 withheld_ids=withheld,
             )
         return resolved
+
+    def reconcile_stale_usage(self, *, stale_hours: float = 24.0, limit: int = 500) -> dict[str, Any]:
+        """Resolve orphaned pending usage records whose tasks never completed.
+
+        Interrupted processes (kanban workers killed by OOM, timed-out CLI
+        sessions, gateway restarts) record a prefetch task but die before the
+        paired sync_turn can resolve it. Those rows stay ``pending`` forever
+        and surface on the dashboard as "stale outcome records — learning may
+        lag", which reads as a regression. This pass marks genuinely orphaned
+        tasks as ``ignored`` (the honest outcome for a task that never
+        completed) so the health flag clears without corrupting learning data.
+        """
+        now = utc_now()
+        stale_before = (datetime.now(timezone.utc) - timedelta(hours=stale_hours)).isoformat()
+        rows = []
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT u.task_id, COUNT(*) n
+                FROM usage_records u
+                WHERE u.outcome='pending'
+                  AND u.created_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM agent_task_observations o
+                      WHERE o.task_id = u.task_id AND o.completed_at IS NOT NULL
+                  )
+                GROUP BY u.task_id
+                ORDER BY u.created_at ASC
+                LIMIT ?
+                """,
+                (stale_before, limit),
+            ).fetchall()
+        resolved = 0
+        for row in rows:
+            resolved += self.resolve_usage(str(row["task_id"]), {})
+        # Also abandon observations that never completed (same orphan class)
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE agent_task_observations
+                SET outcome='ignored', completed_at=COALESCE(completed_at, ?)
+                WHERE outcome='pending' AND started_at < ? AND completed_at IS NULL
+                """,
+                (now, stale_before),
+            )
+            self._conn.commit()
+        return {"orphaned_tasks": len(rows), "resolved_usage_rows": resolved}
 
     def apply_task_outcome(self, task_id: str, outcome: str) -> list[str]:
         if outcome not in TASK_OUTCOMES:

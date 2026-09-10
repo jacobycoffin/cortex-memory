@@ -34,6 +34,16 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _MARKDOWN_DECORATION = re.compile(r"[`*_~]+")
 _RELATED_HEADING = re.compile(r"^(?:related|links?|backlinks?)$", re.I)
 _NAVIGATION_HEADING = re.compile(r"^(?:quick links?|index|navigation|table of contents)$", re.I)
+# Credential sections carry live secret VALUES (API keys, passwords, tokens).
+# They re-ingest on every vault pass even after purge (verified 2026-09-08:
+# batch28-purged Plex/NPM/Komga/WebUI/Invidious credential rows re-created
+# with new IDs within the hour). Secrets belong in ~/.hermes/secrets/ and
+# the vault docs — not in recall context. Wikilink edges are extracted from
+# full-note text elsewhere, so skipping here costs no graph coverage.
+_CREDENTIAL_HEADING = re.compile(
+    r"^(?:credentials?|passwords?|secrets?|api[-\s]?keys?|tokens?|auth(?:entication)?|login)$",
+    re.I,
+)
 _PLACEHOLDER_BODY = re.compile(
     r"\b(?:add detail here|tbd|todo|placeholder|fill this in|not yet documented)\b",
     re.I,
@@ -532,6 +542,9 @@ def _split_text(text: str, *, max_chars: int) -> Iterable[str]:
 
 def _skip_low_value_section(heading: str, body: str) -> bool:
     leaf = heading.split(" › ")[-1].strip()
+    if _CREDENTIAL_HEADING.search(leaf):
+        # Live secret values must never become recall memories (see above).
+        return True
     without_links = _WIKILINK.sub("", body)
     without_markup = _MARKDOWN_DECORATION.sub("", without_links)
     remaining_tokens = re.findall(r"[A-Za-z0-9][A-Za-z0-9_-]+", without_markup)

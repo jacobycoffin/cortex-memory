@@ -65,6 +65,11 @@ _MAX_APPLICABILITY_KEY_CHARS = 80
 _MAX_APPLICABILITY_VALUE_CHARS = 240
 _MAX_PROVIDER_CANDIDATE_BYTES = 16_384
 _MAX_PROVIDER_REQUEST_BYTES = 262_144
+# Max candidates per single LLM call. The judge fetches up to max_proposals
+# per run but evaluates them in chunks of this size, so a deep backlog can't
+# overflow a reasoning model's output budget mid-JSON (truncated output used
+# to fail the whole batch).
+_JUDGE_LLM_CHUNK_SIZE = 10
 
 
 class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -156,9 +161,9 @@ class AutoJudgeConfig:
         if (
             isinstance(self.max_proposals, bool)
             or not isinstance(self.max_proposals, int)
-            or not 1 <= self.max_proposals <= 12
+            or not 1 <= self.max_proposals <= 50
         ):
-            raise AutoJudgeError("auto-judge max proposals must be between 1 and 12")
+            raise AutoJudgeError("auto-judge max proposals must be between 1 and 50")
         if (
             isinstance(self.minimum_age_seconds, bool)
             or not isinstance(self.minimum_age_seconds, int)
@@ -245,7 +250,9 @@ class AutoJudge:
         pending = store.list_memory_creation_proposals(
             status="pending",
             limit=self.config.max_proposals,
-            oldest_first=True,
+            # Newest-first: on a deep backlog the freshest knowledge lands
+            # first instead of chewing stale weeks-old proposals first.
+            oldest_first=False,
         )
         candidates = [
             proposal
@@ -325,55 +332,80 @@ class AutoJudge:
         if not candidate_records:
             return report
 
-        # Calculate dynamic max_tokens: base + extra room for links
-        link_extra = 500 if self.config.links_enabled else 0
-        effective_max_tokens = min(4096, self.config.max_output_tokens + link_extra)
-
-        candidate_content = json.dumps(
-            {"candidates": candidate_records},
-            ensure_ascii=True,
-            separators=(",", ":"),
-        )
-        system_prompt = (
+        # Chunked judging: the run fetches up to max_proposals candidates but
+        # evaluates them in bounded LLM calls, so a deep backlog can't overflow
+        # a reasoning model's output budget mid-JSON (which used to fail the
+        # whole batch). Decisions from all chunks validate-then-commit below;
+        # a failed chunk aborts the run and its proposals stay pending.
+        today_utc = datetime.now(timezone.utc).date().isoformat()
+        base_prompt = (
             _SYSTEM_PROMPT_LINKS if self.config.links_enabled else _SYSTEM_PROMPT
         )
-        payload = {
-            "model": self.config.model,
-            "temperature": 0,
-            "max_tokens": effective_max_tokens,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": candidate_content,
-                },
-            ],
-        }
-        if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) > _MAX_PROVIDER_REQUEST_BYTES:
-            raise AutoJudgeError("auto-judge provider request exceeded the size limit")
+        system_prompt = (
+            base_prompt
+            + f"\nToday is {today_utc}. Each candidate carries first_seen_at (UTC). "
+            "Treat time-sensitive content (model picks, versions, prices, "
+            "schedules, plans) older than ~30 days as stale: reject it, or "
+            "needs_context if recency cannot be verified from the candidate itself."
+        )
         api_key = self.config.api_key()
         parsed = urlparse(self.config.endpoint)
         if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} and not api_key:
             raise AutoJudgeError(
                 f"auto-judge credential {self.config.api_key_env or '<unset>'} is unavailable"
             )
-        try:
-            response = self._provider_call(
-                self.config.endpoint,
-                api_key,
-                payload,
-                self.config.timeout_seconds,
-            )
-        except AutoJudgeError:
-            raise
-        except Exception as exc:  # pragma: no cover - exercised through HTTP adapter tests
-            raise AutoJudgeError(f"auto-judge provider call failed: {type(exc).__name__}") from exc
+        decisions: list[dict[str, Any]] = []
+        usage_totals: dict[str, Any] = {}
+        for chunk_start in range(0, len(candidate_records), _JUDGE_LLM_CHUNK_SIZE):
+            chunk_records = candidate_records[
+                chunk_start : chunk_start + _JUDGE_LLM_CHUNK_SIZE
+            ]
+            chunk_proposals = provider_candidates[
+                chunk_start : chunk_start + _JUDGE_LLM_CHUNK_SIZE
+            ]
+            chunk_ids = {item["proposal_id"] for item in chunk_proposals}
+            # Calculate dynamic max_tokens: base + extra room for links
+            link_extra = 500 if self.config.links_enabled else 0
+            effective_max_tokens = min(4096, self.config.max_output_tokens + link_extra)
 
-        decisions = _parse_decisions(
-            response,
-            {item["proposal_id"] for item in provider_candidates},
-        )
-        report["usage"] = _safe_usage(response.get("usage"))
+            candidate_content = json.dumps(
+                {"candidates": chunk_records},
+                ensure_ascii=True,
+                separators=(",", ":"),
+            )
+            payload = {
+                "model": self.config.model,
+                "temperature": 0,
+                "max_tokens": effective_max_tokens,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {
+                        "role": "user",
+                        "content": candidate_content,
+                    },
+                ],
+            }
+            if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) > _MAX_PROVIDER_REQUEST_BYTES:
+                raise AutoJudgeError("auto-judge provider request exceeded the size limit")
+            try:
+                response = self._provider_call(
+                    self.config.endpoint,
+                    api_key,
+                    payload,
+                    self.config.timeout_seconds,
+                )
+            except AutoJudgeError:
+                raise
+            except Exception as exc:  # pragma: no cover - exercised through HTTP adapter tests
+                raise AutoJudgeError(f"auto-judge provider call failed: {type(exc).__name__}") from exc
+
+            decisions.extend(_parse_decisions(response, chunk_ids))
+            for usage_key, usage_value in _safe_usage(response.get("usage")).items():
+                if isinstance(usage_value, bool):
+                    continue
+                if isinstance(usage_value, (int, float)):
+                    usage_totals[usage_key] = usage_totals.get(usage_key, 0) + usage_value
+        report["usage"] = usage_totals
         by_id = {item["proposal_id"]: item for item in provider_candidates}
         actor = "cortex-auto-judge:" + _actor_model(self.config.model)
 
@@ -736,6 +768,11 @@ def _provider_candidate(proposal: dict[str, Any]) -> dict[str, Any]:
     quality_flags, quality_flags_guarded = _bounded_provider_list(
         assessment.get("quality_flags") or []
     )
+    first_seen_at, first_seen_at_guarded = _bounded_provider_text(
+        proposal.get("first_seen_at") or "",
+        default="",
+        limit=40,
+    )
     transport_guarded = any(
         (
             not isinstance(assessment_value, dict),
@@ -754,12 +791,14 @@ def _provider_candidate(proposal: dict[str, Any]) -> dict[str, Any]:
             assessment_decision_guarded,
             assessment_reason_guarded,
             quality_flags_guarded,
+            first_seen_at_guarded,
         )
     )
     result = {
         "proposal_id": proposal_id,
         "content": content[:_MAX_CANDIDATE_CONTENT_CHARS],
         "content_truncated": len(content) > _MAX_CANDIDATE_CONTENT_CHARS,
+        "first_seen_at": first_seen_at,
         "kind": kind,
         "source_type": source_type,
         "source_category": source_category,
@@ -1217,7 +1256,8 @@ def link_orphan_memories(
 
     effective_provider = provider_call or _post_chat
 
-    # Find orphan memories (no edges as src or dst) regardless of approval state
+    # Find orphan memories (no edges as src or dst), live states only —
+    # archived/stranded duds must not be re-evaluated (2026-09-08)
     with store._lock:
         orphans = store._conn.execute(
             """SELECT m.id, m.content, m.kind,
@@ -1225,6 +1265,7 @@ def link_orphan_memories(
                FROM memories m
                WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
                AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+               AND m.state IN ('active','cold')
                ORDER BY m.created_at DESC
                LIMIT ?""",
             (max_orphans,),

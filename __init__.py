@@ -1188,6 +1188,11 @@ class CortexMemoryProvider(MemoryProvider):
             cold_after_days=int(self._config["cold_after_days"]),
             archive_after_days=int(self._config["archive_after_days"]),
         )
+        # Resolve orphaned usage records from interrupted processes so the
+        # dashboard's "stale outcome records" health flag reflects reality
+        # instead of accumulating forever (see reconcile_stale_usage).
+        if _as_bool(self._config.get("reconcile_stale_usage", True)):
+            self._store.reconcile_stale_usage()
         consolidation_mode = str(self._config.get("consolidation_mode", "shadow")).casefold()
         if consolidation_mode in {"shadow", "apply"}:
             self._store.consolidate(dry_run=consolidation_mode != "apply")
