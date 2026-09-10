@@ -130,6 +130,12 @@ DEFAULTS: dict[str, Any] = {
     "top_k": 6,
     "token_budget": 700,
     "retrieval_threshold": 0.16,
+    # Local embedding fusion. 0.0 = OFF — the code default stays conservative on
+    # purpose; enabling it is an explicit deployment choice. Measured on LoCoMo
+    # across 10 conversations: weight 10 gives +9.6 multi-hop hit@10 with no
+    # single-hop regression; weight 30 regresses single-hop.
+    "semantic_fusion_weight": 0.0,
+    "semantic_fusion_pool": 20,
     "adaptive_recall": True,
     "adaptive_budget_learning": True,
     "attentional_learning": False,
@@ -352,7 +358,12 @@ class CortexMemoryProvider(MemoryProvider):
         raw_path = str(self._config["db_path"])
         raw_path = raw_path.replace("${HERMES_HOME}", str(hermes_home)).replace("$HERMES_HOME", str(hermes_home))
         self._store = CortexStore(Path(raw_path).expanduser())
-        self._retriever = MemoryRetriever(self._store, threshold=float(self._config["retrieval_threshold"]))
+        self._retriever = MemoryRetriever(
+            self._store,
+            threshold=float(self._config["retrieval_threshold"]),
+            semantic_weight=float(self._config.get("semantic_fusion_weight") or 0.0),
+            semantic_pool=int(self._config.get("semantic_fusion_pool") or 20),
+        )
         self._session_id = session_id
         if _as_bool(self._config.get("memory_receipts", True)):
             _install_hermes_output_hook(self, session_id)
