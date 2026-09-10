@@ -8,6 +8,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any
 
 from .semantics import feature_similarity
@@ -1202,8 +1203,23 @@ def _fts_relevance(raw_rank: Any) -> float:
 
 
 def _memory_similarity(left: RetrievalResult, right: RetrievalResult) -> float:
-    a = set(query_tokens(left.memory["content"]))
-    b = set(query_tokens(right.memory["content"]))
+    a = _content_token_set(left.memory["content"])
+    b = _content_token_set(right.memory["content"])
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
+
+
+@lru_cache(maxsize=4096)
+def _content_token_set(content: str) -> frozenset[str]:
+    """Tokenize a memory body once.
+
+    ``_memory_similarity`` is called O(candidates x selected) times per recall
+    and always with the same handful of memory bodies, so tokenizing on every
+    call re-ran the tokenizer ~27,000 times for a single recall and dominated
+    live prepare latency (profiled 2026-09-10: 95% of the select stage, ~3.9M
+    ``casefold`` calls). The token set for a given body is immutable, so cache
+    it. Returns a ``frozenset`` for hashing; intersection/union semantics are
+    identical to the previous inline ``set(...)``.
+    """
+    return frozenset(query_tokens(content))
