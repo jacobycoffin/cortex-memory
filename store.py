@@ -31,6 +31,7 @@ from .refinery import (
     needs_clarity,
 )
 from .security import normalize_text, sanitize_memory
+from .embeddings import pack_vector, unpack_vector
 from .semantics import feature_similarity, semantic_features
 from .serializers import (
     _trace_json,
@@ -60,6 +61,27 @@ from .cortex_schema import (
 # added here (plus the CHECK constraints in the schema) — never as another
 # inline set literal — or the API boundary and storage will disagree.
 TASK_OUTCOMES = frozenset({"helpful", "harmful", "validated", "corrected"})
+
+
+# Local embedding storage. Vectors are little-endian float32 blobs from
+# `cortex.embeddings.pack_vector`, keyed by (memory_id, model_id) so a memory
+# may carry embeddings from several models without cross-contamination.
+# The table is created by `_migrate_columns` (i.e. on every open) rather than
+# in `cortex_schema.SCHEMA_SQL`, because the store split moved the CREATE
+# TABLE block into `cortex_schema` and this module owns the migration entry.
+_CREATE_MEMORY_EMBEDDINGS_SQL = """
+    CREATE TABLE IF NOT EXISTS memory_embeddings (
+        memory_id  TEXT NOT NULL,
+        model_id   TEXT NOT NULL,
+        dim        INTEGER NOT NULL,
+        vector     BLOB NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (memory_id, model_id)
+    )
+"""
+
+# SQLite's default host-parameter cap is 999; chunk IN(...) lookups well below it.
+_EMBEDDING_ID_CHUNK = 400
 
 
 logger = logging.getLogger(__name__)
@@ -226,6 +248,9 @@ class CortexStore:
         )
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_dirty ON memories(dirty, state)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_role ON memories(record_role, state)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model_id)"
+        )
         self._conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -504,6 +529,8 @@ class CortexStore:
         """Add v2 columns safely when opening an early Cortex prototype DB."""
 
         _migrate_columns(self._conn)
+        # Migration entry: local embedding storage (see _CREATE_MEMORY_EMBEDDINGS_SQL).
+        self._conn.execute(_CREATE_MEMORY_EMBEDDINGS_SQL)
 
     def _active_dependency_ids_tx(self, conn: sqlite3.Connection) -> set[str]:
         return {
@@ -10547,6 +10574,108 @@ class CortexStore:
                 ),
             ).fetchall()
         return [str(row["id"]) for row in rows]
+
+    # ------------------------------------------------------------------
+    # Local embedding storage (memory_embeddings)
+    # ------------------------------------------------------------------
+
+    def set_memory_embedding(
+        self, memory_id: str, model_id: str, vector: Sequence[float]
+    ) -> None:
+        """Store (or replace) the embedding a model produced for one memory.
+
+        The vector is serialised with ``cortex.embeddings.pack_vector`` as
+        little-endian float32 bytes. Storing twice for the same
+        ``(memory_id, model_id)`` upserts instead of raising.
+        """
+
+        if not memory_id:
+            raise ValueError("memory_id is required")
+        if not model_id:
+            raise ValueError("model_id is required")
+        blob = pack_vector(vector)
+        now = utc_now()
+        with self._lock:
+            self._conn.execute(
+                """INSERT INTO memory_embeddings(memory_id, model_id, dim, vector, created_at)
+                   VALUES(?,?,?,?,?)
+                   ON CONFLICT(memory_id, model_id) DO UPDATE SET
+                     dim=excluded.dim,
+                     vector=excluded.vector,
+                     created_at=excluded.created_at""",
+                (memory_id, model_id, len(vector), blob, now),
+            )
+            self._conn.commit()
+
+    def get_memory_embeddings(
+        self, model_id: str, memory_ids: Sequence[str]
+    ) -> dict[str, list[float]]:
+        """Return ``{memory_id: vector}`` for the ids that have a row.
+
+        Ids without an embedding for ``model_id`` are simply absent; an empty
+        ``memory_ids`` returns ``{}`` without touching the database.
+        """
+
+        ids = list(dict.fromkeys(str(mid) for mid in memory_ids if mid))
+        if not ids:
+            return {}
+        found: dict[str, list[float]] = {}
+        with self._lock:
+            for start in range(0, len(ids), _EMBEDDING_ID_CHUNK):
+                chunk = ids[start : start + _EMBEDDING_ID_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"""SELECT memory_id, vector FROM memory_embeddings
+                        WHERE model_id=? AND memory_id IN ({placeholders})""",
+                    (model_id, *chunk),
+                ).fetchall()
+                for row in rows:
+                    found[str(row["memory_id"])] = unpack_vector(row["vector"])
+        return found
+
+    def memory_ids_missing_embeddings(
+        self, model_id: str, limit: int = 500
+    ) -> list[str]:
+        """Recallable memories that still need an embedding for ``model_id``.
+
+        Only memories in state ``active`` or ``cold`` are eligible; ids that
+        already have a row for this model are excluded. Newest-first, with the
+        id as a deterministic tie-break.
+        """
+
+        bounded = max(1, int(limit))
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT m.id FROM memories m
+                   LEFT JOIN memory_embeddings e
+                     ON e.memory_id=m.id AND e.model_id=?
+                   WHERE m.state IN ('active','cold') AND e.memory_id IS NULL
+                   ORDER BY m.updated_at DESC, m.id
+                   LIMIT ?""",
+                (model_id, bounded),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def count_memory_embeddings(self, model_id: str) -> int:
+        """Number of stored embeddings for one model."""
+
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total FROM memory_embeddings WHERE model_id=?",
+                (model_id,),
+            ).fetchone()
+        return int(row["total"]) if row else 0
+
+    def delete_memory_embeddings(self, model_id: str) -> int:
+        """Delete every embedding for one model; returns rows deleted."""
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM memory_embeddings WHERE model_id=?", (model_id,)
+            )
+            deleted = cursor.rowcount
+            self._conn.commit()
+        return int(deleted)
 
     def review_inbox_snapshot(self, *, limit: int = 600) -> dict[str, Any]:
         """Return one decision-ready queue plus the operator-learning trail."""
