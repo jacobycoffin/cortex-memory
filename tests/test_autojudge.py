@@ -91,7 +91,7 @@ class AutoJudgeTests(unittest.TestCase):
             {"model": ["synthetic-memory-judge"]},
             {"api_key_env": None},
             {"credential_file": "/tmp/synthetic-credential-file"},
-            {"max_proposals": 13},
+            {"max_proposals": 51},
         )
         for overrides in invalid:
             with self.subTest(overrides=overrides), self.assertRaises(AutoJudgeError):
@@ -518,15 +518,26 @@ class AutoJudgeTests(unittest.TestCase):
         self.assertEqual(report["remembered"], 0)
         self.assertEqual(report["needs_context"], 1)
 
-    def test_oldest_candidate_is_not_starved_by_a_large_backlog(self) -> None:
+    def test_newest_candidate_is_selected_first_and_backlog_still_drains(self) -> None:
+        """Ordering policy (shipped 2026-09-04): the judge fetches newest-first so
+        fresh knowledge lands immediately instead of chewing weeks-old proposals
+        first. A deep backlog is still not starved: each run decides the newest
+        pending candidate and removes it from the pool, so the selection window
+        walks backwards through the backlog on successive runs.
+
+        Supersedes ``test_oldest_candidate_is_not_starved_by_a_large_backlog``,
+        which asserted the previous oldest-first policy.
+        """
         proposals = [
             self.store.propose_memory_creation(f"Synthetic backlog candidate {index}.")
             for index in range(205)
         ]
 
+        seen: list[str] = []
+
         def provider_call(endpoint, api_key, payload, timeout):
             candidate = json.loads(payload["messages"][1]["content"])["candidates"][0]
-            self.assertEqual(candidate["proposal_id"], proposals[0]["proposal_id"])
+            seen.append(candidate["proposal_id"])
             return {
                 "choices": [
                     {
@@ -535,10 +546,10 @@ class AutoJudgeTests(unittest.TestCase):
                                 {
                                     "decisions": [
                                         {
-                                            "proposal_id": proposals[0]["proposal_id"],
-                                            "action": "defer",
+                                            "proposal_id": candidate["proposal_id"],
+                                            "action": "reject",
                                             "confidence": 0.99,
-                                            "reason": "Leave pending for later context.",
+                                            "reason": "Synthetic backlog candidate, not durable.",
                                         }
                                     ]
                                 }
@@ -548,12 +559,21 @@ class AutoJudgeTests(unittest.TestCase):
                 ]
             }
 
-        report = AutoJudge(
-            self.config(max_proposals=1), provider_call=provider_call
-        ).run(self.store)
+        judge = AutoJudge(self.config(max_proposals=1), provider_call=provider_call)
 
-        self.assertEqual(report["selected"], 1)
-        self.assertEqual(report["deferred"], 1)
+        first = judge.run(self.store)
+        self.assertEqual(first["selected"], 1)
+        self.assertEqual(first["rejected"], 1)
+        # Newest-first: the freshest pending proposal is judged before older ones.
+        self.assertEqual(seen, [proposals[-1]["proposal_id"]])
+
+        # Anti-starvation: the newest is now decided and out of the pending pool,
+        # so the next run walks back to the next newly-pending candidate.
+        judge.run(self.store)
+        self.assertEqual(
+            seen,
+            [proposals[-1]["proposal_id"], proposals[-2]["proposal_id"]],
+        )
 
     def test_provider_receives_nested_candidate_scope_and_context(self) -> None:
         proposal = self.store.propose_memory_creation(
