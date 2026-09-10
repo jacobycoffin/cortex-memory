@@ -400,8 +400,13 @@ def _parse_note(
     text = _HTML_COMMENT.sub("", _strip_frontmatter(text)).replace("\x00", "")
     title = _note_title(relative, text)
     links = tuple(dict.fromkeys(match.strip() for match in _WIKILINK.findall(text) if match.strip()))
-    link_contexts = _wikilink_contexts(text)
     sections = _sections(text, title)
+    # Edge *creation* reads the full note text (`links` above), so skipping a
+    # section never costs graph coverage.  The stored link *context* is built
+    # from retained sections only: `_wikilink_contexts` scans whole lines, so a
+    # secret sharing a line with a [[wikilink]] inside a credential section
+    # would otherwise ride into edge evidence (verified 2026-09-10).
+    link_contexts = _wikilink_contexts(_link_context_text(text, sections))
     chunks: list[VaultChunk] = []
     heading_occurrences: dict[str, int] = {}
     ordinal = 0
@@ -591,6 +596,29 @@ def _wikilink_contexts(text: str) -> dict[str, str]:
             if rendered and rendered.casefold() != link.casefold():
                 contexts.setdefault(link, rendered)
     return contexts
+
+
+def _link_context_text(text: str, sections: list[tuple[str, str]]) -> str:
+    """Note text with low-value and credential sections removed.
+
+    Used only to build stored link contexts.  Edge *creation* still reads the
+    full note text, so dropping a section here costs no graph coverage — the
+    edge survives and simply falls back to the generic explanation.  The point
+    is that a secret sharing a physical line with a ``[[wikilink]]`` inside a
+    credential section must not ride into ``edge_evidence`` (verified
+    2026-09-10: ``_wikilink_contexts`` scans whole lines, so the section skip
+    alone did not cover this path).
+    """
+    if len(sections) <= 1:
+        # A single-section note is never skipped (the section loop guards on
+        # ``len(sections) > 1``), so the full text is already equivalent.
+        return text
+    kept = [
+        body
+        for heading, body in sections
+        if not _skip_low_value_section(heading, body)
+    ]
+    return "\n".join(kept)
 
 
 def _memory_profile(relative: Path, heading: str) -> tuple[str, float, float, float, float, str | None]:

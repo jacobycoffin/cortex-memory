@@ -164,7 +164,9 @@ class CredentialVaultIndexingTests(unittest.TestCase):
         host_id = host_chunks[0]["memory_id"]
 
         # ... yet the wikilink written inside the skipped section still produces
-        # a vault edge, because link extraction works on full-note text.
+        # a vault edge, because link extraction works on full-note text.  The
+        # edge is what preserves graph coverage; its *context* is suppressed
+        # because it lives in a credential section.
         edges = [
             edge
             for edge in (self.store.explain(host_id)["edges"] if host_id else [])
@@ -172,9 +174,79 @@ class CredentialVaultIndexingTests(unittest.TestCase):
         ]
         self.assertEqual(len(edges), 1, edges)
         self.assertIn("explicitly links to Router", edges[0]["explanation"])
-        self.assertIn("Rotation runbook", edges[0]["explanation"])
+        self.assertNotIn("Rotation runbook", edges[0]["explanation"])
         self.assertNotIn(FAKE_SECRET, repr(edges[0]))
         self.assertEqual(result["vault_links_created"], 1)
+
+    def test_credential_section_line_never_reaches_edge_evidence(self) -> None:
+        """A secret sharing a line with a wikilink must not ride into edges.
+
+        ``_wikilink_contexts`` scans whole lines, so before this fix the
+        section-level skip alone still left the raw credential line in
+        ``edge_evidence.summary`` and ``edge_evidence.metadata_json`` as the
+        edge's ``link_context`` (verified 2026-09-10).
+        """
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+
+        with self.store._lock:
+            rows = self.store._conn.execute(
+                "SELECT summary, metadata_json FROM edge_evidence"
+            ).fetchall()
+        self.assertTrue(rows, "the fixture must produce at least one edge")
+
+        for row in rows:
+            record = f"{row['summary']}\n{row['metadata_json']}"
+            for secret in (FAKE_SECRET, FAKE_SECRET_2, FAKE_SECRET_3):
+                self.assertNotIn(
+                    secret, record, "credential value reached edge evidence"
+                )
+            self.assertNotIn(
+                "Rotation runbook",
+                record,
+                "credential-section text reached edge evidence",
+            )
+
+        # The edge itself still exists — dropping a section from the context
+        # text must not cost graph coverage.
+        self.assertEqual(result["vault_links_created"], 1)
+
+    def test_ordinary_section_link_context_is_preserved(self) -> None:
+        """Trimming credential sections must not strip ordinary link contexts.
+
+        The fix filters the note text before extracting link contexts, so the
+        obvious failure mode in the other direction is silently losing every
+        context.  This pins that an ordinary-section wikilink keeps its context.
+        """
+        (self.vault / "Storage.md").write_text(
+            "# Storage\n\nThe tank node holds the media library.\n",
+            encoding="utf-8",
+        )
+        (self.vault / "Networking.md").write_text(
+            "# Networking\n\n"
+            "## Notes\n\n"
+            "The lease table lives on [[Storage]] and rotates weekly.\n",
+            encoding="utf-8",
+        )
+
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+
+        with self.store._lock:
+            rows = self.store._conn.execute(
+                "SELECT summary, metadata_json FROM edge_evidence "
+                "WHERE metadata_json LIKE '%Networking.md%'"
+            ).fetchall()
+        self.assertTrue(
+            rows, "an ordinary-section wikilink must still produce an edge"
+        )
+
+        blob = "\n".join(f"{row['summary']}\n{row['metadata_json']}" for row in rows)
+        self.assertIn(
+            "rotates weekly",
+            blob,
+            "an ordinary-section link context must be preserved, not trimmed away",
+        )
 
 
 if __name__ == "__main__":
