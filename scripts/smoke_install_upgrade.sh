@@ -51,6 +51,7 @@ for relative_path in \
   review_copilot.py \
   schema_formation.py \
   semantic_consolidation.py \
+  serializers.py \
   sleep.py \
   store.py \
   benchmarks/core.py \
@@ -65,6 +66,15 @@ for relative_path in \
   docs/QUICKSTART.md
 do
   [[ -f "$PLUGIN_DIR/$relative_path" ]] || fail "missing installed file: $relative_path"
+done
+
+# Completeness: every top-level runtime module in the source tree must ship
+# in the installed plugin. A new extraction that forgets the installer breaks
+# `import cortex.store` only in the installed copy — source-checkout tests
+# never see it (serializers.py regression, 2026-09-09).
+for module_file in "$SOURCE_DIR"/*.py; do
+  module_name="$(basename "$module_file")"
+  [[ -f "$PLUGIN_DIR/$module_name" ]] || fail "installed plugin missing runtime module: $module_name"
 done
 
 PYTHONPATH="$HERMES_HOME/plugins" "$PYTHON_BIN" -m cortex harness-contract --tool-name cortex_memory >/dev/null

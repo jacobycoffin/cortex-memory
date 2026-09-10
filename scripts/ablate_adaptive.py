@@ -237,7 +237,7 @@ def _measure(memory: CortexMemory, ids: dict[str, str], reps: int) -> dict[str, 
     return {
         "cases": len(CASES) * reps,
         "retrieval_hit_at_3": round(retrieval_hits / answerable, 4) if answerable else None,
-        "rendered_hit_at_3": round(rendered_hits / answerable, 4) if answerable else None,
+        "rendered_evidence_hit_rate": round(rendered_hits / answerable, 4) if answerable else None,
         "false_positive_rate": (
             round(false_positives / no_memory_cases, 4) if no_memory_cases else None
         ),
@@ -280,13 +280,13 @@ def main() -> int:
         args.output.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
     header = (
-        f"{'condition':<18}{'retr_hit@3':>10}{'rend_hit@3':>10}{'fp_rate':>9}"
+        f"{'condition':<18}{'retr_hit@3':>10}{'rend_evid':>10}{'fp_rate':>9}"
         f"{'sel/recall':>11}{'tok/recall':>11}{'p50_ms':>9}{'p95_ms':>9}"
     )
     print(header)
     for name, metrics in report["conditions"].items():
         print(
-            f"{name:<18}{metrics['retrieval_hit_at_3']:>10}{metrics['rendered_hit_at_3']:>10}"
+            f"{name:<18}{metrics['retrieval_hit_at_3']:>10}{metrics['rendered_evidence_hit_rate']:>10}"
             f"{metrics['false_positive_rate']:>9}"
             f"{metrics['mean_selected_per_recall']:>11}{metrics['mean_rendered_tokens']:>11}"
             f"{metrics['prepare_p50_ms']:>9}{metrics['prepare_p95_ms']:>9}"

@@ -33,7 +33,7 @@ class AblationRunnerTests(unittest.TestCase):
         for metrics in report["conditions"].values():
             self.assertEqual(
                 set(metrics),
-                {"cases", "retrieval_hit_at_3", "rendered_hit_at_3",
+                {"cases", "retrieval_hit_at_3", "rendered_evidence_hit_rate",
                  "false_positive_rate",
                  "mean_selected_per_recall", "mean_rendered_tokens",
                  "prepare_p50_ms", "prepare_p95_ms", "activation"},
@@ -101,7 +101,7 @@ class AblationRunnerTests(unittest.TestCase):
         first = run(reps=1)
         second = run(reps=1)
         for condition in first["conditions"]:
-            for metric in ("retrieval_hit_at_3", "rendered_hit_at_3",
+            for metric in ("retrieval_hit_at_3", "rendered_evidence_hit_rate",
                            "false_positive_rate",
                            "mean_selected_per_recall", "mean_rendered_tokens"):
                 self.assertEqual(
@@ -110,7 +110,7 @@ class AblationRunnerTests(unittest.TestCase):
                 )
 
     def test_metric_names_match_documented_definitions(self) -> None:
-        """retrieval_hit_at_3 is placement; rendered_hit_at_3 needs rendering.
+        """retrieval_hit_at_3 is placement; rendered_evidence_hit_rate needs rendering.
 
         With the default budget everything selected is rendered, so the two
         hits agree; the false-positive rate uses the no-memory subset as its
@@ -120,7 +120,7 @@ class AblationRunnerTests(unittest.TestCase):
         metrics = report["conditions"]["baseline"]
         self.assertEqual(metrics["cases"], 10)
         self.assertEqual(metrics["retrieval_hit_at_3"], 1.0)
-        self.assertEqual(metrics["rendered_hit_at_3"], 1.0)
+        self.assertEqual(metrics["rendered_evidence_hit_rate"], 1.0)
         # 2 no-memory cases x 2 reps = 4; FP rate denominator is that subset.
         self.assertGreaterEqual(metrics["false_positive_rate"], 0.0)
         self.assertLessEqual(metrics["false_positive_rate"], 1.0)

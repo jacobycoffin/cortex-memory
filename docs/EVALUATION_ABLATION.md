@@ -30,14 +30,14 @@ wrong-project scope, no-memory greeting.
 
 Metrics (aggregates only — no content, queries, or IDs leave the machine):
 `retrieval_hit_at_3` (expected memory in selected top-3 — placement, not
-answer accuracy), `rendered_hit_at_3` (expected memory actually present in
-rendered context), `false_positive_rate` (selection on no-memory cases,
+answer accuracy), `rendered_evidence_hit_rate` (expected memory present anywhere in the
+rendered context — all rendered IDs, not a top-3 cut), `false_positive_rate` (selection on no-memory cases,
 with that 2-case subset as denominator), mean selected/rendered size, and
 p50/p95 `recall()` wall latency.
 
 ## Results (2026-09-09, reps=5, 25 recalls/condition, tier smoke-baseline)
 
-| condition | retr_hit@3 | rend_hit@3 | fp_rate | sel/recall | tok/recall | p50 ms | p95 ms | activation |
+| condition | retr_hit@3 | rend_evid | fp_rate | sel/recall | tok/recall | p50 ms | p95 ms | activation |
 |-----------|------------|------------|---------|------------|------------|--------|--------|------------|
 | baseline | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.935 | 8.748 | — |
 | sleep_apply | 1.0 | 1.0 | 0.5 | 2.0 | 91.8 | 5.664 | 8.256 | replay ≥1 task, evidence ≥1 |
