@@ -57,7 +57,15 @@ import sys
 from pathlib import Path
 from typing import Iterator, Sequence
 
-DEFAULT_DB = "/root/.hermes/cortex/cortex.db"
+def _default_db() -> str:
+    """Cortex's database, resolved from the plugin's HERMES_HOME convention."""
+    import os
+
+    home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    return str(Path(home).expanduser() / "cortex" / "cortex.db")
+
+
+DEFAULT_DB = _default_db()
 DEFAULT_BATCH_SIZE = 64
 DEFAULT_MIN_AVAILABLE_MB = 600
 MEMINFO_PATH = "/proc/meminfo"
@@ -168,7 +176,7 @@ def _ensure_cortex_importable() -> Path:
     ``import cortex`` cannot find it. We load ``<repo>/__init__.py`` under the
     package name ``cortex`` with submodule search rooted at the checkout — the
     same trick ``tests/_bootstrap.py`` uses. This deliberately prefers the code
-    under development over any installed copy in ``/root/.hermes/plugins``.
+    under development over any installed copy of the plugin.
     """
     repo_root = Path(__file__).resolve().parents[1]
     existing = sys.modules.get("cortex")

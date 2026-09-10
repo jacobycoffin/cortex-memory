@@ -10633,6 +10633,82 @@ class CortexStore:
                     found[str(row["memory_id"])] = unpack_vector(row["vector"])
         return found
 
+    def semantic_top_ids(
+        self, query_vector: Sequence[float], model_id: str, limit: int = 50
+    ) -> list[tuple[str, float]]:
+        """Return ``[(memory_id, cosine)]`` for the closest embedded memories.
+
+        Brute-force cosine over the stored vectors. At Cortex's scale (a few
+        thousand memories x 384 dims is ~5 MB) this is about a millisecond of
+        numpy and needs no vector database. The matrix is cached and
+        self-invalidates when the row count changes, so it is not rebuilt or
+        re-read on every query.
+
+        Returns ``[]`` when there is no embedding signal available — no vectors
+        for this model, a dimension mismatch, or numpy missing. Callers treat
+        that as "no semantic signal" and continue normally.
+        """
+
+        if not query_vector or limit <= 0:
+            return []
+        try:
+            import numpy as np
+        except Exception:                                       # noqa: BLE001
+            return []
+
+        ids, matrix = self._embedding_matrix(model_id)
+        if not ids or matrix.size == 0:
+            return []
+
+        query = np.asarray(query_vector, dtype=np.float32)
+        if query.ndim != 1 or query.shape[0] != matrix.shape[1]:
+            return []
+        norm = float(np.linalg.norm(query))
+        if norm <= 0.0:
+            return []
+
+        similarities = matrix @ (query / norm)
+        count = min(int(limit), similarities.shape[0])
+        top = np.argsort(-similarities, kind="stable")[:count]
+        return [(ids[int(i)], float(similarities[int(i)])) for i in top]
+
+    def _embedding_matrix(self, model_id: str):
+        """Cached ``(ids, L2-normalised float32 matrix)`` for one model.
+
+        Validity is keyed on the row count, which is cheap to read (indexed) and
+        changes on every write — so a backfill or an incremental embed
+        invalidates the cache without the write path having to know about it.
+        """
+        import numpy as np
+
+        with self._lock:
+            total = self._conn.execute(
+                "SELECT COUNT(*) AS total FROM memory_embeddings WHERE model_id=?",
+                (model_id,),
+            ).fetchone()
+            row_count = int(total["total"]) if total else 0
+            cached = getattr(self, "_embedding_cache", None)
+            if cached and cached[0] == model_id and cached[1] == row_count:
+                return cached[2], cached[3]
+            rows = self._conn.execute(
+                "SELECT memory_id, vector FROM memory_embeddings WHERE model_id=?",
+                (model_id,),
+            ).fetchall()
+
+        ids = [str(row["memory_id"]) for row in rows]
+        if not ids:
+            matrix = np.zeros((0, 0), dtype=np.float32)
+        else:
+            matrix = np.asarray(
+                [unpack_vector(row["vector"]) for row in rows], dtype=np.float32
+            )
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            matrix = matrix / np.clip(norms, 1e-12, None)
+
+        with self._lock:
+            self._embedding_cache = (model_id, row_count, ids, matrix)
+        return ids, matrix
+
     def memory_ids_missing_embeddings(
         self, model_id: str, limit: int = 500
     ) -> list[str]:

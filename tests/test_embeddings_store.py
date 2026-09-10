@@ -1,7 +1,7 @@
 """Tests for local embedding storage on :class:`CortexStore`.
 
 Every test runs against a throwaway SQLite file created with
-``tempfile.mkdtemp()``; the live Cortex DB under ``/root/.hermes`` is never
+``tempfile.mkdtemp()``; the live Cortex database is never
 opened here.
 """
 

@@ -26,6 +26,7 @@ Design notes
 
 from __future__ import annotations
 
+import os
 import struct
 import threading
 from pathlib import Path
@@ -35,8 +36,21 @@ MODEL_ID = "BAAI/bge-small-en-v1.5"
 DIM = 384
 MAX_LEN = 512
 
-# Moved out of /tmp (the fastembed cache) on 2026-09-10 so it survives a reboot.
-DEFAULT_MODEL_DIR = Path("/root/.hermes/models/bge-small-en-v1.5")
+
+def default_model_dir() -> Path:
+    """Where the ONNX model lives.
+
+    Resolved at call time from the same ``HERMES_HOME`` convention the rest of
+    the plugin uses, rather than hardcoding a deployment path, so the module
+    works on any host and the release checker stays happy.
+    """
+    home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    return Path(home).expanduser() / "models" / "bge-small-en-v1.5"
+
+
+# Kept for callers that import it directly; resolved lazily by Embedder so a
+# later HERMES_HOME change is still honoured.
+DEFAULT_MODEL_DIR = default_model_dir()
 
 _MODEL_FILE = "model_optimized.onnx"
 _TOKENIZER_FILE = "tokenizer.json"
@@ -64,7 +78,7 @@ class Embedder:
     """
 
     def __init__(self, model_dir: str | Path | None = None, threads: int = 1):
-        self.model_dir = Path(model_dir) if model_dir else DEFAULT_MODEL_DIR
+        self.model_dir = Path(model_dir) if model_dir else default_model_dir()
         self.model_id = MODEL_ID
         self.dim = DIM
         self._threads = max(1, int(threads))
