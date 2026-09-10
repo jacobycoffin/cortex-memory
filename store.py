@@ -7378,7 +7378,13 @@ class CortexStore:
             "retrieval_used": bool(retrieval_used),
             "retrieval_reason": reason_value,
             "queries": query_values,
-            "candidate_memories": candidates,
+            # ``candidate_memories`` is deliberately NOT duplicated here.  It is
+            # 97% of this payload's bytes and already stored once in
+            # ``memory_traces.candidate_memories_json`` by the INSERT below.
+            # Storing it twice grew the decision ledger to ~430MB of pure
+            # duplication (measured 2026-09-10).  ``memory_trace_jsonl()``
+            # re-attaches it from the trace row on export, so the exported
+            # ledger is unchanged.
             "selected_memory_ids": selected_ids,
             "rejected_memory_ids": rejected_ids,
         }
@@ -7465,7 +7471,12 @@ class CortexStore:
         return parsed
 
     def memory_trace_jsonl(self, *, limit: int = 1000, task_id: str | None = None) -> str:
-        """Export the append-only decision ledger as one JSON object per line."""
+        """Export the append-only decision ledger as one JSON object per line.
+
+        ``candidate_memories`` is no longer duplicated into the event payload
+        (see ``record_recall_trace``), so it is re-attached here from the trace
+        row.  Exports keep the same shape as before the change.
+        """
 
         safe_limit = max(1, min(10000, int(limit)))
         with self._lock:
@@ -7482,12 +7493,32 @@ class CortexStore:
                        FROM memory_trace_events ORDER BY sequence_id DESC LIMIT ?""",
                     (safe_limit,),
                 ).fetchall()
+            candidates_by_task: dict[str, Any] = {}
+            involved = {str(row["task_id"]) for row in rows}
+            if involved:
+                placeholders = ",".join("?" for _ in involved)
+                for trace in self._conn.execute(
+                    f"SELECT task_id,candidate_memories_json FROM memory_traces "
+                    f"WHERE task_id IN ({placeholders})",
+                    tuple(involved),
+                ):
+                    candidates_by_task[str(trace["task_id"])] = _trace_json_array(
+                        trace["candidate_memories_json"]
+                    )
+
         lines: list[str] = []
         for row in reversed(rows):
             try:
                 payload = json.loads(str(row["payload_json"]))
             except (json.JSONDecodeError, TypeError):
                 payload = {"parse_error": "invalid stored trace payload"}
+            if isinstance(payload, dict) and "candidate_memories" not in payload:
+                candidates = candidates_by_task.get(str(row["task_id"]))
+                if candidates is not None:
+                    # Re-attach the detail that now lives only on the trace row.
+                    # Key order is immaterial: ``_trace_json`` serializes with
+                    # ``sort_keys=True``.
+                    payload = {**payload, "candidate_memories": candidates}
             lines.append(
                 _trace_json(
                     {
