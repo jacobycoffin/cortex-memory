@@ -66,13 +66,26 @@ This phase adds better representations only after the 0.3 evaluation layer can c
 
 ## 0.5 — Tool and workflow intelligence
 
-| Workstream | Safety rule | Acceptance evidence |
-| --- | --- | --- |
-| Argument-shape learning | Store keys and coarse types, never secret values. | Correct-argument-shape rate improves on held-out tasks. |
-| Workflow branching | Preserve successful fallback paths and failure preconditions. | Completion rate improves without increasing harmful actions. |
-| Cross-task workflow transfer | Require evidence from distinct task fingerprints. | Held-out task performance improves over single-tool guidance. |
-| Tool-memory confidence | Failures and recoveries update separate signals. | First-tool choice and recovery-step accuracy calibrate to observed outcomes. |
-| Tool insight dashboard | Aggregates cannot reveal argument values. | Operators can explain why guidance appeared and disable it. |
+**Implemented and live.** Verified 2026-09-10 against `~/.hermes/cortex/cortex.db`:
+31,260 `tool_executions`, 1,958 `tool_workflows`, 1,951 `tool_workflow_stats`,
+766 `tool_guidance_exposures`, 220 `tool_stats`. Guidance is computed on
+`procedural` recall plans (`__init__.py:628`, exposures recorded at `:879`) and
+surfaced through the "Tool notes" / "Tool learning" dashboard views.
+
+**Acceptance evidence is NOT yet established.** The exposure log has no
+counterfactual: of 269 resolved exposures, **267 were followed and succeeded, 2
+were followed and failed, and 0 were not followed.** With no non-followed
+comparison group, "completion rate improves without increasing harmful actions"
+cannot be demonstrated from this data. Treat the column below as the definition
+of done, not as a result.
+
+| Workstream | Status | Safety rule | Acceptance evidence |
+| --- | --- | --- | --- |
+| Argument-shape learning | Implemented — `store.record_tool_execution` (`store.py:7518`); stores `argument_keys` only, never values | Store keys and coarse types, never secret values. | Correct-argument-shape rate improves on held-out tasks. |
+| Workflow branching | Implemented — `tooling.build_tool_workflow` (`tooling.py:132`); each step carries `success` and `error_type` | Preserve successful fallback paths and failure preconditions. | Completion rate improves without increasing harmful actions. |
+| Cross-task workflow transfer | Implemented — guidance gated on `success_count+failure_count>=2 AND distinct_tasks>=2` (`store.py:7666-7668`) | Require evidence from distinct task fingerprints. | Held-out task performance improves over single-tool guidance. |
+| Tool-memory confidence | Implemented — `success_count` / `failure_count` kept separate with `last_error_type`; reliability = `success/(success+failure)`, ranked `0.65·reliability + 0.35·fingerprint_similarity` | Failures and recoveries update separate signals. | First-tool choice and recovery-step accuracy calibrate to observed outcomes. |
+| Tool insight dashboard | Implemented — "Tool notes" / "Tool learning" views | Aggregates cannot reveal argument values. | Operators can explain why guidance appeared and disable it. |
 
 ## 0.6 — Lifecycle and self-repair
 

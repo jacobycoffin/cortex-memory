@@ -12,6 +12,7 @@ __pycache__/
 .ruff_cache/
 build/
 dist/
+output/
 *.egg-info/
 .DS_Store
 TWITTER_LAUNCH_KIT.md

@@ -7,8 +7,8 @@ file changes, the hash changes and this fails — which is what we want, because
 silently different embedding space would invalidate every measurement that
 justified adding this feature (fastembed agreement was cosine 1.0000).
 
-Tests degrade to skips when the model is absent, so the suite still runs on a
-machine without the model installed.
+Tests degrade to skips when the model or its ONNX backend is unavailable, so the
+suite still runs on a machine that cannot embed.
 """
 
 from __future__ import annotations
@@ -28,7 +28,21 @@ GOLDEN_SHA256 = "1c893c2cbd542b3750bb6ca59fb07fe0353cbc7df1d484f8d3303ca60b9802c
 
 
 def _model_available() -> bool:
-    return Embedder().available
+    """True only when the embedder can actually produce vectors.
+
+    File presence is not sufficient: when the ONNX backend (onnxruntime /
+    tokenizers) is missing, ``Embedder.available`` still reports True while
+    ``embed()`` returns []. Gating on file presence alone therefore ran the
+    assertions below against empty vectors and failed with confusing
+    zero-length errors instead of skipping. Probe a real embed instead.
+    """
+    embedder = Embedder()
+    if not embedder.available:
+        return False
+    try:
+        return len(embedder.embed_one("probe")) == DIM
+    except Exception:  # noqa: BLE001 - any backend failure means "not usable"
+        return False
 
 
 @unittest.skipUnless(_model_available(), "embedding model not installed")
