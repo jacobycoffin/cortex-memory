@@ -20,6 +20,7 @@ Do not justify a feature only by saying "the brain does it." Add a source, label
 ```bash
 python3 -m py_compile *.py benchmarks/*.py scripts/*.py
 python3 -m unittest discover -v
+python3 -m pip install .   # benchmarks import the installed package
 python3 scripts/benchmark.py
 git diff --check
 ```

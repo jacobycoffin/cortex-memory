@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cortex-memory"
-version = "0.3.0.dev1"
+version = "0.3.0"
 description = "Psychology-inspired adaptive memory, offline consolidation, and observability for agent harnesses"
 requires-python = ">=3.10"
 dependencies = []

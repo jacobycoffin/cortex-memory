@@ -87,6 +87,9 @@ memory tokens.
 ## Integrate a new harness (five-event contract)
 
 ```bash
+# The plugin path, as install_local.sh arranges it (no console script exists there):
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex harness-contract --tool-name your_memory_tool
+# Or, with an installed package:
 cortex-memory harness-contract --tool-name your_memory_tool
 ```
 

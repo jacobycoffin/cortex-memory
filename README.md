@@ -34,7 +34,7 @@ Most agent memory systems optimize only for storing and finding text. Cortex als
 
 The result is a bounded evidence layer that an agent harness can call, plus a Brain dashboard that makes its behavior inspectable and can optionally enable narrowly scoped, confirmed memory reviews.
 
-## What 0.2 adds
+## What 0.2 added
 
 - **Attention-gated recall:** `none`, `lean`, `focused`, `procedural`, and `deep` modes vary the memory count, token budget, graph depth, and tool evidence by request.
 - **Transparent hybrid retrieval:** SQLite FTS5 precision plus dependency-free semantic features and bounded personalized graph activation. No embedding API or pre-inference LLM call.
@@ -401,9 +401,11 @@ On the local 0.2 retrieval run, Cortex reached 99.5% recall@6 at 2,000 synthetic
 
 ## Development
 
+The benchmark scripts import the installed package — run `python3 -m pip install .` (or set `PYTHONPATH=.`) first, or they fail with `ModuleNotFoundError: cortex`.
+
 ```bash
 python3 -m unittest discover -v
-python3 scripts/benchmark.py
+python3 scripts/benchmark.py   # exits non-zero if p95 retrieval is 50 ms or worse (host-dependent)
 python3 scripts/benchmark_compare.py --sizes 100,500,2000 --queries 200
 python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
 python3 scripts/benchmark_cache.py --size 2000 --repetitions 80

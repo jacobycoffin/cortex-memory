@@ -4,7 +4,7 @@
 > checklist. This guide covers the included Hermes adapter, vault migration,
 > Linux services, and rollback in human depth.
 
-For a framework-neutral install and the five-event harness contract, start with the main README and [integration guide](INTEGRATION.md). This guide covers the included Hermes adapter, vault migration, Linux services, and rollback.
+For a framework-neutral install and the five-event harness contract, start with the main README and [integration guide](INTEGRATION.md).
 
 ## 1. Back up existing Hermes memory
 
@@ -29,6 +29,38 @@ hermes memory setup
 
 Choose `cortex` and restart the Hermes agent process when you are ready to activate the provider. The installer itself never restarts Hermes.
 
+### Set Cortex as the default provider
+
+`hermes memory setup` records your choice in `$HERMES_HOME/config.yaml` under `memory.provider`. To set it by hand, that key is:
+
+```yaml
+memory:
+  provider: cortex
+```
+
+Three checks, in increasing strength — the config file alone does not prove the provider loaded:
+
+```bash
+# 1. Code and database are reachable
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex stats
+# 2. Privacy/packaging gate — audit.ok must be true
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex audit
+# 3. End-to-end: run after your next Hermes turn — the counter must have grown
+PYTHONPATH="$HOME/.hermes/plugins" python3 -m cortex recall-stats
+```
+
+If `stats` cannot open the database, or `recall-stats` does not move after a turn, Cortex is installed but not active: re-run `hermes memory setup` and restart Hermes. There is no `doctor` command — `stats` and `audit` are the verification entry points.
+
+Every `python3 -m cortex …` command in these docs needs the code importable: either the plugin directory on `PYTHONPATH` (as `install_local.sh` arranges) or an installed package (`python3 -m pip install .`). The `cortex-memory` console script exists **only** on the `pip install` path — `install_local.sh` does not create it.
+
+### Skills
+
+Cortex never reads or writes the `skills:` section of `config.yaml`. Leave your skills configured as they are; the only rule is **one authoritative memory provider at a time**.
+
+- Skills that only *read* memory, or that write to other systems (email, calendar, notes), are unaffected.
+- Skills that *write* memory — anything appending to `MEMORY.md`/`USER.md`, or a second memory plugin — should be turned off while Cortex is active, so two systems do not both claim to be the store of record.
+- Keep harness-native memory to a bootstrap pointer plus session scratch. Cortex is the store of record.
+
 Remote automatic judging is off by default. On Linux with a user systemd session, explicitly approve provider data egress to enable `cortex-auto-judge.timer`, a silent clock-aligned five-minute LLM review of staged creation proposals:
 
 ```bash
@@ -41,6 +73,12 @@ It waits at least two minutes, sends at most 12 candidates, validates every deci
 
 ```bash
 systemctl --user list-timers cortex-auto-judge.timer
+```
+
+To stop it again without uninstalling:
+
+```bash
+systemctl --user disable --now cortex-auto-judge.timer
 ```
 
 Remote candidate review is privacy-sensitive and normally billable; read [Automatic memory judge](AUTO_JUDGE.md) before opting in or changing provider, model, credential-file, threshold, or feedback settings.
