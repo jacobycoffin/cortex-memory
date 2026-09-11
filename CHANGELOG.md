@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- made semantic fusion **measurable from the shipped harness**: `scripts/locomo_retrieval_eval.py` gains `--semantic-weight` / `--semantic-pool` / `--embed-model-dir`, embeds every stored turn in-run with the local ONNX model, and — when fusion is enabled — evaluates the fusion arm and a weight-0 arm over the **same** stores and the **same** questions, reporting the paired per-question delta and its standard error (paired deltas support an SE; two separately-run averages would not). Until now the 0.3.0 headline feature was unmeasurable by anyone who cloned the repo: the harness constructed `CortexStore` and `MemoryRetriever` with defaults, so `semantic_fusion_weight` was always 0.0 and the published baseline had been taken with fusion silently off. The harness now ABORTS when the embedding model is unavailable instead of reporting a feature-only number as "fusion";
+- added `tests/test_locomo_retrieval_eval.py` (12 tests) pinning the scorer both arms share, the fusion-OFF CLI default, and the fail-loud guard; it also records that `session-hit@k` is deliberately coarser than `hit@k` — a wrong turn from the *right* session still counts — so the two are never conflated;
+- measured 2026-09-11, all 10 conversations (5880 turns, 1977 questions), `weight=10`: multi-hop hit@10 56.6% → 65.8% (+9.3, SE 2.0), single-hop 70.2% → 73.8% (+3.7, SE 1.0), overall 66.8% → 70.9% (+4.1, SE 0.6) — each beyond 2SE, so fusion helps multi-hop **without** a single-hop regression. open-domain (+5.6, SE 3.3) and adversarial (+1.1, SE 1.2) sit inside noise and are reported as such;
+
 ## 0.3.0 — 2026-09-10
 
 - added local ONNX embeddings (`bge-small-en-v1.5`) with rank fusion, so retrieval can combine lexical and semantic ranking without an embedding API call or a pre-inference LLM call; the embedder is strictly optional — when the model files or the ONNX backend are missing, retrieval falls back to the feature-only path, the plugin loads normally, and the embedding tests skip instead of failing (the guard previously tested model-file presence alone, so a host with the model but no `onnxruntime` failed with three zero-length-vector assertions rather than skipping);
