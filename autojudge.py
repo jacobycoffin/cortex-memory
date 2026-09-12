@@ -17,12 +17,14 @@ import math
 import os
 import re
 import sqlite3
+import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
 from .retrieval import MemoryRetriever, RetrievalContext
@@ -51,6 +53,9 @@ _LINKS_EDGE_WEIGHT = 0.5
 _ORPHAN_LINK_MAX_DEFAULT = 30
 # Orphans per LLM batch
 _ORPHAN_LINK_BATCH_SIZE = 3
+# Floor for orphan-link LLM output: an empty batch JSON still needs a few
+# hundred tokens, so the configured budget is honored above this floor.
+_ORPHAN_LINK_MIN_OUTPUT_TOKENS = 256
 
 
 class AutoJudgeError(RuntimeError):
@@ -250,15 +255,32 @@ class AutoJudge:
         pending = store.list_memory_creation_proposals(
             status="pending",
             limit=self.config.max_proposals,
-            # Newest-first: on a deep backlog the freshest knowledge lands
-            # first instead of chewing stale weeks-old proposals first.
+            # Ordering contract (shipped 2026-09-04, back-ported to the plugin):
+            # newest-first so fresh knowledge lands first; the selection window
+            # walks backwards through the backlog as candidates are decided.
             oldest_first=False,
         )
         candidates = [
             proposal
             for proposal in pending
             if _old_enough(proposal, self.config.minimum_age_seconds)
+            and (not _in_defer_cooldown(store, proposal["proposal_id"]) or _has_recent_feedback(proposal))
         ]
+        if not candidates and pending:
+            # Starvation fallback: the newest window was full of candidates that
+            # are not yet eligible (age filter or deferral cooldown). Offer the
+            # most-due eligible candidates instead, so age-eligible work can
+            # never stall behind a pile of fresh entries.
+            candidates = [
+                proposal
+                for proposal in store.list_memory_creation_proposals(
+                    status="pending",
+                    limit=max(50, self.config.max_proposals * 2),
+                    oldest_first=True,
+                )
+                if _old_enough(proposal, self.config.minimum_age_seconds)
+                and (not _in_defer_cooldown(store, proposal["proposal_id"]) or _has_recent_feedback(proposal))
+            ][: self.config.max_proposals]
         report["selected"] = len(candidates)
         if not candidates:
             return report
@@ -408,6 +430,7 @@ class AutoJudge:
         report["usage"] = usage_totals
         by_id = {item["proposal_id"]: item for item in provider_candidates}
         actor = "cortex-auto-judge:" + _actor_model(self.config.model)
+        deferred_for_rotation: list[str] = []
 
         # Validate the complete response before the first mutation, then apply
         # independent reversible decisions. Omitted candidates remain pending.
@@ -441,9 +464,11 @@ class AutoJudge:
             )
             if not guarded_reason and action == "defer":
                 report["deferred"] += 1
+                deferred_for_rotation.append(str(proposal["proposal_id"]))
                 continue
             if not guarded_reason and adjusted_confidence < required:
                 report["deferred"] += 1
+                deferred_for_rotation.append(str(proposal["proposal_id"]))
                 continue
 
             reason = (
@@ -525,6 +550,14 @@ class AutoJudge:
                         )
                         report["contradiction_edges_created"] += created_ct
 
+        _advance_deferral_rotation(
+            store,
+            deferred_for_rotation,
+            # Must match the store's ISO 'T' format: str(datetime) uses a space,
+            # which sorts before 'T' and would corrupt the rotation order.
+            now=datetime.now(timezone.utc).isoformat(),
+        )
+        _mark_deferred_recently(store, deferred_for_rotation)
         return report
 
 
@@ -620,6 +653,7 @@ def _apply_links(
         return 0
     now = str(datetime.now(timezone.utc))
     created = 0
+    seen: set[tuple[str, str]] = set()
     for link in links:
         if not isinstance(link, dict):
             continue
@@ -630,6 +664,12 @@ def _apply_links(
             continue
         if target_id == new_memory_id:
             continue  # would violate src_id != dst_id CHECK
+        pair = (target_id, relation)
+        if pair in seen:
+            # The provider repeated the same edge in one decision: that is one
+            # item of evidence, not three, so do not amplify it further.
+            continue
+        seen.add(pair)
         # Normalise direction only for symmetric relations; preserve LLM-specified
         # direction for directed relations (supports, extends, refines, etc.)
         if relation == "contradicts":
@@ -1003,6 +1043,71 @@ def _old_enough(proposal: dict[str, Any], minimum_age_seconds: int) -> bool:
     return (datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)).total_seconds() >= minimum_age_seconds
 
 
+def _advance_deferral_rotation(
+    store: CortexStore, proposal_ids: Iterable[str], *, now: str
+) -> None:
+    """Advance the rotation clock for candidates the judge chose to defer.
+
+    ``last_seen_at`` is the ordering key for proposal selection, so a batch
+    that was just deferred must advance it; otherwise the next run offers the
+    identical batch again and re-bills the provider for the same payload.
+    """
+
+    ids = [str(proposal_id) for proposal_id in proposal_ids]
+    if not ids:
+        return
+    placeholders = ",".join("?" for _ in ids)
+    with store.transaction() as conn:
+        conn.execute(
+            f"UPDATE memory_creation_proposals SET last_seen_at=? "
+            f"WHERE proposal_id IN ({placeholders})",
+            (now, *ids),
+        )
+
+
+# Process-wide deferral cooldown: a proposal the judge deferred is not offered
+# again for this long, even when minimum_age_seconds is 0, so consecutive runs
+# cannot re-bill the identical batch. Keyed by store path; memoized only for the
+# life of this process (a restart simply forgets the memo, which is fine).
+_DEFER_COOLDOWN_SECONDS = 300.0
+_DEFERRED_RECENTLY: dict[str, dict[str, float]] = {}
+_DEFERRED_MEMO_LOCK = threading.Lock()
+
+
+def _mark_deferred_recently(store: CortexStore, proposal_ids: Iterable[str]) -> None:
+    ids = [str(proposal_id) for proposal_id in proposal_ids]
+    if not ids:
+        return
+    now = time.monotonic()
+    with _DEFERRED_MEMO_LOCK:
+        table = _DEFERRED_RECENTLY.setdefault(str(store.path), {})
+        for proposal_id in ids:
+            table[proposal_id] = now
+        cutoff = now - _DEFER_COOLDOWN_SECONDS
+        for key in [key for key, stamp in table.items() if stamp < cutoff]:
+            del table[key]
+
+
+def _in_defer_cooldown(store: CortexStore, proposal_id: str) -> bool:
+    with _DEFERRED_MEMO_LOCK:
+        table = _DEFERRED_RECENTLY.get(str(store.path), {})
+        stamp = table.get(str(proposal_id))
+    return stamp is not None and (time.monotonic() - stamp) < _DEFER_COOLDOWN_SECONDS
+
+
+def _has_recent_feedback(proposal: dict[str, Any]) -> bool:
+    """True when a human left positive/strong feedback on this proposal.
+
+    Feedback is an explicit request to reconsider now, so it overrides the
+    deferral cooldown (which exists only to stop silent re-billing).
+    """
+
+    return (
+        int(proposal.get("strong_feedback_count") or 0) > 0
+        or int(proposal.get("positive_feedback_count") or 0) > 0
+    )
+
+
 def _safe_usage(value: Any) -> dict[str, int]:
     if not isinstance(value, dict):
         return {}
@@ -1223,6 +1328,16 @@ def _parse_batch_links(
     return result
 
 
+def _validate_orphan_linking_endpoint(endpoint: str) -> None:
+    """Orphan linking sends model content to the provider; refuse anything
+    except HTTPS or loopback HTTP so credentials/content cannot be steered to
+    an arbitrary host via configuration."""
+    parsed = urlparse(endpoint)
+    local = parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and local):
+        raise ValueError("orphan-link endpoint must use HTTPS or be loopback HTTP")
+
+
 def link_orphan_memories(
     store: CortexStore,
     config: AutoJudgeConfig,
@@ -1253,6 +1368,8 @@ def link_orphan_memories(
     }
     if not config.enabled:
         return report
+
+    _validate_orphan_linking_endpoint(config.endpoint)
 
     effective_provider = provider_call or _post_chat
 
@@ -1352,7 +1469,7 @@ def link_orphan_memories(
         payload = {
             "model": config.model,
             "temperature": 0,
-            "max_tokens": 8192,
+            "max_tokens": max(_ORPHAN_LINK_MIN_OUTPUT_TOKENS, min(4096, config.max_output_tokens)),
             "messages": [
                 {"role": "system", "content": _ORPHAN_LINK_SYSTEM_PROMPT},
                 {"role": "user", "content": candidate_content},

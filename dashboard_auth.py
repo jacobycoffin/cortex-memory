@@ -100,7 +100,11 @@ class DashboardAuth:
             _decode(str(state["salt"])),
             int(state.get("iterations", PBKDF2_ITERATIONS)),
         )
-        return hmac.compare_digest(username, str(state["username"])) and hmac.compare_digest(actual, expected)
+        # compare_digest with str arguments rejects non-ASCII; compare UTF-8
+        # bytes so a non-ASCII username fails the check instead of raising.
+        return hmac.compare_digest(
+            username.encode("utf-8"), str(state["username"]).encode("utf-8")
+        ) and hmac.compare_digest(actual, expected)
 
     def change_password(self, username: str, current_password: str, new_password: str) -> str:
         if not self.verify_password(username, current_password):

@@ -207,6 +207,12 @@ def _looks_failed(result: str) -> bool:
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict):
+            # Numeric exit codes are authoritative: a nonzero code means the
+            # command failed even when the payload also says "success".
+            for key in ("exit_code", "returncode"):
+                value = parsed.get(key)
+                if isinstance(value, int) and not isinstance(value, bool) and value != 0:
+                    return True
             if parsed.get("success") is False or parsed.get("ok") is False or parsed.get("isError") is True:
                 return True
             status = str(parsed.get("status") or "").casefold()

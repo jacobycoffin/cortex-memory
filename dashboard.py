@@ -1404,7 +1404,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not auth.configured:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "authentication is disabled"})
                 return
-            if not self._throttle_ok():
+            if not self._throttle_admit():
                 self._json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Too many attempts. Try again shortly."})
                 return
             payload = self._read_json()
@@ -1413,7 +1413,6 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             username = str(payload.get("username") or "")
             password = str(payload.get("password") or "")
             if len(username) > 128 or len(password) > 256 or not auth.verify_password(username, password):
-                self._throttle_record()
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "Username or password is incorrect."})
                 return
             self._throttle_clear()
@@ -1457,12 +1456,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 credentials = _basic_credentials(self.headers.get("Authorization"))
                 # Throttle Basic-auth verification: each attempt runs an expensive
                 # PBKDF2, so an un-limited stream of them is a CPU-exhaustion vector.
-                if credentials and self._throttle_ok():
+                if credentials and self._throttle_admit():
                     if auth.verify_password(*credentials):
                         authenticated = True
                         self._throttle_clear()
-                    else:
-                        self._throttle_record()
             return authenticated and (not complete or not auth.must_change_password())
 
         def _require_auth(self, *, complete: bool) -> bool:
@@ -1484,7 +1481,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 if not isinstance(payload, dict):
                     raise ValueError
                 return payload
-            except (ValueError, json.JSONDecodeError):
+            except (ValueError, json.JSONDecodeError, RecursionError):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON request"})
                 return None
 
@@ -1498,6 +1495,27 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 if client:
                     return client
             return peer
+
+        def _throttle_admit(self) -> bool:
+            """Atomically reserve a login-attempt slot.
+
+            The old check-then-record pair let a burst of threads all pass the
+            limit check and then run PBKDF2, admitting more attempts than the
+            limit. Reserving at check time closes that race: a failed try keeps
+            its reservation, and a successful login releases it via
+            _throttle_clear.
+            """
+
+            client = self._client_key()
+            now = time.monotonic()
+            with failed_logins_lock:
+                recent = [stamp for stamp in failed_logins.get(client, []) if now - stamp < 300]
+                if len(recent) >= 8:
+                    failed_logins[client] = recent
+                    return False
+                recent.append(now)
+                failed_logins[client] = recent
+                return True
 
         def _throttle_ok(self) -> bool:
             """True if this client is under the failed-attempt limit (no record kept)."""
