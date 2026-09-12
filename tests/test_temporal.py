@@ -95,10 +95,22 @@ class TestTemporalClassifier(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertEqual(classify_temporal(value).action, "empty")
 
-    def test_find_as_of_formats(self):
+    def test_find_as_of_formats(self) -> None:
         self.assertEqual(find_as_of("as of 2026-08-07 done"), "2026-08-07")
         self.assertEqual(find_as_of("snapshot Aug 21, 2026"), "Aug 21, 2026")
         self.assertIsNone(find_as_of("no dates here"))
+
+    def test_invalid_dates_never_become_as_of(self) -> None:
+        """A date-shaped token must parse as a real date before it is trusted."""
+        self.assertIsNone(find_as_of("Snapshot 2026-99-99 balance $40."))
+        self.assertIsNone(find_as_of("as of 2026-13-01"))
+        self.assertEqual(find_as_of("invalid 2026-99-99 then real 2026-08-07"), "2026-08-07")
+
+    def test_invalid_date_snapshot_is_undated_not_stamped(self) -> None:
+        verdict = classify_temporal("Snapshot 2026-99-99 balance $40.")
+        self.assertIsNone(verdict.as_of)
+        self.assertTrue(verdict.undated)
+        self.assertIn("temporal_undated", verdict.flags())
 
     def test_a_bare_number_is_not_a_dated_value(self):
         """A date is itself digits; matching bare counts flagged every dated record."""

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass, field
+from datetime import datetime
 
 __all__ = [
     "TemporalVerdict",
@@ -169,11 +170,40 @@ def _scan(text: str, patterns: list[tuple[str, int]]) -> tuple[list[str], int]:
     return hits, score
 
 
+def _valid_date(value: str) -> bool:
+    """True only for a genuinely valid calendar date.
+
+    The classifier must not adopt a stamp it cannot trust: a malformed value
+    like "2026-99-99" is evidence the text carries a date-shaped token, but it
+    must never become the record's as_of.
+    """
+
+    value = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%dT%H:%M"):
+        try:
+            datetime.strptime(value, fmt)
+            return True
+        except ValueError:
+            continue
+    for fmt in ("%b %d, %Y", "%b %d %Y"):
+        try:
+            datetime.strptime(value, fmt)
+            return True
+        except ValueError:
+            continue
+    slash = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", value)
+    if slash:
+        month, day = int(slash.group(1)), int(slash.group(2))
+        return 1 <= month <= 12 and 1 <= day <= 31
+    return False
+
+
 def find_as_of(text: str) -> str | None:
     for pattern in DATE_PATTERNS:
-        match = re.search(pattern, text, re.I)
-        if match:
-            return match.group(1)
+        for match in re.finditer(pattern, text, re.I):
+            candidate = match.group(1)
+            if _valid_date(candidate):
+                return candidate
     return None
 
 

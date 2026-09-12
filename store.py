@@ -87,6 +87,11 @@ _EMBEDDING_ID_CHUNK = 400
 logger = logging.getLogger(__name__)
 
 REFINERY_BACKFILL_KEY = "refinery_backfill_version"
+# Repair pass for a derived table that current writers maintain incrementally.
+# It exists to heal data written by older versions, so it runs once per version
+# instead of on every open. Bump the version when the semantics change.
+FEATURE_STATS_BACKFILL_KEY = "feature_stats_backfill_version"
+FEATURE_STATS_BACKFILL_VERSION = "2026-09-12"
 REFINERY_BACKFILL_VERSION = f"{ROLE_CLASSIFIER_VERSION}:{PRESENTATION_VERSION}"
 POLICY_MIN_SUPPORT = 5
 POLICY_MIN_CONSISTENCY = 0.80
@@ -383,7 +388,17 @@ class CortexStore:
     _index_features_tx = staticmethod(_index_features_tx)
 
     def _rebuild_feature_stats(self) -> None:
+        marker = self._conn.execute(
+            "SELECT value FROM meta WHERE key=?", (FEATURE_STATS_BACKFILL_KEY,)
+        ).fetchone()
+        if marker is not None and str(marker["value"]) == FEATURE_STATS_BACKFILL_VERSION:
+            return
         _rebuild_feature_stats(self._conn)
+        self._conn.execute(
+            "INSERT INTO meta(key,value) VALUES(?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (FEATURE_STATS_BACKFILL_KEY, FEATURE_STATS_BACKFILL_VERSION),
+        )
 
     def _backfill_memory_context_terms(self) -> None:
         rows = self._conn.execute(
@@ -1135,13 +1150,42 @@ class CortexStore:
                 description=description,
                 safety_class=safety_class,
             )
-        # Recompute deterministic groupings on every upgrade/open. This removes
+        # The full recompute below is O(memories) and used to run on every open
+        # (audit: the dominant reopen cost on large stores). Current write paths
+        # keep memberships current incrementally, so only the legacy-repair case
+        # needs it — detected by a probe whose inputs are both small: the
+        # project/service groupings table and the currently admitted evidence.
+        if not self._legacy_dynamic_neighborhoods_present():
+            return
+        # Recompute deterministic groupings on every upgrade. This removes
         # named project/service labels produced by older one-mention heuristics
         # while leaving the underlying memories and their metadata untouched.
         self._conn.execute(
             "DELETE FROM memory_neighborhood_memberships WHERE origin='deterministic'"
         )
         self._refresh_dynamic_neighborhoods_tx(self._conn)
+
+    def _legacy_dynamic_neighborhoods_present(self) -> bool:
+        """True when a project/service grouping exists that evidence no longer admits.
+
+        That is the shape of a label written by an older one-mention heuristic.
+        Both sides of the comparison are small, so this can run on every open;
+        the recompute it guards cannot.
+        """
+
+        rows = self._conn.execute(
+            "SELECT slug FROM memory_neighborhoods WHERE category IN ('project','service')"
+        ).fetchall()
+        if not rows:
+            return False
+        admitted_projects, admitted_services = self._admitted_dynamic_neighborhoods_tx(self._conn)
+        expected = {
+            f"project-{self._neighborhood_slug(name)}" for name in admitted_projects.values()
+        }
+        expected |= {
+            f"service-{self._neighborhood_slug(name)}" for name in admitted_services.values()
+        }
+        return any(str(row["slug"]) not in expected for row in rows)
 
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
