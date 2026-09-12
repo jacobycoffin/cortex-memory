@@ -28,7 +28,7 @@ PROXMOX_HOST_SPECS = (
 DEFAULT_MODEL = (
     "Hermes Agent › Default model → Muse Spark 1.3 Contributor — 2026-09-02 › "
     "Where to change models in the FUTURE (full checklist, verified 2026-09-02) "
-    "| `/root/.hermes/config.yaml` → `model:` | `default: muse-spark-1.3-contributor` "
+    "| `~/.hermes/config.yaml` → `model:` | `default: muse-spark-1.3-contributor` "
     "| ALWAYS — this is the single source of truth |"
 )
 DEBT_OVERVIEW = (
