@@ -15,6 +15,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests._bootstrap import ROOT  # noqa: F401 - loads the flat ``cortex`` package
 from tests.test_dashboard_auth_enforcement import _handler_bound_to
@@ -43,19 +44,48 @@ class ExitCodeClassificationTests(unittest.TestCase):
 
 
 class DeepJsonGuardTests(unittest.TestCase):
-    def test_deep_json_returns_400_instead_of_crashing(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            auth = DashboardAuth(Path(tmp) / "dashboard-auth.json")
-            handler = _handler_bound_to(auth)
-            request = handler.__new__(handler)
-            body = b'{"x":' + b"[" * 1100 + b"0" + b"]" * 1100 + b"}"
-            request.headers = {"Content-Length": str(len(body))}
-            request.rfile = io.BytesIO(body)
-            request.responses: list[tuple[int, object]] = []
-            request._json = lambda status, payload, **kw: request.responses.append((int(status), payload))
+    """Deep JSON must never crash the handler.
 
-            self.assertIsNone(request._read_json())
+    Runtime behaviour differs by CPython: ``json.loads`` raises RecursionError
+    on ~1k-deep arrays up to 3.11, while 3.12+ parses them fine. Either way the
+    handler must answer cleanly: 400 when json refuses the payload, the parsed
+    body when the runtime accepts it.
+    """
+
+    def _request(self, body: bytes):  # type: ignore[no-untyped-def]
+        auth_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(auth_dir.cleanup)
+        auth = DashboardAuth(Path(auth_dir.name) / "dashboard-auth.json")
+        handler = _handler_bound_to(auth)
+        request = handler.__new__(handler)
+        request.headers = {"Content-Length": str(len(body))}
+        request.rfile = io.BytesIO(body)
+        request.responses = []
+        request._json = lambda status, payload, **kw: request.responses.append((int(status), payload))
+        return request
+
+    def test_deep_json_never_crashes_the_handler(self) -> None:
+        body = b'{"x":' + b"[" * 1100 + b"0" + b"]" * 1100 + b"}"
+        try:
+            json.loads(body)
+            runtime_refuses = False
+        except RecursionError:
+            runtime_refuses = True
+
+        request = self._request(body)
+        result = request._read_json()
+        if runtime_refuses:
+            self.assertIsNone(result)
             self.assertEqual(request.responses[0][0], 400)
+        else:
+            self.assertIsNotNone(result)
+
+    def test_json_recursion_error_becomes_a_clean_400(self) -> None:
+        """The RecursionError guard itself, independent of a runtime's limits."""
+        request = self._request(b'{"x": 1}')
+        with mock.patch.object(json, "loads", side_effect=RecursionError("simulated depth limit")):
+            self.assertIsNone(request._read_json())
+        self.assertEqual(request.responses[0][0], 400)
 
 
 class ThrottleReservationTests(unittest.TestCase):

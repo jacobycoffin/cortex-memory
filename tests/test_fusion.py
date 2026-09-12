@@ -9,9 +9,21 @@ from fractions import Fraction
 
 from tests._bootstrap import ROOT  # noqa: F401
 
-from cortex.fusion import _fused_scores, cosine_ranking, fuse_semantic, reciprocal_rank_fusion
+try:
+    import numpy  # noqa: F401 - ``cortex.fusion`` imports numpy at module level
+    _FUSION_AVAILABLE = True
+except ImportError:  # pragma: no cover - bare environments (CI) have no numpy
+    _FUSION_AVAILABLE = False
+
+if _FUSION_AVAILABLE:
+    from cortex.fusion import _fused_scores, cosine_ranking, fuse_semantic, reciprocal_rank_fusion
+
+_FUSION_SKIP = unittest.skipUnless(
+    _FUSION_AVAILABLE, "fusion requires numpy (optional dependency)"
+)
 
 
+@_FUSION_SKIP
 class ReciprocalRankFusionTests(unittest.TestCase):
     def test_hand_computed_rrf_scores_and_order(self) -> None:
         rankings = [["a", "b", "c", "d"], ["b", "c", "d", "a"]]
@@ -145,6 +157,7 @@ class ReciprocalRankFusionTests(unittest.TestCase):
         self.assertEqual(fuse_semantic(["a", "b"], ["b", "a"], semantic_weight=100.0), ["b", "a"])
 
 
+@_FUSION_SKIP
 class CosineRankingTests(unittest.TestCase):
     def test_orders_by_true_cosine_similarity(self) -> None:
         query = [1.0, 0.0]
@@ -219,6 +232,7 @@ class CosineRankingTests(unittest.TestCase):
         self.assertEqual(cosine_ranking(query, candidates), ["zzz", "aaa"])
 
 
+@_FUSION_SKIP
 class DeterminismTests(unittest.TestCase):
     def test_repeated_calls_are_identical(self) -> None:
         rankings = [["m3", "m1", "m2", "m1"], ["m2", "m3", "m4"], ["m4", "m1"]]

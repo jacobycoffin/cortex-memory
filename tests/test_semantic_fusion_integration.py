@@ -25,6 +25,12 @@ from cortex import embeddings as embeddings_module
 from cortex.retrieval import MemoryRetriever
 from cortex.store import CortexStore
 
+try:
+    import numpy  # noqa: F401 - the augmentation path ranks vectors with numpy
+    _NUMPY_AVAILABLE = True
+except ImportError:  # pragma: no cover - bare environments (CI) have no numpy
+    _NUMPY_AVAILABLE = False
+
 
 class _StubEmbedder:
     """Deterministic stand-in for the ONNX embedder."""
@@ -94,6 +100,7 @@ class SemanticFusionIntegrationTests(unittest.TestCase):
         off_again = [r.memory["id"] for r in self._retriever().search_detailed("gardening soil", limit=3)[0]]
         self.assertEqual(off, off_again)
 
+    @unittest.skipUnless(_NUMPY_AVAILABLE, "semantic augmentation requires numpy")
     def test_semantic_hit_reaches_the_pool_when_enabled(self):
         """A memory the lexical pass scores near-zero must still surface."""
         # Give 'gamma' a vector identical to the query, and give the query text
