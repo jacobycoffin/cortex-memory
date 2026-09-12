@@ -21,8 +21,12 @@ from .security import normalize_text
 
 ROLE_CLASSIFIER_METHOD = "role_classifier"
 ROLE_CLASSIFIER_VERSION = "role_classifier_v1"
+from .temporal import classify_temporal  # noqa: E402  (temporal imports nothing from this package)
+
 PRESENTATION_METHOD = "deterministic_presentation"
-PRESENTATION_VERSION = "presentation_v1"
+# v2 adds temporal-validity flags + an as-of stamp to the display layer. Bumping
+# the version makes the refinery re-derive existing presentations.
+PRESENTATION_VERSION = "presentation_v2"
 OPERATOR_ROLE_METHOD = "operator_review"
 LEGACY_ROLE_METHOD = "legacy_default"
 
@@ -471,10 +475,25 @@ def build_presentation(
         if _UNCERTAIN_LANGUAGE.search(body) and "uncertain_language" not in flags:
             flags.append("uncertain_language")
 
+    # Temporal validity. A record can be relevant and still contain values that
+    # were only true at capture ("Uptime 36.5 days", "as of 2026-08-07"). This
+    # only ADDS flags and an as-of note to the display layer: it never rewrites
+    # content, never changes the role, and never raises confidence. What to do
+    # with the verdict is the caller's decision (see temporal.ACTION_*).
+    temporal = classify_temporal(body)
+    if temporal.volatile_score > 0:
+        for flag in temporal.flags():
+            if flag not in flags:
+                flags.append(flag)
+
+    applies_when = _applies_when(memory, role)
+    if temporal.as_of and temporal.needs_stamp:
+        applies_when = f"{applies_when.rstrip()} Values shown are as of {temporal.as_of}."
+
     return {
         "display_title": display_title or "Untitled record",
         "display_summary": display_summary or "No readable statement could be derived faithfully.",
-        "applies_when": _applies_when(memory, role),
+        "applies_when": applies_when,
         "retention_reason": _retention_reason(memory, role, has_active_dependencies),
         "readability_flags": flags,
         "presentation_method": PRESENTATION_METHOD,
