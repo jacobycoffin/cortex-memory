@@ -30,7 +30,7 @@ from .refinery import (
     deterministic_split_preview,
     needs_clarity,
 )
-from .security import normalize_text, sanitize_memory
+from .security import normalize_text, neutralize_role_tags, sanitize_memory
 from .embeddings import pack_vector, unpack_vector
 from .semantics import feature_similarity, semantic_features
 from .serializers import (
@@ -2212,6 +2212,18 @@ class CortexStore:
             ),
         ]
         quarantine_reason = ", ".join(dict.fromkeys(part for part in quarantine_parts if part)) or None
+        # Provenance fields are prompt-visible metadata, so they get the same
+        # care as content: redact secrets on the way in, and keep role-tag
+        # markers out of the stored source label so it cannot impersonate a
+        # chat turn when it is rendered beside recalled content.
+        source_ref = normalize_text(sanitize_memory(str(source_ref or "")).text)[:500] or None
+        source_type = (
+            normalize_text(neutralize_role_tags(sanitize_memory(str(source_type or "")).text))[:120]
+            or "conversation"
+        )
+        subject = sanitize_memory(str(subject or "")).text[:500] or None
+        predicate = sanitize_memory(str(predicate or "")).text[:500] or None
+        object_value = sanitize_memory(str(object_value or "")).text[:1000] or None
         digest = content_hash(content)
         now = utc_now()
         state = "quarantine" if quarantine_reason else state
@@ -2221,7 +2233,7 @@ class CortexStore:
         precondition_values = _normalize_context_map(preconditions)
         system_values = _normalize_context_list(applicable_systems)
         version_values = _normalize_context_list(applicable_versions)
-        source_context_value = normalize_text(source_context or "")[:1000] or None
+        source_context_value = normalize_text(sanitize_memory(str(source_context or "")).text)[:1000] or None
         origin_source_category_value = normalize_text(
             origin_source_category or source_category or "AGENT_INFERENCE"
         ).upper()[:120] or "AGENT_INFERENCE"
@@ -2581,9 +2593,33 @@ class CortexStore:
         confidence: float | None = None,
         source_ref: str | None = None,
     ) -> bool:
-        new_content = normalize_text(new_content)
+        sanitized_content = sanitize_memory(str(new_content or ""))
+        new_content = normalize_text(sanitized_content.text)
         if not new_content:
             raise ValueError("corrected content cannot be empty")
+        # A correction is a write, so it gets the same treatment as add_memory:
+        # secrets never reach storage through this path, and a correction that
+        # carried a secret or an injection marker lands in quarantine instead
+        # of ordinary recall.
+        correction_quarantine = (
+            ", ".join(
+                dict.fromkeys(
+                    part
+                    for part in (
+                        normalize_text(sanitized_content.quarantine_reason or ""),
+                        (
+                            "secret value removed; save only a reference to an approved secret manager"
+                            if sanitized_content.redacted
+                            else ""
+                        ),
+                    )
+                    if part
+                )
+            )[:500]
+            or None
+        )
+        correction_state = "quarantine" if correction_quarantine else "active"
+        source_ref = normalize_text(sanitize_memory(str(source_ref or "")).text)[:500] or None
         now = utc_now()
         from .research import record_reconsolidation_correction_tx
 
@@ -2610,7 +2646,7 @@ class CortexStore:
                     memory_id,
                     new_content,
                     next_confidence,
-                    "active",
+                    correction_state,
                     current["valid_from"],
                     current["valid_to"],
                     now,
@@ -2619,10 +2655,18 @@ class CortexStore:
                 ),
             )
             conn.execute(
-                """UPDATE memories SET content=?, content_hash=?, confidence=?, state='active',
+                """UPDATE memories SET content=?, content_hash=?, confidence=?, state=?,
                    updated_at=?, correction_count=correction_count+1,
-                   quarantine_reason=NULL, protected=1 WHERE id=?""",
-                (new_content, content_hash(new_content), next_confidence, now, memory_id),
+                   quarantine_reason=?, protected=1 WHERE id=?""",
+                (
+                    new_content,
+                    content_hash(new_content),
+                    next_confidence,
+                    correction_state,
+                    now,
+                    correction_quarantine,
+                    memory_id,
+                ),
             )
             conn.execute("DELETE FROM memory_fts WHERE memory_id=?", (memory_id,))
             conn.execute("INSERT INTO memory_fts(memory_id, content) VALUES(?,?)", (memory_id, new_content))

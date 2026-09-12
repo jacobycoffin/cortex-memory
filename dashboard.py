@@ -161,7 +161,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     auth = DashboardAuth(auth_path)
     if auth_user and auth_password:
         auth.ensure(auth_user, auth_password)
-    auth_enabled = auth.configured
+    # Authorization reads ``auth.configured`` live at each check (see Handler
+    # below) and deliberately does NOT capture a boolean here: a dashboard that
+    # starts before credentials exist must begin enforcing them the moment the
+    # auth file appears, instead of staying open for the life of the process.
     reviews_enabled = os.environ.get("CORTEX_DASHBOARD_REVIEWS", "").strip().casefold() in {
         "1",
         "true",
@@ -524,10 +527,12 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._json(
                     HTTPStatus.OK,
                     {
-                        "auth_enabled": auth_enabled,
+                        "auth_enabled": auth.configured,
                         "authenticated": authenticated,
-                        "must_change_password": auth.must_change_password() if authenticated and auth_enabled else False,
-                        "username": auth.username() if authenticated and auth_enabled else "",
+                        "must_change_password": (
+                            auth.must_change_password() if authenticated and auth.configured else False
+                        ),
+                        "username": auth.username() if authenticated and auth.configured else "",
                     },
                 )
                 return
@@ -777,7 +782,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if payload is None:
                 return
             try:
-                actor = auth.username() if auth_enabled else "local-operator"
+                actor = auth.username() if auth.configured else "local-operator"
                 if parsed.path == "/api/review/copilot":
                     proposal_id = str(payload.get("proposal_id") or "")
                     raw_conversation = payload.get("conversation")
@@ -1256,7 +1261,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "task_id is required"})
                 return
             try:
-                actor = auth.username() if auth_enabled else "local-operator"
+                actor = auth.username() if auth.configured else "local-operator"
                 if undo:
                     changed = store.undo_task_outcome_label(task_id, actor=actor)
                     if not changed:
@@ -1327,7 +1332,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                     {"error": "feedback is limited to memories injected for this trace"},
                 )
                 return
-            actor = auth.username() if auth_enabled else "local-operator"
+            actor = auth.username() if auth.configured else "local-operator"
             try:
                 result = store.set_trace_memory_feedback(
                     task_id,
@@ -1353,7 +1358,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             payload = self._read_json()
             if payload is None:
                 return
-            actor = auth.username() if auth_enabled else "local-operator"
+            actor = auth.username() if auth.configured else "local-operator"
             try:
                 if path == "/api/experiment/control":
                     action = str(payload.get("action") or "start").casefold()
@@ -1396,7 +1401,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             self._json(HTTPStatus.OK, {"result": result})
 
         def _login(self) -> None:
-            if not auth_enabled:
+            if not auth.configured:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": "authentication is disabled"})
                 return
             if not self._throttle_ok():
@@ -1442,7 +1447,10 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             )
 
         def _authorized(self, *, complete: bool) -> bool:
-            if not auth_enabled:
+            # Live check, not a startup snapshot: credentials created after the
+            # server started (first-run CLI reset, legacy env migration) take
+            # effect immediately.
+            if not auth.configured:
                 return True
             authenticated = auth.session_from_cookie(self.headers.get("Cookie")) is not None
             if not authenticated:
@@ -1573,7 +1581,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     url = f"http://127.0.0.1:{server.server_port}"
     print(f"Cortex Brain dashboard: {url}")
     print("Bound to localhost; review changes require an authenticated session. Press Ctrl-C to stop.")
-    print(f"Browser authentication: {'form + signed session' if auth_enabled else 'disabled'}")
+    print(f"Browser authentication: {'form + signed session' if auth.configured else 'disabled'}")
     print(f"Guided review changes: {'enabled' if reviews_enabled else 'disabled (read-only)'}")
     if open_browser:
         threading.Timer(0.25, lambda: webbrowser.open(url)).start()

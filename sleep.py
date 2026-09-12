@@ -1199,6 +1199,30 @@ def _reflection_records(store: CortexStore, run_id: str) -> list[dict[str, Any]]
     ]
 
 
+class _SameHostRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects that move a reflection request to a different origin.
+
+    ``urllib`` follows 3xx responses automatically and forwards request
+    headers across the redirect.  For an authenticated reflection call that
+    means the ``Authorization`` bearer token would leak to whatever host the
+    provider happens to redirect to.  Same-origin redirects (scheme/host/port
+    unchanged, e.g. a provider that 301s its canonical path) stay allowed.
+    """
+
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        if urlparse(newurl).netloc != urlparse(req.full_url).netloc:
+            raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def _post_chat(endpoint: str, api_key: str, payload: dict[str, Any], *, timeout: float) -> dict[str, Any]:
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -1210,7 +1234,8 @@ def _post_chat(endpoint: str, api_key: str, payload: dict[str, Any], *, timeout:
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=max(1.0, min(300.0, timeout))) as response:
+        opener = urllib.request.build_opener(_SameHostRedirectHandler())
+        with opener.open(request, timeout=max(1.0, min(300.0, timeout))) as response:
             body = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         error.read()

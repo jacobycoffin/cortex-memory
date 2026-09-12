@@ -192,21 +192,43 @@ class DashboardAuth:
         return (st.st_mtime_ns, st.st_size)
 
     def _load(self, *, optional: bool = False) -> dict[str, Any] | None:
-        if self._state is not None and self._current_stat() == self._stat:
-            return self._state
-        # Cache miss or the file changed under us (another process reset the
-        # password) — re-read so this instance enforces the current password
-        # and session version. A deleted file fails closed via _require_state.
-        if optional and not self.path.exists():
-            self._state = None
-            self._stat = None
-            return None
-        state = json.loads(self.path.read_text(encoding="utf-8"))
+        # The auth file can be replaced by a *separate* process (a CLI password
+        # reset) at any moment. Cache validity is decided by the file stat, but
+        # a stat taken only *after* the read can belong to a newer file than the
+        # bytes we just read — caching stale credentials while claiming they are
+        # current. Bracket every read with a stat on each side and trust only
+        # content whose identity was stable across the read; retry on churn and
+        # fail closed if the file never settles.
+        for _ in range(3):
+            before = self._current_stat()
+            if self._state is not None and before == self._stat:
+                return self._state
+            if before is None:
+                # Missing file: drop any cache rather than serve stale state.
+                self._state = None
+                self._stat = None
+                if optional:
+                    return None
+                raise FileNotFoundError(str(self.path))
+            try:
+                content = self.path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._state = None
+                self._stat = None
+                if optional:
+                    return None
+                raise
+            after = self._current_stat()
+            if after == before:
+                break
+        else:
+            raise RuntimeError("dashboard auth file changed repeatedly while reading")
+        state = json.loads(content)
         required = {"username", "salt", "password_hash", "session_secret", "session_version"}
         if not required.issubset(state):
             raise ValueError("dashboard auth file is incomplete")
         self._state = state
-        self._stat = self._current_stat()
+        self._stat = after
         return state
 
     def _require_state(self) -> dict[str, Any]:

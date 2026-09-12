@@ -93,6 +93,26 @@ def sanitize_memory(text: str) -> SanitizedMemory:
     )
 
 
+_ROLE_TAG = re.compile(
+    r"<\s*/?\s*(?:system|developer|assistant)\b[^>]*>|<\s*/?\s*tool\b[^>]*>",
+    re.I,
+)
+
+
+def neutralize_role_tags(text: str) -> str:
+    """Strip chat-role tags from provenance-style labels.
+
+    ``sanitize_memory`` *reports* role-tag injection but deliberately keeps the
+    text intact for content that a human should still read.  Provenance fields
+    such as ``source_type`` are rendered verbatim next to recalled content, so
+    a stored ``<system>`` marker there can be mistaken for a real chat turn.
+    Removing the markers at write time keeps the label descriptive without
+    letting it impersonate a role.
+    """
+
+    return _ROLE_TAG.sub("", text or "")
+
+
 def safe_prompt_text(text: str) -> str:
     """Neutralize delimiters that could visually escape the recall envelope."""
     return (
