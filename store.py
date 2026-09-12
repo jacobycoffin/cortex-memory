@@ -13385,6 +13385,11 @@ class CortexStore:
             extraction_method="autojudge_semantic_consolidation",
             evidence_ids=(str(left["id"]), str(right["id"])),
             storage_policy="trusted",
+            # Born quarantined: the merged row must not be recall-eligible
+            # until the decision ledger finalizes. A crash or error between the
+            # durable result write and the finalize transaction would otherwise
+            # leave a live merged memory behind (audit finding P1).
+            state="quarantine",
             record_role="canonical",
             preserve_exact_duplicate=True,
         )
@@ -13437,6 +13442,14 @@ class CortexStore:
                 """UPDATE memories SET dirty=0,dirty_reason=NULL
                    WHERE id=?""",
                 (result_memory_id,),
+            )
+            # Promote the merged memory to active atomically with the ledger
+            # finalize. The memory was born quarantined (not recall-eligible);
+            # this is the single transition that makes it live.
+            conn.execute(
+                """UPDATE memories SET state='active',updated_at=?
+                   WHERE id=? AND state='quarantine'""",
+                (now, result_memory_id),
             )
             conn.execute(
                 """UPDATE semantic_consolidation_decisions

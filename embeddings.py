@@ -101,10 +101,14 @@ class Embedder:
         return self._load_error
 
     def _ensure_loaded(self) -> bool:
-        if self._session is not None:
+        # Both the fast path and the locked path require the tokenizer as well
+        # as the session. Publishing them separately used to leave a window in
+        # which a second thread saw `_session` set, returned "ready", and then
+        # called encode_batch on a still-None tokenizer (audit finding R4).
+        if self._session is not None and self._tokenizer is not None:
             return True
         with self._lock:
-            if self._session is not None:
+            if self._session is not None and self._tokenizer is not None:
                 return True
             if not self.available:
                 self._load_error = f"model files missing under {self.model_dir}"
@@ -119,7 +123,7 @@ class Embedder:
                 opts.inter_op_num_threads = self._threads
                 opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-                self._session = ort.InferenceSession(
+                session = ort.InferenceSession(
                     str(self.model_dir / _MODEL_FILE),
                     providers=["CPUExecutionProvider"],
                     sess_options=opts,
@@ -127,12 +131,15 @@ class Embedder:
                 tokenizer = Tokenizer.from_file(str(self.model_dir / _TOKENIZER_FILE))
                 tokenizer.enable_truncation(max_length=MAX_LEN)
                 tokenizer.enable_padding(length=None)   # dynamic padding per call
-                self._tokenizer = tokenizer
             except Exception as exc:                    # noqa: BLE001
                 self._load_error = f"{type(exc).__name__}: {exc}"
                 self._session = None
                 self._tokenizer = None
                 return False
+            # Publish both together only after everything succeeded, so no
+            # observer ever sees a session without its tokenizer.
+            self._session = session
+            self._tokenizer = tokenizer
             return True
 
     # -------------------------------------------------------------- inference

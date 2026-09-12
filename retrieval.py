@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from functools import lru_cache
-from typing import Any
+from typing import Any, Iterable
 
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
@@ -1156,6 +1156,13 @@ def _context_components(
     )
 
     query_token_set = set(query_tokens(query))
+
+    def _query_mentions(value: str) -> bool:
+        """True when the query carries the value as whole words."""
+
+        tokens = _context_tokens(value)
+        return bool(tokens) and tokens <= query_token_set
+
     entity_hits = sum(
         1
         for entity in entities
@@ -1173,10 +1180,16 @@ def _context_components(
     precondition_match = (
         sum(precondition_results) / len(precondition_results) if precondition_results else 1.0
     )
-    system_hits = sum(1 for system in systems if system.casefold() in context_systems or system.casefold() in query_folded)
+    system_hits = sum(
+        1
+        for system in systems
+        if _context_label_in(system, context_systems) or _query_mentions(system)
+    )
     system_match = system_hits / len(systems) if systems else 1.0
     version_hits = sum(
-        1 for version in versions if version.casefold() in context_versions or version.casefold() in query_folded
+        1
+        for version in versions
+        if _context_label_in(version, context_versions) or _query_mentions(version)
     )
     version_match = version_hits / len(versions) if versions else 1.0
 
@@ -1286,15 +1299,42 @@ def _clean_context_value(value: Any) -> str:
 
 
 def _context_value_match(required: str, actual: str | None) -> float:
+    """Return 1.0 only when the active context genuinely carries the requirement.
+
+    Containment is deliberately NOT a match: "nonproduction" must not satisfy
+    "production", "not enabled" must not satisfy "enabled", and "v10" must not
+    satisfy "v1".  Values are compared as casefolded word tokens so casing,
+    punctuation, and whitespace differences that do not change the words still
+    match.
+    """
+
     if not actual:
         return 0.0
     left = _clean_context_value(required).casefold()
     right = _clean_context_value(actual).casefold()
     if left == right:
         return 1.0
-    if left in right or right in left:
+    left_tokens = _context_tokens(left)
+    right_tokens = _context_tokens(right)
+    if left_tokens and left_tokens == right_tokens:
         return 1.0
     return 0.0
+
+
+_CONTEXT_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def _context_tokens(value: str) -> set[str]:
+    """Casefolded word tokens for a context label, with no stopword removal."""
+
+    return set(_CONTEXT_TOKEN.findall(str(value or "").casefold()))
+
+
+def _context_label_in(value: str, candidates: Iterable[str]) -> bool:
+    """True when ``value``'s tokens exactly equal some candidate's tokens."""
+
+    tokens = _context_tokens(value)
+    return bool(tokens) and any(tokens == _context_tokens(candidate) for candidate in candidates)
 
 
 def _age_days(timestamp: str | None) -> float:
