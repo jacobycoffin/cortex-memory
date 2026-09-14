@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -1562,6 +1563,131 @@ class AutoJudgeTests(unittest.TestCase):
             "SELECT * FROM edges WHERE relation='contradicts'"
         ).fetchone()
         self.assertIsNotNone(edge)
+
+
+    def test_unanswered_candidates_are_rotated_instead_of_re_billed(self) -> None:
+        """A provider that answers nothing must not be paid for the same batch twice.
+
+        Regression (2026-09-14): only explicitly deferred candidates advanced the
+        deferral rotation, so a valid-but-empty `decisions` array left every
+        candidate in place. Measured: three runs sent a byte-identical payload and
+        billed 905 tokens each, with zero applied and zero deferred — and the
+        auto-judge timer runs every 5 minutes, so that is the same call re-billed
+        all day. Candidates the provider accepted but never answered are now
+        rotated like explicit deferrals.
+        """
+        for index in range(3):
+            self.store.propose_memory_creation(
+                f"Project Acorn deployment checklist item {index} requires a verified backup.",
+                kind="procedure",
+                source_type="user_turn",
+                source_category="USER_STATED",
+                session_id=f"session-{index}",
+                confidence=0.88,
+                importance=0.86,
+            )
+        sends: list[list[str]] = []
+
+        def silent_provider(_endpoint, _key, payload, _timeout):
+            candidates = json.loads(payload["messages"][1]["content"])["candidates"]
+            sends.append(sorted(str(candidate["proposal_id"]) for candidate in candidates))
+            return {
+                "choices": [{"message": {"content": '{"decisions":[]}'}}],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 5, "total_tokens": 905},
+            }
+
+        first = AutoJudge(self.config(), provider_call=silent_provider).run(self.store)
+        self.assertEqual(first.get("unanswered"), 3, "the report must show the unanswered batch")
+        self.assertEqual(first["applied"], 0)
+        self.assertEqual(len(sends), 1)
+
+        second = AutoJudge(self.config(), provider_call=silent_provider).run(self.store)
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(
+            len(sends),
+            1,
+            "the identical paid batch was offered again instead of being rotated",
+        )
+
+
+    def test_failed_chunk_rotates_the_batch_it_already_paid_for(self) -> None:
+        """An aborted run must not re-bill the chunks it already sent.
+
+        Regression (2026-09-14): a provider failure on chunk 2 raised before the
+        apply and rotation steps, so the next run re-sent chunk 1 — the one that
+        had already succeeded and been billed. Nothing is applied on a failed run
+        (that remains true); the batch is simply rotated so the next run offers
+        different candidates.
+        """
+        # Two chunks: the judge sends 10 candidates per call.
+        for index in range(12):
+            self.store.propose_memory_creation(
+                f"Project Acorn batch item {index} needs a verified backup checklist.",
+                kind="procedure",
+                source_type="user_turn",
+                source_category="USER_STATED",
+                session_id=f"session-{index}",
+                confidence=0.88,
+                importance=0.86,
+            )
+        sends: list[list[str]] = []
+
+        def flaky_provider(_endpoint, _key, payload, _timeout):
+            candidates = json.loads(payload["messages"][1]["content"])["candidates"]
+            ids = sorted(str(candidate["proposal_id"]) for candidate in candidates)
+            sends.append(ids)
+            # Deterministic per payload: the later chunk (items 10-11) always
+            # fails, so the "first call succeeds" assumption cannot leak from one
+            # run into the next.
+            later_chunk = any(
+                (match := re.search(r"batch item (\d+)", str(candidate.get("content", ""))))
+                and int(match.group(1)) >= 10
+                for candidate in candidates
+            )
+            if later_chunk:
+                raise RuntimeError("synthetic provider failure on chunk 2")
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "decisions": [
+                                        {
+                                            "proposal_id": proposal_id,
+                                            "action": "remember",
+                                            "confidence": 0.93,
+                                            "reason": "Stable reusable procedure.",
+                                        }
+                                        for proposal_id in ids
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 500},
+            }
+
+        with self.assertRaises(AutoJudgeError):
+            AutoJudge(self.config(max_proposals=12), provider_call=flaky_provider).run(self.store)
+
+        first_chunk = list(sends[0])
+        self.assertEqual(len(first_chunk), 10, "the first chunk must be the paid one")
+        with self.store._lock:
+            remembered = self.store._conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_creation_proposals WHERE status='remembered'"
+            ).fetchone()["n"]
+        self.assertEqual(remembered, 0, "a failed run must not apply the paid chunk")
+
+        sends.clear()
+        AutoJudge(self.config(max_proposals=12), provider_call=flaky_provider).run(self.store)
+        resent = set(first_chunk) & {proposal_id for batch in sends for proposal_id in batch}
+        self.assertEqual(
+            resent,
+            set(),
+            "the already-paid chunk was offered again instead of being rotated",
+        )
 
 
 if __name__ == "__main__":

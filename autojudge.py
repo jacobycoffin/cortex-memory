@@ -380,6 +380,9 @@ class AutoJudge:
             )
         decisions: list[dict[str, Any]] = []
         usage_totals: dict[str, Any] = {}
+        # Candidates already handed to the provider in this run, in send order.
+        # Used to rotate a batch that was paid for but could not be judged.
+        sent_rotation_ids: list[str] = []
         for chunk_start in range(0, len(candidate_records), _JUDGE_LLM_CHUNK_SIZE):
             chunk_records = candidate_records[
                 chunk_start : chunk_start + _JUDGE_LLM_CHUNK_SIZE
@@ -411,6 +414,7 @@ class AutoJudge:
             }
             if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) > _MAX_PROVIDER_REQUEST_BYTES:
                 raise AutoJudgeError("auto-judge provider request exceeded the size limit")
+            sent_rotation_ids.extend(str(proposal_id) for proposal_id in chunk_ids)
             try:
                 response = self._provider_call(
                     self.config.endpoint,
@@ -418,10 +422,28 @@ class AutoJudge:
                     payload,
                     self.config.timeout_seconds,
                 )
-            except AutoJudgeError:
-                raise
-            except Exception as exc:  # pragma: no cover - exercised through HTTP adapter tests
-                raise AutoJudgeError(f"auto-judge provider call failed: {type(exc).__name__}") from exc
+            except Exception as exc:
+                # This chunk's candidates were already sent, so they were billed
+                # even though the call came back unusable — and so were every
+                # earlier chunk's. Rotate them before re-raising so the next run
+                # offers a different batch instead of paying for this payload
+                # again. The proposals themselves stay pending (nothing is
+                # applied on a failed run), so moving them back costs nothing.
+                _advance_deferral_rotation(
+                    store,
+                    list(dict.fromkeys(sent_rotation_ids)),
+                    now=datetime.now(timezone.utc).isoformat(),
+                )
+                # The cooldown memo is what actually keeps the next run from
+                # re-offering this batch (the ordering key alone does not: the
+                # selection window is newest-first, so advancing `last_seen_at`
+                # leaves the batch in front). Both must be applied together.
+                _mark_deferred_recently(store, list(dict.fromkeys(sent_rotation_ids)))
+                if isinstance(exc, AutoJudgeError):
+                    raise
+                raise AutoJudgeError(
+                    f"auto-judge provider call failed: {type(exc).__name__}"
+                ) from exc
 
             decisions.extend(_parse_decisions(response, chunk_ids))
             for usage_key, usage_value in _safe_usage(response.get("usage")).items():
@@ -552,14 +574,32 @@ class AutoJudge:
                         )
                         report["contradiction_edges_created"] += created_ct
 
+        # Candidates the provider accepted but never answered (an empty or
+        # truncated `decisions` array, or a model that simply skipped some) were
+        # still paid for. Rotating only the explicitly deferred ones meant the
+        # next run offered the identical payload and billed it again — measured
+        # 2026-09-14: three runs, 905 tokens each, zero applied, zero deferred,
+        # byte-identical candidate list every time (the timer would repeat that
+        # every 5 minutes all day). Advancing them is the same reasoning the
+        # helper documents for explicit deferrals: nothing is actionable for them
+        # this cycle, so move them to the back and let the queue drain.
+        answered_ids = {str(decision["proposal_id"]) for decision in decisions}
+        unanswered_ids = [
+            str(proposal["proposal_id"])
+            for proposal in provider_candidates
+            if str(proposal["proposal_id"]) not in answered_ids
+        ]
+        if unanswered_ids:
+            report["unanswered"] = len(unanswered_ids)
+        rotation_ids = list(dict.fromkeys([*deferred_for_rotation, *unanswered_ids]))
         _advance_deferral_rotation(
             store,
-            deferred_for_rotation,
+            rotation_ids,
             # Must match the store's ISO 'T' format: str(datetime) uses a space,
             # which sorts before 'T' and would corrupt the rotation order.
             now=datetime.now(timezone.utc).isoformat(),
         )
-        _mark_deferred_recently(store, deferred_for_rotation)
+        _mark_deferred_recently(store, rotation_ids)
         return report
 
 
