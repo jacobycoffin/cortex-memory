@@ -14,7 +14,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from .refinery import (
     CLARITY_FLAGS,
@@ -3607,6 +3607,48 @@ class CortexStore:
                 (memory_id, *states, *eligibilities),
             ).fetchone()
         return bool(row)
+
+    def recall_eligible_ids(
+        self,
+        memory_ids: Iterable[str],
+        *,
+        evidence_lookup: bool = False,
+        include_archived: bool = False,
+    ) -> set[str]:
+        """Which of ``memory_ids`` are recall-eligible, in a few queries, not N.
+
+        Same predicate as :meth:`is_memory_recall_eligible`, batched for the
+        read-only snapshot paths that otherwise probe once per row — the review
+        inbox alone issued hundreds of single-row probes per snapshot. Ids are
+        chunked because SQLite caps bound parameters.
+        """
+
+        ids = list(dict.fromkeys(str(memory_id) for memory_id in memory_ids))
+        if not ids:
+            return set()
+        states = ("active", "cold", "archived") if include_archived else ("active", "cold")
+        eligibilities = ("primary", "evidence_only") if evidence_lookup else ("primary",)
+        state_placeholders = ",".join("?" for _ in states)
+        eligibility_placeholders = ",".join("?" for _ in eligibilities)
+        eligible: set[str] = set()
+        chunk_size = 400
+        with self._lock:
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start : start + chunk_size]
+                id_placeholders = ",".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"""SELECT DISTINCT m.id FROM memories m
+                        JOIN memory_recall_memberships rm
+                          ON rm.memory_id=m.id AND rm.revoked_at IS NULL
+                        JOIN memory_recall_sets rs
+                          ON rs.recall_set_id=rm.recall_set_id AND rs.status='active'
+                        WHERE m.id IN ({id_placeholders})
+                          AND m.state IN ({state_placeholders})
+                          AND rm.eligibility IN ({eligibility_placeholders})""",
+                    (*chunk, *states, *eligibilities),
+                ).fetchall()
+                eligible.update(str(row["id"]) for row in rows)
+        return eligible
 
     def recall_set_snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -11062,8 +11104,18 @@ class CortexStore:
             counts["approved" if str(row["action"]) == "approve" else "denied"] += 1
         connection_kinds = {"association", "association_reinforcement", "edge_downscale"}
         cleanup_kinds = {"consolidation", "lifecycle", "dependency_repair"}
-        for row in proposal_rows:
-            proposal = dict(row)
+        proposal_dicts = [dict(row) for row in proposal_rows]
+        # One batched eligibility lookup instead of two single-row probes per
+        # proposal (this loop issued hundreds of queries per snapshot).
+        eligible_ids = self.recall_eligible_ids(
+            [
+                str(candidate)
+                for row in proposal_dicts
+                for candidate in (row.get("src_id"), row.get("dst_id"))
+                if candidate
+            ]
+        )
+        for proposal in proposal_dicts:
             try:
                 details = json.loads(str(proposal.pop("details_json") or "{}"))
             except json.JSONDecodeError:
@@ -11074,9 +11126,9 @@ class CortexStore:
                 continue
             if dst and str(dst.get("state")) not in {"active", "cold"}:
                 continue
-            if src and not self.is_memory_recall_eligible(str(src["id"])):
+            if src and str(src["id"]) not in eligible_ids:
                 continue
-            if dst and not self.is_memory_recall_eligible(str(dst["id"])):
+            if dst and str(dst["id"]) not in eligible_ids:
                 continue
             kind = str(proposal["kind"])
             category = (
