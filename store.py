@@ -14165,6 +14165,30 @@ class CortexStore:
                     ).fetchall()
                 ]
                 snapshot = json.dumps(edge_rows, ensure_ascii=True, sort_keys=True)
+                # Claim the decision FIRST, inside this transaction.  The status
+                # check above ran outside it, so a second applier (another
+                # process on the same database, or an operator retry after a
+                # transport failure) can commit in between; the strand insert
+                # then hits `UNIQUE(memory_strands.decision_id)` and surfaced as a
+                # raw sqlite3.IntegrityError.  Claiming here means the loser of
+                # that race returns a clean already-applied result and touches
+                # nothing — not the edges, not the memory state.
+                claimed = conn.execute(
+                    """UPDATE adaptive_pruning_decisions
+                       SET status='applied',result_state='cold',
+                           edge_snapshot_json=?,applied_at=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (snapshot, now, decision_id),
+                ).rowcount
+                if not claimed:
+                    return {
+                        "decision_id": decision_id,
+                        "status": "applied",
+                        "action": action,
+                        "state": "cold",
+                        "edges_removed": 0,
+                        "note": "already applied by another writer",
+                    }
                 conn.execute(
                     "DELETE FROM edges WHERE src_id=? OR dst_id=?",
                     (memory["id"], memory["id"]),
@@ -14197,13 +14221,8 @@ class CortexStore:
                         now,
                     ),
                 )
-                conn.execute(
-                    """UPDATE adaptive_pruning_decisions
-                       SET status='applied',result_state='cold',
-                           edge_snapshot_json=?,applied_at=?
-                       WHERE decision_id=? AND status='proposed'""",
-                    (snapshot, now, decision_id),
-                )
+                # The ledger row was already claimed above (status='applied' plus
+                # the snapshot), so there is nothing left to update here.
                 self._refresh_adaptive_pruning_run_tx(conn, str(decision["run_id"]))
             return {
                 "decision_id": decision_id,

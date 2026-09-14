@@ -194,6 +194,94 @@ class AdaptivePruningTests(unittest.TestCase):
         self.assertEqual(self.store.adaptive_pruning_snapshot()["counts"]["reversed"], 1)
         self.assertTrue(self.store.audit()["ok"])
 
+    def test_double_apply_of_a_strand_decision_is_idempotent(self) -> None:
+        """Two appliers on one database must not crash the loser.
+
+        `apply_adaptive_pruning` checks `status='proposed'` outside its
+        transaction, so a second applier — another process, or an operator
+        retry after a transport failure — can commit in between. The loser used
+        to hit `UNIQUE(memory_strands.decision_id)` and raise a raw
+        sqlite3.IntegrityError after already having deleted the memory's edges.
+        """
+        memory_id = self.old_memory()
+        neighbor_id, _ = self.store.add_memory("Current service inventory.", kind="operational")
+        self.store.add_edge(
+            memory_id,
+            neighbor_id,
+            "related",
+            evidence_type="operator_review",
+            evidence_key="pruning-race-edge",
+            explanation="The legacy note once belonged to this service inventory.",
+        )
+
+        def provider(_endpoint, _key, payload, _timeout):
+            candidate = json.loads(payload["messages"][1]["content"])["candidates"][0]
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "decisions": [
+                                        {
+                                            "memory_id": candidate["memory_id"],
+                                            "action": "orphan_strand",
+                                            "confidence": 0.94,
+                                            "reason": "No use evidence; preserve it disconnected.",
+                                        }
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+
+        run_adaptive_pruning(
+            self.store,
+            self.config(),
+            provider_call=provider,
+            relevance_threshold=0.8,
+            max_candidates=1,
+            apply=False,
+        )
+        with self.store._lock:
+            decision_id = self.store._conn.execute(
+                "SELECT decision_id FROM adaptive_pruning_decisions WHERE status='proposed'"
+            ).fetchone()["decision_id"]
+
+        # A second store on the same file plays the competing operator process.
+        second = CortexStore(Path(self.tmp.name) / "cortex.db")
+        original_transaction = self.store.transaction
+        interleaved: list[dict] = []
+
+        def transaction_with_interleave():
+            if not interleaved:
+                interleaved.append(second.apply_adaptive_pruning(decision_id))
+            return original_transaction()
+
+        self.store.transaction = transaction_with_interleave
+        try:
+            loser = self.store.apply_adaptive_pruning(decision_id)
+        finally:
+            self.store.transaction = original_transaction
+
+        self.assertEqual(len(interleaved), 1, "the competing applier must have run")
+        self.assertEqual(interleaved[0]["status"], "applied")
+        self.assertEqual(loser["status"], "applied")
+        self.assertEqual(loser["edges_removed"], 0, "the loser must not remove edges a second time")
+        with self.store._lock:
+            strands = self.store._conn.execute(
+                "SELECT COUNT(*) count FROM memory_strands WHERE decision_id=?",
+                (decision_id,),
+            ).fetchone()["count"]
+        self.assertEqual(strands, 1, "exactly one strand row may exist for the decision")
+        self.assertEqual(
+            self.store.adaptive_pruning_snapshot()["counts"].get("applied"), 1
+        )
+        self.assertTrue(self.store.audit()["ok"])
+        second.close()
+
     def test_quarantine_requires_harm_evidence(self) -> None:
         memory_id = self.old_memory()
         candidate = self.store.adaptive_pruning_candidates(
