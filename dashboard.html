@@ -4780,7 +4780,18 @@
     function svgText(x,y,text,className,anchor="start"){const node=svgEl("text",{x,y,class:className,"text-anchor":anchor});node.textContent=String(text);return node;}
 
     bootAuth();
-    setInterval(()=>load(true),60000);
+    // Poll only while the page is visible. A background tab used to request a
+    // full snapshot (and re-render it) every minute for as long as it stayed
+    // open; coming back to the tab refreshes immediately instead. The
+    // `refreshing` class is the same in-flight flag `load()` already toggles, so
+    // flicking between tabs cannot stack up overlapping snapshots.
+    function pollIfVisible() {
+      if (document.visibilityState !== "visible") return;
+      if (document.getElementById("refresh").classList.contains("refreshing")) return;
+      load(true);
+    }
+    setInterval(pollIfVisible, 60000);
+    document.addEventListener("visibilitychange", pollIfVisible);
   </script>
 </body>
 </html>

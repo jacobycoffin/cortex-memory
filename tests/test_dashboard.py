@@ -505,5 +505,18 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("You still confirm the final action below.", html)
 
 
+    def test_dashboard_polls_only_while_the_tab_is_visible(self) -> None:
+        """A background tab must not fetch a full snapshot every minute forever."""
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertNotIn("setInterval(()=>load(true),60000)", html)
+        self.assertIn("function pollIfVisible()", html)
+        self.assertIn('if (document.visibilityState !== "visible") return;', html)
+        self.assertIn("setInterval(pollIfVisible, 60000)", html)
+        self.assertIn('document.addEventListener("visibilitychange", pollIfVisible)', html)
+        # Coming back to the tab refreshes immediately rather than waiting out an
+        # interval, and the in-flight guard stops overlapping snapshots.
+        self.assertIn('if (document.getElementById("refresh").classList.contains("refreshing")) return;', html)
+
+
 if __name__ == "__main__":
     unittest.main()
