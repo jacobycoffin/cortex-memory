@@ -462,8 +462,31 @@ class MemoryRetriever:
                 # by _inject_semantic_candidates; do not count it twice here.
                 return result.score + type_bonus - 0.16 * similarity
 
-            result = max(remaining, key=diversified_value)
-            remaining.remove(result)
+            if selected:
+                best_index = 0
+                best_value = diversified_value(remaining[0])
+                for index in range(1, len(remaining)):
+                    # `remaining` stays in descending score order and the kind
+                    # bonus is bounded by 0.035, so once even the best achievable
+                    # value cannot beat the incumbent, every later candidate is
+                    # out of contention. The scan is otherwise exact: the first
+                    # maximum wins, exactly as `max(..., key=...)` chose it.
+                    occurrence = remaining[index]
+                    if occurrence.score + 0.035 <= best_value:
+                        break
+                    value = diversified_value(occurrence)
+                    if value > best_value:
+                        best_index, best_value = index, value
+                result = remaining.pop(best_index)
+            else:
+                # Nothing selected yet, so every candidate's diversified value is
+                # exactly its score (no kind bonus, no similarity penalty) and
+                # `remaining` is in descending score order: the maximum is the
+                # first element. Rescanning the whole pool on every rejection made
+                # this quadratic — a 320-candidate pool whose results all failed
+                # the eligibility or score gates cost 51,360 comparisons to
+                # decide the same thing.
+                result = remaining.pop(0)
             if not self.store.is_memory_recall_eligible(
                 str(result.memory["id"]),
                 evidence_lookup=evidence_lookup,

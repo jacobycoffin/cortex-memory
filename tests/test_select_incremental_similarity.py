@@ -159,5 +159,68 @@ class SelectIncrementalSimilarityTests(unittest.TestCase):
         )
 
 
+class SelectPoolWalkTests(unittest.TestCase):
+    """The pool walk must stay single-pass when nothing is being selected.
+
+    Picking the diversified maximum is a full rescan of `remaining`. While no
+    memory has been selected yet every candidate's diversified value is exactly
+    its score and the pool is already in descending score order, so the scan used
+    to re-derive the same head n times — 51,360 comparisons for a 320-candidate
+    pool whose results all failed the gates. The head is taken directly now.
+
+    Both properties below are behavioural: the walk must still visit every
+    candidate exactly once with a recorded reason, and the head must still be the
+    highest-scoring candidate.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+        self.store.add_memory(
+            "Amber pipeline deployment checklist verified backup release gate step nine zero one.",
+            kind="semantic",
+            confidence=0.9,
+            importance=0.95,
+        )
+        for i in range(30):
+            self.store.add_memory(
+                f"Amber pipeline deployment checklist verified backup release gate filler {i}.",
+                kind="operational",
+                confidence=0.7,
+                importance=0.6,
+            )
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_rejected_pool_is_walked_once_with_a_reason_for_every_candidate(self) -> None:
+        selected, diagnostics = MemoryRetriever(self.store, threshold=0.16).search_detailed(
+            QUERY, limit=64, token_budget=4000, threshold=0.99, graph_depth=0
+        )
+        self.assertEqual(selected, [])
+        self.assertTrue(diagnostics.abstained)
+        decisions = diagnostics.candidate_decisions
+        self.assertEqual(len(decisions), diagnostics.candidate_count)
+        self.assertEqual(len({row["memory_id"] for row in decisions}), len(decisions))
+        self.assertEqual(
+            Counter(row["reason"] for row in decisions),
+            Counter({"score below the active retrieval threshold": diagnostics.candidate_count}),
+        )
+
+    def test_first_pick_is_the_highest_scoring_candidate(self) -> None:
+        with_limit_one, diagnostics = MemoryRetriever(self.store, threshold=0.0).search_detailed(
+            QUERY, limit=1, token_budget=4000, threshold=0.0, graph_depth=0
+        )
+        self.assertEqual(len(with_limit_one), 1)
+        # Decision rows round their score to 6 places, so compare like for like.
+        self.assertAlmostEqual(
+            float(with_limit_one[0].score),
+            max(float(row["score"]) for row in diagnostics.candidate_decisions),
+            places=6,
+            msg="the first pick must be the head of the score-ordered pool",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
