@@ -431,13 +431,27 @@ class MemoryRetriever:
         rejection_reasons: dict[str, str] = {}
         consumed = 0
         remaining = list(ranked)
+        # `_memory_similarity` is a pure function of the two memory bodies, and a
+        # candidate's diversified value depends only on the SELECTED set. Instead
+        # of re-scoring every remaining candidate against every selected memory on
+        # every pick (quadratic work: 47 candidates used to cost ~1,200 set
+        # intersections), track each remaining candidate's maximum similarity to
+        # the selected set and refresh it only when a memory is actually picked.
+        # The computed values are identical to the re-computation; only the
+        # repeated pair work is removed.
+        max_similarity_to_selected: dict[str, float] = {}
+        selected_kinds: set[str] = set()
         while remaining and len(selected) < limit:
 
             def diversified_value(result: RetrievalResult) -> float:
-                similarity = max((_memory_similarity(result, prior) for prior in selected), default=0.0)
+                similarity = max_similarity_to_selected.get(str(result.memory["id"]), 0.0)
+                # A result whose kind is not yet represented earns the diversity
+                # bonus; the bonus can only disappear once a same-kind memory is
+                # selected, so tracking selected kinds matches the scan it
+                # replaces.
                 type_bonus = (
                     0.035
-                    if selected and all(prior.memory["kind"] != result.memory["kind"] for prior in selected)
+                    if selected and result.memory["kind"] not in selected_kinds
                     else 0.0
                 )
                 # The semantic contribution is already folded into result.score
@@ -478,7 +492,7 @@ class MemoryRetriever:
             if result.score < effective_threshold and not result.memory["pinned"]:
                 rejection_reasons[str(result.memory["id"])] = "score below the active retrieval threshold"
                 continue
-            if any(_memory_similarity(result, prior) >= 0.86 for prior in selected):
+            if max_similarity_to_selected.get(str(result.memory["id"]), 0.0) >= 0.86:
                 rejection_reasons[str(result.memory["id"])] = "near-duplicate of a stronger selected memory"
                 continue
             family_count = sum(
@@ -497,6 +511,15 @@ class MemoryRetriever:
                 continue
             selected.append(result)
             consumed += result.estimated_tokens
+            selected_kinds.add(result.memory["kind"])
+            if len(selected) < limit:
+                # Refresh the running similarity maxima for the next picks; this
+                # is the only place similarity is computed during selection.
+                for other in remaining:
+                    other_key = str(other.memory["id"])
+                    similarity = _memory_similarity(other, result)
+                    if similarity > max_similarity_to_selected.get(other_key, 0.0):
+                        max_similarity_to_selected[other_key] = similarity
         stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
