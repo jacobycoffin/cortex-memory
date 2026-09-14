@@ -481,6 +481,50 @@ class CortexStoreTests(unittest.TestCase):
         self.assertIsNone(versions[-1]["system_to"])
         self.assertIsNotNone(next(row for row in versions if row["state"] == "tombstoned")["system_to"])
 
+    def test_archive_action_writes_the_archived_state(self) -> None:
+        """Review action "archive" must write the lifecycle state 'archived'.
+
+        Regression (2026-09-14): the action name was written verbatim as the
+        state, producing 'archive' rows — not one of the five lifecycle states.
+        Such rows skip the dependency dirty-marking and audit paths that
+        legitimately archived memories go through.
+        """
+        memory_id, _ = self.store.add_memory(
+            "Lifecycle archive mapping check for a transient episode record.",
+            kind="episode",
+        )
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("archive-map-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,'proposed',0.9,1,?,?,?)""",
+                (
+                    "archive-map",
+                    "archive-map-run",
+                    "lifecycle",
+                    memory_id,
+                    "Transient execution status has no durable retrieval value.",
+                    '{"next_state":"archived"}',
+                    now,
+                ),
+            )
+        decision = self.store.decide_review_proposal(
+            "archive-map", "archive", reason_code="cleanup", actor="test-operator"
+        )
+        self.assertEqual(decision["affected_memory_ids"], [memory_id])
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "archived")
+        states = {
+            str(row["state"])
+            for row in self.store._conn.execute("SELECT DISTINCT state FROM memories").fetchall()
+        }
+        self.assertNotIn("archive", states, "the action name must never be written as a state")
+
     def test_review_can_apply_to_exact_duplicates_without_training_a_policy(self) -> None:
         content = "Repeated file archive record should exist only once."
         first_id, _ = self.store.add_memory(

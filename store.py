@@ -6331,11 +6331,32 @@ class CortexStore:
         withheld_ids: frozenset[str] = frozenset(),
     ) -> None:
         context_key, context_value = _retrieval_context_key(retrieval_context)
+        # A purged memory must not abort the whole resolution: the trace can
+        # still list an id whose memory is gone (the operator's documented
+        # purge), and memory_context_outcomes carries a real foreign key, so a
+        # blind insert raised FOREIGN KEY constraint failed on every retry and
+        # left the surviving memories unlabeled (verified 2026-09-14).
+        selected_ids = [
+            str(candidate.get("memory_id") or "")
+            for candidate in candidates
+            if bool(candidate.get("selected")) and str(candidate.get("memory_id") or "")
+        ]
+        existing_ids: set[str] = set()
+        if selected_ids:
+            placeholders = ",".join("?" for _ in selected_ids)
+            existing_ids = {
+                str(row["id"])
+                for row in conn.execute(
+                    f"SELECT id FROM memories WHERE id IN ({placeholders})", selected_ids
+                ).fetchall()
+            }
         for candidate in candidates:
             if not bool(candidate.get("selected")):
                 continue
             memory_id = str(candidate.get("memory_id") or "")
             if not memory_id:
+                continue
+            if memory_id not in existing_ids:
                 continue
             if memory_id in withheld_ids:
                 # Never rendered: record the withholding without marking the
@@ -11785,7 +11806,14 @@ class CortexStore:
                     for memory_id in scope_target_ids:
                         change_state(
                             memory_id,
-                            "tombstoned" if action_value == "trash" else action_value,
+                            # Action name -> lifecycle state: "archive" used to be
+                            # written as the literal state 'archive', which is not
+                            # one of the five lifecycle states (verified
+                            # 2026-09-14). 'archive' rows miss the dirty-marking
+                            # and audit paths that legitimately archived rows get.
+                            {"archive": "archived", "trash": "tombstoned"}.get(
+                                action_value, action_value
+                            ),
                             f"operator review: {reason_value}",
                         )
                     next_status = "operator_approved"
@@ -13521,18 +13549,24 @@ class CortexStore:
                 (result_memory_id, source_snapshot, now, decision_id),
             )
             self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
-        for source in (left, right):
-            self.add_edge(
-                result_memory_id,
-                str(source["id"]),
-                "consolidates",
-                weight=max(0.1, min(float(decision["confidence"]), 1.0)),
-                evidence_type="semantic_consolidation_judgment",
-                evidence_key=f"{decision_id}:{source['id']}",
-                explanation=str(decision["reason"]),
-                source_ref=f"semantic-consolidation:{decision_id}",
-                metadata={"decision_id": decision_id, "actor": actor},
-            )
+            # Lineage edges commit inside the same transaction as the ledger
+            # finalize: a crash can no longer leave an applied merge whose
+            # 'consolidates' edges — the only durable derivation statement —
+            # were never written and can never be retried (apply refuses
+            # non-proposed rows). add_edge nests as a savepoint here, and its
+            # evidence_key makes a re-run harmless.
+            for source in (left, right):
+                self.add_edge(
+                    result_memory_id,
+                    str(source["id"]),
+                    "consolidates",
+                    weight=max(0.1, min(float(decision["confidence"]), 1.0)),
+                    evidence_type="semantic_consolidation_judgment",
+                    evidence_key=f"{decision_id}:{source['id']}",
+                    explanation=str(decision["reason"]),
+                    source_ref=f"semantic-consolidation:{decision_id}",
+                    metadata={"decision_id": decision_id, "actor": actor},
+                )
         return {
             "decision_id": decision_id,
             "status": "applied",
@@ -14899,57 +14933,58 @@ class CortexStore:
                     (proposal_id,),
                 )
             return {"proposal_id": proposal_id, "status": "skipped", "reason": "source changed"}
-        action = str(proposal["action"])
-        now = utc_now()
-        if action == "supersede":
-            replacement = normalize_text(str(proposal.get("replacement_content") or ""))
-            if not replacement:
-                raise ValueError("supersede proposal has no replacement content")
-            changed = self.correct_memory(
-                str(memory["id"]),
-                replacement,
-                reason=f"reviewed adaptive reconsolidation {proposal_id[:8]}",
-                confidence=max(float(memory["confidence"]), float(evidence["confidence"])),
-                source_ref=f"memory:{evidence['id']}",
-            )
-            if not changed:
-                raise ValueError("reconsolidation target could not be corrected")
-        else:
-            relation = "extends" if action == "extend" else "contradicts"
-            src_id = str(evidence["id"])
-            dst_id = str(memory["id"])
-            with self._lock:
-                edge = self._conn.execute(
-                    """SELECT * FROM edges
-                       WHERE src_id=? AND dst_id=? AND relation=?""",
-                    (src_id, dst_id, relation),
-                ).fetchone()
-            edge_snapshot = json.dumps(dict(edge) if edge else {}, sort_keys=True)
-            self.add_edge(
-                src_id,
-                dst_id,
-                relation,
-                weight=0.55 if action == "extend" else 0.70,
-                evidence_type="reviewed_reconsolidation",
-                evidence_key=proposal_id,
-                explanation=str(proposal["reason"]),
-                source_ref=f"memory:{evidence['id']}",
-                task_id=str(proposal["task_id"]),
-                metadata={"proposal_id": proposal_id, "action": action},
-            )
+        with self.transaction():
+            action = str(proposal["action"])
+            now = utc_now()
+            if action == "supersede":
+                replacement = normalize_text(str(proposal.get("replacement_content") or ""))
+                if not replacement:
+                    raise ValueError("supersede proposal has no replacement content")
+                changed = self.correct_memory(
+                    str(memory["id"]),
+                    replacement,
+                    reason=f"reviewed adaptive reconsolidation {proposal_id[:8]}",
+                    confidence=max(float(memory["confidence"]), float(evidence["confidence"])),
+                    source_ref=f"memory:{evidence['id']}",
+                )
+                if not changed:
+                    raise ValueError("reconsolidation target could not be corrected")
+            else:
+                relation = "extends" if action == "extend" else "contradicts"
+                src_id = str(evidence["id"])
+                dst_id = str(memory["id"])
+                with self._lock:
+                    edge = self._conn.execute(
+                        """SELECT * FROM edges
+                           WHERE src_id=? AND dst_id=? AND relation=?""",
+                        (src_id, dst_id, relation),
+                    ).fetchone()
+                edge_snapshot = json.dumps(dict(edge) if edge else {}, sort_keys=True)
+                self.add_edge(
+                    src_id,
+                    dst_id,
+                    relation,
+                    weight=0.55 if action == "extend" else 0.70,
+                    evidence_type="reviewed_reconsolidation",
+                    evidence_key=proposal_id,
+                    explanation=str(proposal["reason"]),
+                    source_ref=f"memory:{evidence['id']}",
+                    task_id=str(proposal["task_id"]),
+                    metadata={"proposal_id": proposal_id, "action": action},
+                )
+                with self.transaction() as conn:
+                    conn.execute(
+                        """UPDATE adaptive_reconsolidation_proposals SET edge_snapshot_json=?
+                           WHERE proposal_id=?""",
+                        (edge_snapshot, proposal_id),
+                    )
             with self.transaction() as conn:
                 conn.execute(
-                    """UPDATE adaptive_reconsolidation_proposals SET edge_snapshot_json=?
-                       WHERE proposal_id=?""",
-                    (edge_snapshot, proposal_id),
+                    """UPDATE adaptive_reconsolidation_proposals
+                       SET status='applied',applied_at=?,applied_by=?
+                       WHERE proposal_id=? AND status='proposed'""",
+                    (now, normalize_text(actor)[:120], proposal_id),
                 )
-        with self.transaction() as conn:
-            conn.execute(
-                """UPDATE adaptive_reconsolidation_proposals
-                   SET status='applied',applied_at=?,applied_by=?
-                   WHERE proposal_id=? AND status='proposed'""",
-                (now, normalize_text(actor)[:120], proposal_id),
-            )
         return {"proposal_id": proposal_id, "status": "applied", "action": action}
 
     def undo_adaptive_reconsolidation(self, proposal_id: str) -> dict[str, Any]:
@@ -15368,66 +15403,67 @@ class CortexStore:
         abstract_content = normalize_text(str(proposal.get("abstract_content") or ""))
         if not abstract_content:
             raise ValueError("schema abstraction content is unavailable")
-        schema_id, created = self.add_memory(
-            abstract_content,
-            kind="schema",
-            source_type="schema_formation",
-            source_category="OPERATOR_APPROVED",
-            origin_source_category="AGENT_INFERENCE",
-            approval_state="operator_approved",
-            source_ref=f"schema-proposal:{proposal_id}",
-            extraction_method="reviewed_schema_formation_v1",
-            confidence=max(0.55, min(float(proposal["confidence"]), 0.9)),
-            importance=0.72,
-            uniqueness=0.8,
-            volatility=0.25,
-            trust=0.76,
-            protected=False,
-        )
-        if not created:
+        with self.transaction():
+            schema_id, created = self.add_memory(
+                abstract_content,
+                kind="schema",
+                source_type="schema_formation",
+                source_category="OPERATOR_APPROVED",
+                origin_source_category="AGENT_INFERENCE",
+                approval_state="operator_approved",
+                source_ref=f"schema-proposal:{proposal_id}",
+                extraction_method="reviewed_schema_formation_v1",
+                confidence=max(0.55, min(float(proposal["confidence"]), 0.9)),
+                importance=0.72,
+                uniqueness=0.8,
+                volatility=0.25,
+                trust=0.76,
+                protected=False,
+            )
+            if not created:
+                with self.transaction() as conn:
+                    conn.execute(
+                        """UPDATE schema_formation_proposals SET status='skipped'
+                           WHERE proposal_id=? AND status='proposed'""",
+                        (proposal_id,),
+                    )
+                return {
+                    "proposal_id": proposal_id,
+                    "status": "skipped",
+                    "reason": "identical schema memory already exists",
+                }
+            for source in sources:
+                source_id = str(source["id"])
+                self.add_dependency(schema_id, source_id, relation="schema_source", weight=1.0)
+                self.add_edge(
+                    schema_id,
+                    source_id,
+                    "abstracts",
+                    weight=0.65,
+                    evidence_type="reviewed_schema_formation",
+                    evidence_key=proposal_id,
+                    explanation=str(proposal["reason"]),
+                    source_ref=f"schema-proposal:{proposal_id}",
+                    metadata={"proposal_id": proposal_id},
+                )
+                self.add_edge(
+                    source_id,
+                    schema_id,
+                    "example_of",
+                    weight=0.65,
+                    evidence_type="reviewed_schema_formation",
+                    evidence_key=proposal_id,
+                    explanation=str(proposal["reason"]),
+                    source_ref=f"schema-proposal:{proposal_id}",
+                    metadata={"proposal_id": proposal_id},
+                )
             with self.transaction() as conn:
                 conn.execute(
-                    """UPDATE schema_formation_proposals SET status='skipped'
+                    """UPDATE schema_formation_proposals
+                       SET status='applied',result_memory_id=?,applied_at=?,applied_by=?
                        WHERE proposal_id=? AND status='proposed'""",
-                    (proposal_id,),
+                    (schema_id, utc_now(), normalize_text(actor)[:120], proposal_id),
                 )
-            return {
-                "proposal_id": proposal_id,
-                "status": "skipped",
-                "reason": "identical schema memory already exists",
-            }
-        for source in sources:
-            source_id = str(source["id"])
-            self.add_dependency(schema_id, source_id, relation="schema_source", weight=1.0)
-            self.add_edge(
-                schema_id,
-                source_id,
-                "abstracts",
-                weight=0.65,
-                evidence_type="reviewed_schema_formation",
-                evidence_key=proposal_id,
-                explanation=str(proposal["reason"]),
-                source_ref=f"schema-proposal:{proposal_id}",
-                metadata={"proposal_id": proposal_id},
-            )
-            self.add_edge(
-                source_id,
-                schema_id,
-                "example_of",
-                weight=0.65,
-                evidence_type="reviewed_schema_formation",
-                evidence_key=proposal_id,
-                explanation=str(proposal["reason"]),
-                source_ref=f"schema-proposal:{proposal_id}",
-                metadata={"proposal_id": proposal_id},
-            )
-        with self.transaction() as conn:
-            conn.execute(
-                """UPDATE schema_formation_proposals
-                   SET status='applied',result_memory_id=?,applied_at=?,applied_by=?
-                   WHERE proposal_id=? AND status='proposed'""",
-                (schema_id, utc_now(), normalize_text(actor)[:120], proposal_id),
-            )
         return {
             "proposal_id": proposal_id,
             "status": "applied",

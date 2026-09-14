@@ -115,6 +115,41 @@ class SemanticConsolidationAtomicityTests(unittest.TestCase):
         ).fetchone()["status"]
         self.assertEqual(status, "applied")
 
+    def test_edge_writer_failure_rolls_back_the_finalize(self) -> None:
+        """A crash while writing the consolidates lineage must not leave an applied merge.
+
+        Regression (2026-09-14): the lineage edges were written AFTER the
+        finalize transaction committed, so a failure there left the decision
+        'applied' with no lineage and no retry path (apply refuses non-proposed
+        rows). The edges now commit together with the ledger.
+        """
+        decision_id = self._seed_and_judge()
+        with patch.object(self.store, "add_edge", side_effect=RuntimeError("synthetic edge failure")):
+            with self.assertRaises(RuntimeError):
+                self.store.apply_semantic_consolidation(decision_id)
+
+        status = self.store._conn.execute(
+            "SELECT status FROM semantic_consolidation_decisions WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()["status"]
+        self.assertEqual(
+            status,
+            "proposed",
+            "the decision must stay retryable when the lineage write fails",
+        )
+        edges = self.store._conn.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE relation='consolidates'"
+        ).fetchone()["n"]
+        self.assertEqual(edges, 0)
+
+        # The retry applies cleanly and writes the lineage with the ledger.
+        report = self.store.apply_semantic_consolidation(decision_id)
+        self.assertEqual(report["status"], "applied")
+        edges = self.store._conn.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE relation='consolidates'"
+        ).fetchone()["n"]
+        self.assertEqual(edges, 2, "both consolidates edges must exist after a clean apply")
+
 
 if __name__ == "__main__":
     unittest.main()

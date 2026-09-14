@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tests._bootstrap import ROOT  # noqa: F401
 
@@ -183,6 +184,45 @@ class SchemaFormationTests(unittest.TestCase):
         self.assertTrue(self.store.audit()["ok"])
         for source_id in source_ids:
             self.assertEqual(len(self.store.edge_evidence(source_id, schema_id, "example_of")), 1)
+
+    def test_crash_mid_apply_rolls_back_the_whole_effect(self) -> None:
+        """A failure partway through apply must leave nothing applied.
+
+        Regression (2026-09-14): the apply span crossed several transactions, so
+        a crash after the schema memory write left an active, operator-approved
+        schema with partial support; the retry then deduped the content and
+        marked the proposal 'skipped' — no longer applicable nor undoable.
+        """
+        result, _source_ids = self.stage()
+        proposal_id = result["proposal"]["proposal_id"]
+
+        original = self.store.add_edge
+        calls = {"count": 0}
+
+        def failing(*args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] == 2:
+                raise RuntimeError("injected crash on the 2nd edge write")
+            return original(*args, **kwargs)
+
+        with mock.patch.object(self.store, "add_edge", side_effect=failing):
+            with self.assertRaises(RuntimeError):
+                self.store.apply_schema_formation(proposal_id)
+
+        with self.store._lock:
+            schema_count = self.store._conn.execute(
+                "SELECT COUNT(*) count FROM memories WHERE kind='schema'"
+            ).fetchone()["count"]
+            status = self.store._conn.execute(
+                "SELECT status FROM schema_formation_proposals WHERE proposal_id=?",
+                (proposal_id,),
+            ).fetchone()["status"]
+        self.assertEqual(schema_count, 0, "a partial schema memory survived the crash")
+        self.assertEqual(status, "proposed", "the proposal must remain retryable")
+
+        applied = self.store.apply_schema_formation(proposal_id)
+        self.assertEqual(applied["status"], "applied")
+        self.assertEqual(applied["source_count"], 3)
 
     def test_source_correction_marks_schema_dirty_and_wrong_feedback_reverses(self) -> None:
         result, source_ids = self.stage()

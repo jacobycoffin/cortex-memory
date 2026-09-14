@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -187,6 +188,50 @@ class AdaptiveReconsolidationTests(unittest.TestCase):
         self.assertEqual(self.store.get_memory(old_id)["content"], "The service listens on port 3000.")
         self.assertTrue(undone["reversed"])
         self.assertGreater(len(versions_after_undo), len(versions_after_apply))
+
+    def test_crash_before_ledger_rolls_back_the_correction(self) -> None:
+        """A failure between the correction and the ledger write rolls both back.
+
+        Regression (2026-09-14): the correction committed in its own
+        transaction; a crash before the ledger write left the correction applied
+        while the proposal still read 'proposed', and the retry then closed it
+        as 'skipped' — neither applicable nor undoable, with the ledger no
+        longer describing the store.
+        """
+        result, old_id, _new_id = self.stage(
+            action="supersede",
+            replacement_content="The service listens on port 3001.",
+        )
+        proposal_id = result["proposal"]["proposal_id"]
+
+        with self.store._lock:
+            self.store._conn.execute(
+                """CREATE TEMP TRIGGER injected_recon_crash
+                   BEFORE UPDATE OF status ON main.adaptive_reconsolidation_proposals
+                   WHEN NEW.status = 'applied'
+                   BEGIN SELECT RAISE(ABORT, 'injected crash before ledger finalize'); END"""
+            )
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                self.store.apply_adaptive_reconsolidation(proposal_id)
+        finally:
+            with self.store._lock:
+                self.store._conn.execute("DROP TRIGGER injected_recon_crash")
+
+        self.assertEqual(
+            self.store.get_memory(old_id)["content"],
+            "The service listens on port 3000.",
+            "the correction must roll back with the failed apply",
+        )
+        self.assertEqual(
+            self.store.adaptive_reconsolidation_snapshot()["proposals"][0]["status"],
+            "proposed",
+            "the proposal must remain retryable",
+        )
+
+        applied = self.store.apply_adaptive_reconsolidation(proposal_id)
+        self.assertEqual(applied["status"], "applied")
+        self.assertEqual(self.store.get_memory(old_id)["content"], "The service listens on port 3001.")
 
     def test_protected_memory_requires_explicit_confirmation(self) -> None:
         result, _old_id, _new_id = self.stage(
