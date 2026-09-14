@@ -93,6 +93,50 @@ class CredentialSectionSkipUnitTests(unittest.TestCase):
             _skip_low_value_section("Homelab › Credentials › Rotation Schedule", CREDENTIAL_BODY)
         )
 
+    def test_qualified_credential_headings_are_skipped(self) -> None:
+        """Headings with a trailing qualifier still name a credential section.
+
+        Regression (2026-09-14): the match was fully anchored on the heading leaf,
+        so every qualified form a real note uses — `Credentials (Plex)`,
+        `Credentials - NPM`, `Passwords (legacy)`, `Secrets/vault` — bypassed the
+        skip and ingested live secret values as recallable memories.
+        """
+        for heading in (
+            "Credentials (Plex)",
+            "Credentials - NPM",
+            "Passwords (legacy)",
+            "Secrets/vault",
+            "API Keys (prod)",
+            "Login - r630",
+            "Tokens: live",
+            "Homelab › Credentials › Passwords (legacy)",
+        ):
+            with self.subTest(heading=heading):
+                self.assertTrue(
+                    _skip_low_value_section(heading, CREDENTIAL_BODY),
+                    f"{heading!r} carries live secrets and must be skipped",
+                )
+
+    def test_qualified_ordinary_headings_still_index(self) -> None:
+        """Dropping a qualifier must not turn ordinary headings into credentials.
+
+        The match remains anchored on what is left after the qualifier, which is
+        what keeps a heading that merely *contains* a keyword indexed as content.
+        """
+        for heading in (
+            "Token budget tuning",
+            "Auth flow notes",
+            "Login page redesign",
+            "API key rotation policy",
+            "Credential rotation schedule",
+            "Homelab › Credentials › Rotation Schedule",
+        ):
+            with self.subTest(heading=heading):
+                self.assertFalse(
+                    _skip_low_value_section(heading, CREDENTIAL_BODY),
+                    f"{heading!r} is ordinary content and must still be indexed",
+                )
+
 
 class CredentialVaultIndexingTests(unittest.TestCase):
     """Integration coverage: a real indexer run over a temp vault."""
@@ -281,6 +325,33 @@ class CredentialVaultIndexingTests(unittest.TestCase):
         blob = "\n".join(f"{row['summary']}\n{row['metadata_json']}" for row in rows)
         for secret in (FAKE_SECRET, FAKE_SECRET_2, FAKE_SECRET_3):
             self.assertNotIn(secret, blob, "credential value reached edge evidence")
+
+    def test_qualified_credential_heading_note_is_never_ingested(self) -> None:
+        """The end-to-end guard for a qualified credential heading.
+
+        Regression (2026-09-14): `## Credentials (Plex)` did not match the
+        anchored credential pattern, so a note using the qualified form was
+        ingested like ordinary prose — live secret values included.
+        """
+        (self.vault / "Qualified Host.md").write_text(
+            "# Qualified Host\n\n"
+            "## Credentials (Plex)\n\n"
+            f"Plex: {FAKE_SECRET}\n"
+            f"NPM admin: {FAKE_SECRET_2}\n"
+            f"Komga: {FAKE_SECRET_3}\n\n"
+            "## Passwords (legacy)\n\n"
+            f"Legacy admin: {FAKE_SECRET}\n",
+            encoding="utf-8",
+        )
+
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+
+        chunks = self.store.document_chunks("Qualified Host.md", active_only=True)
+        self.assertEqual(chunks, [], "qualified credential headings must not produce chunks")
+        joined = "\n".join(self._contents("Qualified Host.md"))
+        for secret in (FAKE_SECRET, FAKE_SECRET_2, FAKE_SECRET_3):
+            self.assertNotIn(secret, joined, "credential value reached a memory")
 
     def test_all_sections_skipped_note_does_not_fall_back_to_raw_text(self) -> None:
         """When every section is skipped, the raw-text fallback must not

@@ -44,6 +44,10 @@ _CREDENTIAL_HEADING = re.compile(
     r"^(?:credentials?|passwords?|secrets?|api[-\s]?keys?|tokens?|auth(?:entication)?|login)$",
     re.I,
 )
+# Trailing qualifiers dropped before the credential match, so `Credentials (Plex)`
+# and `Login - r630` are skipped while `Token budget tuning` stays indexed.
+_TRAILING_PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
+_TRAILING_QUALIFIER = re.compile(r"\s*[-–—/:]\s*[^-–—/:]*$")
 _PLACEHOLDER_BODY = re.compile(
     r"\b(?:add detail here|tbd|todo|placeholder|fill this in|not yet documented)\b",
     re.I,
@@ -559,9 +563,25 @@ def _is_credential_section(heading: str) -> bool:
     section is a credential block must not fall through the multi-section guard
     (verified 2026-09-14: a single-section ``## Credentials`` note was ingested
     in full because the section loop only skipped at ``len(sections) > 1``).
+
+    A trailing qualifier is dropped before matching, so the qualified forms a
+    real note actually uses are caught too — ``Credentials (Plex)``,
+    ``Credentials - NPM``, ``Passwords (legacy)``, ``Secrets/vault`` (measured
+    2026-09-14: the fully-anchored match missed every one of them, because
+    ``^credentials?$`` cannot match a leaf with a suffix). The match stays
+    anchored on what remains, which is what keeps ordinary headings that merely
+    contain a keyword — ``Token budget tuning``, ``Login page redesign``,
+    ``API key rotation policy`` — indexed as normal content.
     """
 
-    return bool(_CREDENTIAL_HEADING.search(heading.split(" › ")[-1].strip()))
+    leaf = heading.split(" › ")[-1].strip()
+    if _CREDENTIAL_HEADING.search(leaf):
+        return True
+    for qualifier in (_TRAILING_PARENTHETICAL, _TRAILING_QUALIFIER):
+        candidate = qualifier.sub("", leaf).strip()
+        if candidate and candidate != leaf and _CREDENTIAL_HEADING.search(candidate):
+            return True
+    return False
 
 
 def _skip_low_value_section(heading: str, body: str) -> bool:
