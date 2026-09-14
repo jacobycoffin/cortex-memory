@@ -261,6 +261,61 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertEqual(repeat["chunks_update"], 0)
         self.assertEqual(repeat["chunks_add"], 0)
 
+    def test_wikilink_edges_keep_their_target_when_a_leading_section_appears(self) -> None:
+        """The note's first imported chunk anchors its edges, not ordinal 0.
+
+        Ordinal 0 moves to the new section when a note gains one at the top, so
+        anchoring there re-targeted every inbound link to a different memory
+        (and a different body of text) for a note nobody else had touched.
+        """
+        target = self.vault / "notes" / "Target.md"
+        source = self.vault / "notes" / "Source.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(
+            "# Target\n\n## Setup\n\nOriginal setup body about storage nodes and snapshots.\n",
+            encoding="utf-8",
+        )
+        source.write_text(
+            "# Source\n\nThis note links to [[Target]] for the storage runbook details.\n",
+            encoding="utf-8",
+        )
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+
+        source_memory = self.store.document_chunks("notes/Source.md", active_only=True)[0]["memory_id"]
+
+        def edge_target() -> str:
+            row = self.store._conn.execute(
+                "SELECT dst_id FROM edges WHERE relation='vault_link' AND src_id=?",
+                (source_memory,),
+            ).fetchone()
+            return str(row["dst_id"])
+
+        setup_memory = next(
+            row["memory_id"]
+            for row in self.store.document_chunks("notes/Target.md", active_only=True)
+            if "Original setup body" in self.store.get_memory(row["memory_id"])["content"]
+        )
+        before = edge_target()
+        self.assertEqual(before, setup_memory)
+
+        target.write_text(
+            "# Target\n\n## Overview\n\nA brand new leading section added at the top today.\n\n"
+            "## Setup\n\nOriginal setup body about storage nodes and snapshots.\n",
+            encoding="utf-8",
+        )
+        indexer.apply()
+
+        self.assertEqual(edge_target(), before)
+        self.assertIn("Original setup body", self.store.get_memory(edge_target())["content"])
+        self.assertEqual(self.store.get_memory(edge_target())["state"], "active")
+
+        # Every pass rebuilds the vault_link edges (existing churn, unchanged
+        # here), so stability is about the endpoint, not about write volume.
+        repeat = indexer.apply()
+        self.assertEqual(repeat["memories_created"], 0)
+        self.assertEqual(edge_target(), before)
+
     def test_in_place_revision_still_keeps_its_memory(self) -> None:
         """Editing a section's text is not a move: it revises in place."""
         note = self.vault / "notes" / "Host.md"

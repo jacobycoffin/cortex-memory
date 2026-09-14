@@ -7961,6 +7961,29 @@ class CortexStore:
             rows = self._conn.execute(sql, (source_path,)).fetchall()
         return [dict(row) for row in rows]
 
+    def document_chunk_anchors(self) -> dict[str, str]:
+        """Note path -> the memory that represents the note for wikilink edges.
+
+        Chunk ordinals shift when a note gains a leading section, so anchoring
+        edges on ordinal 0 re-targets every inbound link to a different memory
+        each time the note's top changes. The first imported chunk keeps the
+        role instead: it is the oldest memory of the note, which editing the top
+        of the note does not change. Ties break on memory id for determinism.
+        """
+
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT dc.source_path, dc.memory_id
+                   FROM document_chunks dc
+                   JOIN memories m ON m.id = dc.memory_id
+                   WHERE dc.active=1
+                   ORDER BY m.created_at, dc.memory_id"""
+            ).fetchall()
+        anchors: dict[str, str] = {}
+        for row in rows:
+            anchors.setdefault(str(row["source_path"]), str(row["memory_id"]))
+        return anchors
+
     def upsert_document_source(
         self,
         *,

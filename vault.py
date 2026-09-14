@@ -383,11 +383,11 @@ class VaultIndexer:
 
     def _note_aliases(self, scan: VaultScan) -> tuple[dict[str, str], dict[str, str]]:
         aliases: dict[str, str] = {}
-        first_chunks: dict[str, str] = {}
+        # Anchors come from the store in one query (first imported chunk per
+        # note) so that adding a leading section does not re-target the edges
+        # that point at this note.
+        first_chunks = self.store.document_chunk_anchors()
         for note in scan.notes:
-            chunks = self.store.document_chunks(note.relative_path, active_only=True)
-            if chunks:
-                first_chunks[note.relative_path] = chunks[0]["memory_id"]
             relative_no_suffix = str(Path(note.relative_path).with_suffix(""))
             aliases.setdefault(_normalize_link(relative_no_suffix), note.relative_path)
             aliases.setdefault(_normalize_link(Path(note.relative_path).stem), note.relative_path)
