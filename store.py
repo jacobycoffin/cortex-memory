@@ -5492,6 +5492,11 @@ class CortexStore:
         (shadow=1) without mutating memories. With apply=True, updates
         strength and optionally opens a lability window."""
         at = utc_now()
+        # Context summaries are free text that can carry a credential the user
+        # typed or pasted, so they pass the same gate as memory content before
+        # being persisted. (Measured 2026-09-14: this field stored an API key
+        # verbatim while every other ledger column redacted it.)
+        context_value = normalize_text(sanitize_memory(str(context_summary or "")).text)[:1000] or None
         row = self._conn.execute(
             "SELECT strength, created_at, last_retrieved_at FROM memories WHERE id=?",
             (memory_id,),
@@ -5511,7 +5516,7 @@ class CortexStore:
                      memory_id,accessed_at,task_type,context_hash,context_summary,outcome,event,
                      reconsolidated,shadow,strength_before,strength_after
                    ) VALUES(?,?,?,?,?,?,?,0,?,?,?)""",
-                (memory_id, at, task_type, context_hash, context_summary, outcome, event,
+                (memory_id, at, task_type, context_hash, context_value, outcome, event,
                  int(not apply), round(before, 4), round(after, 4)),
             )
             if apply:
@@ -5717,7 +5722,7 @@ class CortexStore:
         now = utc_now()
         trace_id = str(uuid.uuid4())
         goal_value = normalize_text(sanitize_memory(str(goal or "")).text)[:1000] or "Unspecified task"
-        context_value = normalize_text(context_summary)[:1000] or "No additional task context was provided."
+        context_value = normalize_text(sanitize_memory(str(context_summary or "")).text)[:1000] or "No additional task context was provided."
         task_type_value = normalize_text(task_type)[:80] or "general"
         retrieval_context_value = _normalize_retrieval_context(
             {**dict(retrieval_context or {}), "task_type": task_type_value}

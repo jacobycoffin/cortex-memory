@@ -185,13 +185,19 @@ class WriteSanitizationTests(unittest.TestCase):
             task_id="ledger-task",
             session_id="ledger-test",
             goal=f"deploy password={secret}",
-            context_summary="ledger redaction check",
+            context_summary=f"operator note: password={secret}",
             task_type="ops",
             recall_mode="focused",
             retrieval_used=False,
             retrieval_reason="redaction check",
             queries=[f"which password={secret} is current"],
             candidate_memories=[],
+        )
+        memory_id = self.store.add_memory("Ledger redaction check memory.", kind="operational")[0]
+        self.store.record_access_trace(
+            memory_id,
+            event="retrieved",
+            context_summary=f"password={secret}",
         )
         with self.store._lock:
             recall_row = self.store._conn.execute(
@@ -204,6 +210,86 @@ class WriteSanitizationTests(unittest.TestCase):
         self.assertIn("[REDACTED", recall_row["query"])
         self.assertNotIn(secret, trace_row["goal"])
         self.assertNotIn(secret, trace_row["queries_json"])
+
+    def test_no_ledger_column_stores_a_secret_verbatim(self) -> None:
+        """Every free-text column of every ledger passes the gate.
+
+        Regression (2026-09-14): `memory_traces.context_summary` and
+        `access_history.context_summary` were the two fields written raw while
+        `goal`, `queries_json`, `recall_runs.query` and
+        `agent_task_observations.query_preview` redacted — a per-field blind spot
+        the older test missed because it only ever fed a benign summary. Scanning
+        every text column keeps a newly added field from silently reopening it.
+        """
+        key = "sk-proj-AbCdEf1234567890AbCdEf1234567890"
+        self.store.record_recall_run(
+            session_id="scan-test",
+            query=f"recall using key {key}",
+            mode="focused",
+            reason="scan",
+            requested_limit=5,
+            token_budget=700,
+            candidate_count=0,
+            selected_count=0,
+            estimated_tokens=0,
+            prepare_ms=1.0,
+            abstained=True,
+        )
+        self.store.record_memory_trace_decision(
+            task_id="scan-task",
+            session_id="scan-test",
+            goal=f"look up {key}",
+            context_summary=f"operator pasted {key}",
+            task_type="ops",
+            recall_mode="focused",
+            retrieval_used=False,
+            retrieval_reason="scan",
+            queries=[f"find {key}"],
+            candidate_memories=[],
+        )
+        memory_id = self.store.add_memory("Scan memory for the ledger sweep.", kind="operational")[0]
+        self.store.record_access_trace(memory_id, event="retrieved", context_summary=f"pasted {key}")
+
+        leaks: list[tuple[str, str, str]] = []
+        with self.store._lock:
+            tables = [
+                row[0]
+                for row in self.store._conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            ]
+            for table in ("recall_runs", "memory_traces", "agent_task_observations", "access_history"):
+                if table not in tables:
+                    continue
+                for column in (
+                    row[1] for row in self.store._conn.execute(f"PRAGMA table_info({table})")
+                ):
+                    for stored in self.store._conn.execute(f"SELECT {column} FROM {table}"):
+                        value = stored[0]
+                        if value is not None and key in str(value):
+                            leaks.append((table, column, str(value)[:80]))
+        self.assertEqual(leaks, [], f"a ledger column stored the secret verbatim: {leaks}")
+
+    def test_benign_context_summaries_are_not_rewritten(self) -> None:
+        """The gate must not mangle ordinary operational context."""
+        summary = "task_type=deployment; release gate verified"
+        self.store.record_memory_trace_decision(
+            task_id="benign-task",
+            session_id="benign-test",
+            goal="check the release gate",
+            context_summary=summary,
+            task_type="ops",
+            recall_mode="focused",
+            retrieval_used=False,
+            retrieval_reason="scan",
+            queries=["release gate status"],
+            candidate_memories=[],
+        )
+        with self.store._lock:
+            row = self.store._conn.execute(
+                "SELECT context_summary FROM memory_traces WHERE task_id='benign-task'"
+            ).fetchone()
+        self.assertEqual(row["context_summary"], summary)
 
 
 if __name__ == "__main__":
