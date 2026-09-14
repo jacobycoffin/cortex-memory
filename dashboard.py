@@ -1576,20 +1576,6 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 failed_logins[client] = recent
                 return True
 
-        def _throttle_ok(self) -> bool:
-            """True if this client is under the failed-attempt limit (no record kept)."""
-            client = self._client_key()
-            now = time.monotonic()
-            with failed_logins_lock:
-                recent = [stamp for stamp in failed_logins.get(client, []) if now - stamp < 300]
-                failed_logins[client] = recent
-                return len(recent) < 8
-
-        def _throttle_record(self) -> None:
-            client = self._client_key()
-            with failed_logins_lock:
-                failed_logins.setdefault(client, []).append(time.monotonic())
-
         def _throttle_clear(self) -> None:
             with failed_logins_lock:
                 failed_logins.pop(self._client_key(), None)
