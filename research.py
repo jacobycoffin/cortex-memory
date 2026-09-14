@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from .security import normalize_text
+from .security import normalize_text, sanitize_memory
 from .store import CortexStore, utc_now
 
 
@@ -156,7 +156,7 @@ def record_agent_task_start(
                 session_id,
                 task_type,
                 _query_hash(query),
-                normalize_text(query)[:240],
+                normalize_text(sanitize_memory(str(query or "")).text)[:240],
                 recall_condition,
                 recall_mode,
                 max(0, int(memory_count)),

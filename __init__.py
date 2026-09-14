@@ -55,7 +55,7 @@ from .research import (
     complete_agent_tasks,
     record_agent_task_start,
 )
-from .security import safe_prompt_text, sanitize_memory
+from .security import neutralize_role_tags, safe_prompt_text, sanitize_memory
 from .store import CortexStore
 from .tooling import build_tool_workflow, classify_task, extract_tool_executions, task_fingerprint
 
@@ -797,7 +797,7 @@ class CortexMemoryProvider(MemoryProvider):
                     else ""
                 )
                 line = (
-                    f"- M:{memory_id[:8]} {result.memory['kind']}{caution}: "
+                    f"- M:{memory_id[:8]} {neutralize_role_tags(str(result.memory['kind']))}{caution}: "
                     f"{safe_prompt_text(result.memory['content'])} [{_provenance_label(result.memory)}]"
                 )
             else:
@@ -807,7 +807,7 @@ class CortexMemoryProvider(MemoryProvider):
                     else ""
                 )
                 line = (
-                    f"- [M:{memory_id[:8]} kind={result.memory['kind']} confidence={result.memory['confidence']:.2f} "
+                    f"- [M:{memory_id[:8]} kind={neutralize_role_tags(str(result.memory['kind']))} confidence={result.memory['confidence']:.2f} "
                     f"score={result.score:.2f}{monitor}; {_provenance_label(result.memory)}] "
                     f"{safe_prompt_text(result.memory['content'])}"
                 )
@@ -1314,8 +1314,8 @@ class CortexMemoryProvider(MemoryProvider):
                     str(args.get("query") or ""),
                     limit=int(self._config["top_k"]),
                     token_budget=int(self._config["token_budget"]),
-                    include_archived=bool(args.get("include_archived", False)),
-                    evidence_lookup=bool(args.get("evidence_lookup", False)),
+                    include_archived=_as_bool(args.get("include_archived", False)),
+                    evidence_lookup=_as_bool(args.get("evidence_lookup", False)),
                     context=RetrievalContext(
                         active_project=str(args.get("active_project") or "").strip() or None,
                         goal=str(args.get("query") or ""),
@@ -1355,7 +1355,7 @@ class CortexMemoryProvider(MemoryProvider):
 
             if action == "pin":
                 memory_id = self._resolve(args.get("memory_id"))
-                changed = bool(memory_id and self._store.set_pinned(memory_id, bool(args.get("pinned", True))))
+                changed = bool(memory_id and self._store.set_pinned(memory_id, _as_bool(args.get("pinned", True))))
                 self._queue_memory_action(
                     session_id=str(kwargs.get("session_id") or self._session_id or "default"),
                     action="updated" if changed else "ignored",
@@ -1417,7 +1417,7 @@ class CortexMemoryProvider(MemoryProvider):
                 return _json_ok(audit=self._store.audit())
 
             if action == "maintenance":
-                requested_apply = bool(args.get("apply", False))
+                requested_apply = _as_bool(args.get("apply", False))
                 allowed = str(self._config.get("pruning_mode", "shadow")).casefold() == "apply"
                 report = self._store.maintenance(
                     dry_run=not (requested_apply and allowed),
@@ -1428,14 +1428,14 @@ class CortexMemoryProvider(MemoryProvider):
                 return _json_ok(maintenance=report)
 
             if action == "repair":
-                requested_apply = bool(args.get("apply", False))
+                requested_apply = _as_bool(args.get("apply", False))
                 allowed = str(self._config.get("pruning_mode", "shadow")).casefold() == "apply"
                 report = self._store.repair_dependencies(dry_run=not (requested_apply and allowed))
                 report["apply_allowed"] = allowed
                 return _json_ok(repair=report)
 
             if action == "consolidate":
-                requested_apply = bool(args.get("apply", False))
+                requested_apply = _as_bool(args.get("apply", False))
                 allowed = str(self._config.get("consolidation_mode", "shadow")).casefold() == "apply"
                 report = self._store.consolidate(dry_run=not (requested_apply and allowed))
                 report["apply_allowed"] = allowed

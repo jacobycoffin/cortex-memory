@@ -12,7 +12,7 @@ from typing import Any, Sequence
 
 from .metacognition import assess_retrieval
 from .retrieval import MemoryRetriever, RetrievalContext
-from .security import sanitize_memory
+from .security import neutralize_role_tags, sanitize_memory
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, TASK_OUTCOMES
 
@@ -40,13 +40,13 @@ def _provenance_label(memory: dict[str, Any]) -> str:
     source = _SOURCE_LABELS.get(origin_category, origin_category.casefold().replace("_", "-"))
     parts = [f"source: {source}"]
 
-    source_type = str(memory.get("source_type") or "").strip()
+    source_type = neutralize_role_tags(str(memory.get("source_type") or "")).strip()
     if source_type and source_type.casefold() not in source.casefold():
         safe_type = " ".join(source_type.replace("_", " ").split())[:32]
         if safe_type:
             parts.append(f"via {safe_type}")
 
-    source_ref = " ".join(str(memory.get("source_ref") or "").split())
+    source_ref = neutralize_role_tags(" ".join(str(memory.get("source_ref") or "").split()))
     if source_ref:
         parts.append(f"ref: {source_ref[:64]}")
 
@@ -87,7 +87,7 @@ def estimate_text_tokens(text: str) -> int:
 
 def _evidence_line(memory: dict[str, Any]) -> str:
     return (
-        f"- [{str(memory['id'])[:8]} · {memory['kind']} · score {float(memory['score']):.3f}"
+        f"- [{str(memory['id'])[:8]} · {neutralize_role_tags(str(memory['kind']))} · score {float(memory['score']):.3f}"
         f" · {_provenance_label(memory)}] "
         f"{memory['content']}"
     )

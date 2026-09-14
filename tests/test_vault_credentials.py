@@ -248,6 +248,93 @@ class CredentialVaultIndexingTests(unittest.TestCase):
             "an ordinary-section link context must be preserved, not trimmed away",
         )
 
+    def test_single_section_credential_note_is_never_ingested(self) -> None:
+        """A note whose ONLY section is a credential block must be skipped.
+
+        Regression (2026-09-14): the section loop skipped credentials only when
+        the note had more than one section, so ``# Host`` + ``## Credentials``
+        (one section -- "Host › Credentials") was ingested in full.  The same
+        leak applied to link contexts when a wikilink shared a credential line.
+        """
+        (self.vault / "Lone Host.md").write_text(
+            "# Lone Host\n\n"
+            "## Credentials\n\n"
+            f"Plex: {FAKE_SECRET}\n"
+            f"NPM admin: {FAKE_SECRET_2}\n"
+            f"Rotation runbook: [[Router]] ({FAKE_SECRET_3})\n",
+            encoding="utf-8",
+        )
+
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+
+        chunks = self.store.document_chunks("Lone Host.md", active_only=True)
+        self.assertEqual(chunks, [], "a credential-only note must not produce chunks")
+        joined = "\n".join(self._contents("Lone Host.md"))
+        for secret in (FAKE_SECRET, FAKE_SECRET_2, FAKE_SECRET_3):
+            self.assertNotIn(secret, joined, "credential value reached a memory")
+
+        with self.store._lock:
+            rows = self.store._conn.execute(
+                "SELECT summary, metadata_json FROM edge_evidence"
+            ).fetchall()
+        blob = "\n".join(f"{row['summary']}\n{row['metadata_json']}" for row in rows)
+        for secret in (FAKE_SECRET, FAKE_SECRET_2, FAKE_SECRET_3):
+            self.assertNotIn(secret, blob, "credential value reached edge evidence")
+
+    def test_all_sections_skipped_note_does_not_fall_back_to_raw_text(self) -> None:
+        """When every section is skipped, the raw-text fallback must not
+
+        re-ingest a note that contains a credential section.
+
+        Regression (2026-09-14): a note with only ``## Quick links`` and
+        ``## Credentials`` sections produced no chunks, and the fallback then
+        stored the complete raw note text -- secrets included.
+        """
+        (self.vault / "Links Host.md").write_text(
+            "# Links Host\n\n"
+            "## Quick links\n\n"
+            "[[Router]]\n\n"
+            "## Credentials\n\n"
+            f"Komga: {FAKE_SECRET}\n"
+            f"WebUI: {FAKE_SECRET_2}\n",
+            encoding="utf-8",
+        )
+
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+
+        chunks = self.store.document_chunks("Links Host.md", active_only=True)
+        self.assertEqual(chunks, [], "the raw-text fallback must not run for a credential section")
+        joined = "\n".join(self._contents("Links Host.md"))
+        for secret in (FAKE_SECRET, FAKE_SECRET_2):
+            self.assertNotIn(secret, joined, "credential value reached a memory via the fallback")
+
+    def test_ordinary_all_skipped_note_still_uses_the_fallback(self) -> None:
+        """The fallback itself must keep working for notes without credentials.
+
+        Control case for the credential guard: a note whose sections are all
+        skipped for non-credential reasons (link lists) still falls back to its
+        raw text, exactly as before the fix.
+        """
+        (self.vault / "Plain.md").write_text(
+            "# Plain\n\n"
+            "## Quick links\n\n"
+            "[[Router]]\n[[Storage]]\n\n"
+            "## Related\n\n"
+            "[[Router]]\n",
+            encoding="utf-8",
+        )
+
+        result = VaultIndexer(self.store, self.vault).apply()
+        self.assertTrue(result["audit"]["ok"])
+        chunks = self.store.document_chunks("Plain.md", active_only=True)
+        self.assertTrue(
+            chunks,
+            "a credential-free note whose sections are all skipped must still "
+            "reach the raw-text fallback",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

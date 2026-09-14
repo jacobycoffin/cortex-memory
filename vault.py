@@ -411,7 +411,9 @@ def _parse_note(
     heading_occurrences: dict[str, int] = {}
     ordinal = 0
     for heading, body in sections:
-        if _skip_low_value_section(heading, body) and len(sections) > 1:
+        if _is_credential_section(heading) or (
+            len(sections) > 1 and _skip_low_value_section(heading, body)
+        ):
             continue
         base = _slug(heading) or "note"
         heading_occurrences[base] = heading_occurrences.get(base, 0) + 1
@@ -444,7 +446,11 @@ def _parse_note(
                 )
             )
             ordinal += 1
-    if not chunks and not _skip_low_value_fragment(text):
+    if (
+        not chunks
+        and not any(_is_credential_section(heading) for heading, _ in sections)
+        and not _skip_low_value_fragment(text)
+    ):
         fallback = sanitize_memory(f"Vault note: {title}\nPath: {relative.as_posix()}\n{text.strip()}")
         if fallback.text:
             kind, confidence, currentness, importance, volatility, valid_from = _memory_profile(relative, title)
@@ -545,9 +551,22 @@ def _split_text(text: str, *, max_chars: int) -> Iterable[str]:
         yield buffer
 
 
+def _is_credential_section(heading: str) -> bool:
+    """True when the heading leaf names a credential section.
+
+    Credential sections carry live secret VALUES and are excluded from regular
+    ingestion regardless of how many sections a note has; a note whose ONLY
+    section is a credential block must not fall through the multi-section guard
+    (verified 2026-09-14: a single-section ``## Credentials`` note was ingested
+    in full because the section loop only skipped at ``len(sections) > 1``).
+    """
+
+    return bool(_CREDENTIAL_HEADING.search(heading.split(" › ")[-1].strip()))
+
+
 def _skip_low_value_section(heading: str, body: str) -> bool:
     leaf = heading.split(" › ")[-1].strip()
-    if _CREDENTIAL_HEADING.search(leaf):
+    if _is_credential_section(heading):
         # Live secret values must never become recall memories (see above).
         return True
     without_links = _WIKILINK.sub("", body)
@@ -610,8 +629,11 @@ def _link_context_text(text: str, sections: list[tuple[str, str]]) -> str:
     alone did not cover this path).
     """
     if len(sections) <= 1:
-        # A single-section note is never skipped (the section loop guards on
-        # ``len(sections) > 1``), so the full text is already equivalent.
+        # A single-section note was never skipped by the section loop, so the
+        # full text was equivalent -- except when that one section is a
+        # credential block, which must not donate its lines as link context.
+        if sections and _is_credential_section(sections[0][0]):
+            return ""
         return text
     kept = [
         body

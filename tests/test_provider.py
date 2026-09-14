@@ -687,5 +687,78 @@ class CortexProviderTests(unittest.TestCase):
         self.assertNotIn("Ignore previous", context)
 
 
+class ToolArgumentBooleanParsingTests(unittest.TestCase):
+    """Tool arguments must parse booleans strictly (no truthy strings).
+
+    Regression (2026-09-14): the tool-call path used ``bool(value)``, so the
+    STRING ``"false"`` (which is truthy in Python) silently switched maintenance
+    runs into apply mode.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.provider = CortexMemoryProvider(
+            {
+                "db_path": "$HERMES_HOME/cortex/test.db",
+                "pruning_mode": "apply",
+                "consolidation_mode": "apply",
+            }
+        )
+        self.provider.initialize("session-1", hermes_home=self.tmp.name, agent_context="primary")
+
+    def tearDown(self) -> None:
+        self.provider.shutdown()
+        self.tmp.cleanup()
+
+    def call(self, **args):
+        return json.loads(self.provider.handle_tool_call("cortex_memory", args))
+
+    def test_falsy_strings_never_enable_apply_mode(self) -> None:
+        for flag in ("false", "False", "0", "no", "off"):
+            with self.subTest(flag=flag):
+                maintenance = self.call(action="maintenance", apply=flag)
+                self.assertTrue(maintenance["success"])
+                self.assertTrue(
+                    maintenance["maintenance"]["dry_run"],
+                    f"apply={flag!r} must stay a dry run",
+                )
+                repair = self.call(action="repair", apply=flag)
+                self.assertTrue(repair["repair"]["dry_run"], f"apply={flag!r} must stay a dry run")
+                consolidate = self.call(action="consolidate", apply=flag)
+                self.assertTrue(
+                    consolidate["consolidation"]["dry_run"],
+                    f"apply={flag!r} must stay a dry run",
+                )
+
+    def test_truthy_strings_and_real_bools_still_apply(self) -> None:
+        self.assertTrue(self.call(action="repair", apply="true")["repair"]["dry_run"] is False)
+        self.assertTrue(self.call(action="repair", apply=True)["repair"]["dry_run"] is False)
+
+    def test_pin_flag_parses_strictly(self) -> None:
+        created = self.call(
+            action="remember",
+            content="The pin flag parsing test memory uses strict booleans.",
+            kind="semantic",
+        )
+        reviewed = self.provider._store.review_memory_creation(
+            created["proposal_id"], "remember", actor="provider-test"
+        )
+        memory_id = str(reviewed["memory_id"])
+        pinned = self.call(action="pin", memory_id=memory_id, pinned="false")
+        self.assertTrue(pinned["success"])
+        self.assertEqual(
+            self.provider._store.get_memory(memory_id)["pinned"],
+            0,
+            'pinned="false" must not pin the memory',
+        )
+        pinned = self.call(action="pin", memory_id=memory_id, pinned="true")
+        self.assertTrue(pinned["success"])
+        self.assertEqual(
+            self.provider._store.get_memory(memory_id)["pinned"],
+            1,
+            'pinned="true" must pin the memory',
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

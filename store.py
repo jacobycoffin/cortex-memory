@@ -1473,11 +1473,11 @@ class CortexStore:
         clean = normalize_text(sanitized.text)[:8000]
         if not clean:
             raise ValueError("memory creation proposal content cannot be empty")
-        kind_value = normalize_text(kind or "semantic").casefold()[:80] or "semantic"
+        kind_value = normalize_text(neutralize_role_tags(str(kind or "semantic"))).casefold()[:80] or "semantic"
         source_type_value = normalize_text(source_type or "conversation").casefold()[:120]
         source_category_value = normalize_text(source_category or "AGENT_INFERENCE").upper()[:120]
         source_ref_sanitized = sanitize_memory(str(source_ref or ""))
-        source_ref_value = normalize_text(source_ref_sanitized.text)[:500] or None
+        source_ref_value = normalize_text(neutralize_role_tags(source_ref_sanitized.text))[:500] or None
         session_value = normalize_text(session_id or "")[:200] or None
         mode = _normalize_context_mode(context_mode)
         scope_value = _sanitize_creation_context_map(scope)
@@ -1833,7 +1833,7 @@ class CortexStore:
         authority_value = normalize_text(approval_authority).casefold() or "operator"
         if authority_value not in {"operator", "automatic"}:
             raise ValueError("creation approval authority must be operator or automatic")
-        note_value = normalize_text(reason_text)[:1000]
+        note_value = normalize_text(sanitize_memory(str(reason_text or "")).text)[:1000]
         review_id = str(uuid.uuid4())
         memory_id: str | None = None
         memory_created = False
@@ -2263,9 +2263,10 @@ class CortexStore:
         quarantine_reason = ", ".join(dict.fromkeys(part for part in quarantine_parts if part)) or None
         # Provenance fields are prompt-visible metadata, so they get the same
         # care as content: redact secrets on the way in, and keep role-tag
-        # markers out of the stored source label so it cannot impersonate a
-        # chat turn when it is rendered beside recalled content.
-        source_ref = normalize_text(sanitize_memory(str(source_ref or "")).text)[:500] or None
+        # markers out of the stored labels (kind, source_type, source_ref) so
+        # none of them can impersonate a chat turn beside recalled content.
+        kind = normalize_text(neutralize_role_tags(str(kind or "semantic"))).casefold()[:80] or "semantic"
+        source_ref = normalize_text(neutralize_role_tags(sanitize_memory(str(source_ref or "")).text))[:500] or None
         source_type = (
             normalize_text(neutralize_role_tags(sanitize_memory(str(source_type or "")).text))[:120]
             or "conversation"
@@ -2646,6 +2647,9 @@ class CortexStore:
         new_content = normalize_text(sanitized_content.text)
         if not new_content:
             raise ValueError("corrected content cannot be empty")
+        # Ledger text is durable and exportable, so it crosses the same secret
+        # gate as content: a user may name the secret they are correcting.
+        reason = normalize_text(sanitize_memory(str(reason or "")).text)[:500]
         # A correction is a write, so it gets the same treatment as add_memory:
         # secrets never reach storage through this path, and a correction that
         # carried a secret or an injection marker lands in quarantine instead
@@ -2668,7 +2672,7 @@ class CortexStore:
             or None
         )
         correction_state = "quarantine" if correction_quarantine else "active"
-        source_ref = normalize_text(sanitize_memory(str(source_ref or "")).text)[:500] or None
+        source_ref = normalize_text(neutralize_role_tags(sanitize_memory(str(source_ref or "")).text))[:500] or None
         now = utc_now()
         from .research import record_reconsolidation_correction_tx
 
@@ -5388,7 +5392,14 @@ class CortexStore:
         with self.transaction() as conn:
             conn.execute(
                 "INSERT INTO access_log(memory_id,event,query,session_id,score,created_at) VALUES(?,?,?,?,?,?)",
-                (memory_id, event, query, session_id, score, now),
+                (
+                    memory_id,
+                    event,
+                    normalize_text(sanitize_memory(str(query or "")).text)[:500] if query is not None else None,
+                    session_id,
+                    score,
+                    now,
+                ),
             )
             if event in columns:
                 count_col, time_col = columns[event]
@@ -5582,7 +5593,7 @@ class CortexStore:
                     recall_id,
                     task_id,
                     session_id,
-                    normalize_text(query)[:500],
+                    normalize_text(sanitize_memory(str(query or "")).text)[:500],
                     mode,
                     reason,
                     int(requested_limit),
@@ -5698,7 +5709,7 @@ class CortexStore:
         ]
         now = utc_now()
         trace_id = str(uuid.uuid4())
-        goal_value = normalize_text(goal)[:1000] or "Unspecified task"
+        goal_value = normalize_text(sanitize_memory(str(goal or "")).text)[:1000] or "Unspecified task"
         context_value = normalize_text(context_summary)[:1000] or "No additional task context was provided."
         task_type_value = normalize_text(task_type)[:80] or "general"
         retrieval_context_value = _normalize_retrieval_context(
@@ -5706,7 +5717,11 @@ class CortexStore:
         )
         recall_mode_value = normalize_text(recall_mode)[:40] or "unknown"
         reason_value = normalize_text(retrieval_reason)[:600] or "No retrieval reason was recorded."
-        query_values = [normalize_text(query)[:1000] for query in queries if normalize_text(query)][:8]
+        query_values = [
+            value
+            for value in (normalize_text(sanitize_memory(str(query or "")).text)[:1000] for query in queries)
+            if value
+        ][:8]
         payload = {
             "goal": goal_value,
             "context_summary": context_value,
@@ -6644,7 +6659,7 @@ class CortexStore:
             conn.execute(
                 """INSERT INTO pruning_regret(memory_id,query,score,restored,created_at)
                    VALUES(?,?,?,?,?)""",
-                (memory_id, normalize_text(query)[:500], _clamp(score), int(restore), utc_now()),
+                (memory_id, normalize_text(sanitize_memory(str(query or "")).text)[:500], _clamp(score), int(restore), utc_now()),
             )
         if restore:
             if strand_decision_id:
@@ -10481,7 +10496,7 @@ class CortexStore:
                     None,
                     action_value,
                     reason_value,
-                    normalize_text(reason_text)[:1000] or None,
+                    normalize_text(sanitize_memory(str(reason_text or "")).text)[:1000] or None,
                     json.dumps(prior, sort_keys=True),
                     json.dumps({**effect, "refinery_proposal_id": proposal_id}, sort_keys=True),
                     json.dumps(signal, sort_keys=True),
@@ -11499,7 +11514,7 @@ class CortexStore:
                     dst_id,
                     normalize_text(action)[:80],
                     normalize_text(reason_code)[:80] or "unspecified",
-                    normalize_text(reason_text)[:1000] or None,
+                    normalize_text(sanitize_memory(str(reason_text or "")).text)[:1000] or None,
                     json.dumps(prior or {}, sort_keys=True),
                     json.dumps(effect or {}, sort_keys=True),
                     json.dumps(signal, sort_keys=True),
@@ -11677,7 +11692,7 @@ class CortexStore:
                     elif reason_value == "useful_together":
                         relation = "useful_together"
                         explanation = "You approved this because recalling either memory should make the other useful."
-                    operator_note = normalize_text(reason_text)[:300]
+                    operator_note = normalize_text(sanitize_memory(str(reason_text or "")).text)[:300]
                     if operator_note:
                         explanation = f"{explanation} Your note: {operator_note}"
                     edge = conn.execute(
@@ -11838,7 +11853,7 @@ class CortexStore:
                 (
                     review_id, "proposal", f"proposal:{proposal_id}", proposal_id,
                     proposal["src_id"], proposal["dst_id"], action_value, reason_value,
-                    normalize_text(reason_text)[:1000] or None,
+                    normalize_text(sanitize_memory(str(reason_text or "")).text)[:1000] or None,
                     json.dumps(prior, sort_keys=True), json.dumps(effect, sort_keys=True),
                     json.dumps(signal, sort_keys=True), scope_value,
                     normalize_text(actor)[:80] or "dashboard-operator", now,
