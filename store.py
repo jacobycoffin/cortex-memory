@@ -12862,19 +12862,27 @@ class CortexStore:
                             applicable_systems_json,applicable_versions_json
                    HAVING n>1"""
             ).fetchall()
-            # These are integrity anti-joins.  The FK-backed tables have
-            # non-null keys, so NOT IN lets SQLite use their covering indexes
-            # instead of probing the parent table once per child row.  FTS is
-            # external-content and permits NULL ids, hence the explicit NULL
-            # arm to preserve the LEFT JOIN semantics.
+            # These are integrity anti-joins, and the faster form depends on the
+            # OUTER table's size (measured on a 1,200-memory fixture with
+            # 192k memory_features rows):
+            #   * small outer table (memories, 1.2k rows) -> NOT IN is much
+            #     faster: it scans the small table and probes the child index
+            #     (missing_fts 220ms -> 1.1ms, missing_features 15ms -> 0.2ms).
+            #   * large outer table (memory_features, 192k rows) -> the index-
+            #     driven LEFT JOIN wins, because NOT IN has to probe every child
+            #     row: 101ms vs 347ms on a cold cache, and the dashboard audit
+            #     runs cold. Do not "optimise" this one to NOT IN.
+            # FTS is external-content and permits NULL ids, hence the explicit
+            # NULL arm wherever it is the outer table.
             orphan_fts = self._conn.execute(
                 """SELECT COUNT(*) n FROM memory_fts
                    WHERE memory_id IS NULL OR memory_id NOT IN
                      (SELECT id FROM memories)"""
             ).fetchone()["n"]
             orphan_features = self._conn.execute(
-                """SELECT COUNT(*) n FROM memory_features
-                   WHERE memory_id NOT IN (SELECT id FROM memories)"""
+                """SELECT COUNT(*) n FROM memory_features f
+                   LEFT JOIN memories m ON m.id=f.memory_id
+                   WHERE m.id IS NULL"""
             ).fetchone()["n"]
             missing_fts = self._conn.execute(
                 """SELECT COUNT(*) n FROM memories
