@@ -114,7 +114,22 @@ class SemanticFusionIntegrationTests(unittest.TestCase):
         self.assertIn(self.ids["gamma"], ids,
                       "semantic candidate did not reach the pool — fusion is not augmenting")
 
-    def test_missing_model_degrades_to_default_behaviour(self):
+    @unittest.skipUnless(_NUMPY_AVAILABLE, "semantic augmentation requires numpy")
+    def test_non_positive_similarity_is_not_fused(self):
+        """RRF rank must not turn an orthogonal vector into evidence."""
+        self.store.set_memory_embedding(self.ids["gamma"], "stub-model", [-1.0, 0.0, 0.0, 0.0])
+        self._patch_embedder(_StubEmbedder(vector=[1.0, 0.0, 0.0, 0.0]))
+
+        results, _ = self._retriever(semantic_weight=30.0).search_detailed(
+            "gardening soil", limit=5
+        )
+        self.assertNotIn(self.ids["gamma"], [r.memory["id"] for r in results])
+
+    def test_semantic_floor_is_clamped_and_configurable(self):
+        self.assertEqual(self._retriever(semantic_floor=0.25).semantic_floor, 0.25)
+        self.assertEqual(self._retriever(semantic_floor=3).semantic_floor, 1.0)
+        self.assertEqual(self._retriever(semantic_floor=-3).semantic_floor, -1.0)
+
         self.store.set_memory_embedding(self.ids["gamma"], "stub-model", [1.0, 0.0, 0.0, 0.0])
         self._patch_embedder(_StubEmbedder(available=False))
 

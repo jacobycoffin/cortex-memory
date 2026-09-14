@@ -197,6 +197,7 @@ class MemoryRetriever:
         semantic_weight: float = 0.0,
         semantic_pool: int = 20,
         semantic_model_id: str | None = None,
+        semantic_floor: float = 0.0,
     ):
         self.store = store
         self.threshold = threshold
@@ -205,6 +206,10 @@ class MemoryRetriever:
         self.semantic_weight = max(0.0, float(semantic_weight))
         self.semantic_pool = max(1, int(semantic_pool))
         self.semantic_model_id = semantic_model_id
+        # RRF rank is useful only after the embedding says the candidate is
+        # directionally related. A zero floor excludes anti-correlated and
+        # orthogonal vectors; deployments may raise it for stricter precision.
+        self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
 
     def search(
         self,
@@ -392,7 +397,7 @@ class MemoryRetriever:
                 ):
                     continue
                 result = self._score(
-                    query,
+                    expanded_query,
                     memory,
                     graph=graph_boost,
                     temporal_mode=temporal_mode,
@@ -751,11 +756,19 @@ class MemoryRetriever:
         if not hits:
             return {}
 
+        # Keep the raw query for embedding; use the same expanded lexical query
+        # as the main candidate pool when scoring the semantic-only candidate.
+        expanded_query = _expand_query(query)
         allowed_states = (
             {"active", "cold", "archived"} if include_archived else {"active", "cold"}
         )
         semantic_rank: dict[str, int] = {}
-        for rank, (memory_id, _similarity) in enumerate(hits):
+        for rank, (memory_id, similarity) in enumerate(hits):
+            # Rank fusion orders semantically related candidates; it must not
+            # turn orthogonal/anti-correlated vectors into evidence merely
+            # because the pool is sparse. Keep the configured boundary strict.
+            if float(similarity) <= self.semantic_floor:
+                continue
             # The fusion contribution must land in the SCORE, not only in the
             # selector's ordering value: the threshold and relevance gates below
             # read `result.score`, so a boost applied later is invisible to them
@@ -790,7 +803,7 @@ class MemoryRetriever:
             ):
                 continue
             result = self._score(
-                query,
+                expanded_query,
                 memory,
                 graph=0.0,
                 temporal_mode=temporal_mode,

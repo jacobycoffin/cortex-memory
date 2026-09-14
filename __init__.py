@@ -138,6 +138,7 @@ DEFAULTS: dict[str, Any] = {
     # single-hop regression; weight 30 regresses single-hop.
     "semantic_fusion_weight": 0.0,
     "semantic_fusion_pool": 20,
+    "semantic_fusion_min_similarity": 0.0,
     "adaptive_recall": True,
     "adaptive_budget_learning": True,
     "attentional_learning": False,
@@ -365,6 +366,7 @@ class CortexMemoryProvider(MemoryProvider):
             threshold=float(self._config["retrieval_threshold"]),
             semantic_weight=float(self._config.get("semantic_fusion_weight") or 0.0),
             semantic_pool=int(self._config.get("semantic_fusion_pool") or 20),
+            semantic_floor=float(self._config.get("semantic_fusion_min_similarity") or 0.0),
         )
         self._session_id = session_id
         if _as_bool(self._config.get("memory_receipts", True)):
@@ -1475,6 +1477,21 @@ class CortexMemoryProvider(MemoryProvider):
             {"key": "top_k", "description": "Maximum recalled memories", "default": "6"},
             {"key": "token_budget", "description": "Approximate recall token budget", "default": "700"},
             {"key": "retrieval_threshold", "description": "Minimum retrieval score", "default": "0.16"},
+            {
+                "key": "semantic_fusion_weight",
+                "description": "Rank-fusion bonus for local semantic retrieval (0 disables it)",
+                "default": "0.0",
+            },
+            {
+                "key": "semantic_fusion_pool",
+                "description": "Maximum semantic candidates considered per recall",
+                "default": "20",
+            },
+            {
+                "key": "semantic_fusion_min_similarity",
+                "description": "Minimum cosine similarity required before semantic fusion",
+                "default": "0.0",
+            },
             {
                 "key": "adaptive_recall",
                 "description": "Skip or shrink recall when durable context is unlikely to help",
