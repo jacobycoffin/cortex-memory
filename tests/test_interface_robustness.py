@@ -101,27 +101,25 @@ class ThrottleReservationTests(unittest.TestCase):
                 type(self).attempts += 1
                 return False
 
-        with tempfile.TemporaryDirectory() as tmp:
-            auth = DashboardAuth(Path(tmp) / "dashboard-auth.json")
-            handler = _handler_bound_to(CountingAuth())
-            token = base64.b64encode(b"viewer:wrong-password").decode()
+        handler = _handler_bound_to(CountingAuth())
+        token = base64.b64encode(b"viewer:wrong-password").decode()
 
-            def worker() -> None:
-                request = handler.__new__(handler)
-                request.headers = {"Authorization": "Basic " + token}
-                request.client_address = ("127.0.0.1", 9999)
-                try:
-                    request._authorized(complete=False)
-                except Exception:
-                    pass
+        def worker() -> None:
+            request = handler.__new__(handler)
+            request.headers = {"Authorization": "Basic " + token}
+            request.client_address = ("127.0.0.1", 9999)
+            try:
+                request._authorized(complete=False)
+            except Exception:
+                pass
 
-            threads = [threading.Thread(target=worker) for _ in range(12)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(timeout=6)
+        threads = [threading.Thread(target=worker) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=6)
 
-            self.assertEqual(CountingAuth.attempts, 8)  # the configured limit, no more
+        self.assertEqual(CountingAuth.attempts, 8)  # the configured limit, no more
 
 
 if __name__ == "__main__":

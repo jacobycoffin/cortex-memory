@@ -5,11 +5,10 @@ import sys
 import tempfile
 import types
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex import CortexMemoryProvider, _install_hermes_output_hook, register
 

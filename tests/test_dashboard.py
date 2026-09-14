@@ -495,6 +495,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         server = (ROOT / "dashboard.py").read_text()
         html = (ROOT / "dashboard.html").read_text()
         readme = (ROOT / "README.md").read_text()
+        self.assertIn("Review Copilot", readme)
         self.assertIn('"/api/review/copilot"', server)
         self.assertIn("ReviewCopilotConfig.from_env()", server)
         self.assertIn('snapshot["review_copilot"] = review_copilot.status()', server)

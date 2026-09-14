@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.retrieval import MemoryRetriever, RetrievalContext, _fts_relevance
 from cortex.security import sanitize_memory

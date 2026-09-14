@@ -6,7 +6,6 @@ import os
 import sqlite3
 import sys
 import tempfile
-import time
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
@@ -14,13 +13,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.autojudge import (
     AutoJudge,
     AutoJudgeConfig,
     AutoJudgeError,
     _LINKS_EDGE_WEIGHT,
+    _SYSTEM_PROMPT,
     _apply_contradiction_edges,
     _apply_links,
     _parse_batch_links,
@@ -32,7 +32,6 @@ from cortex.cli import main as cli_main
 from cortex.store import (
     SCHEMA_VERSION,
     CortexStore,
-    StaleCreationProposalError,
     creation_proposal_revision,
 )
 
@@ -1153,8 +1152,9 @@ class AutoJudgeTests(unittest.TestCase):
         """With links_enabled=True, the system prompt includes link instructions."""
         config = self.config(links_enabled=True)
         judge = AutoJudge(config)
-        # The prompt selection happens at runtime — verify config reads correctly
-        self.assertTrue(config.links_enabled)
+        prompt = judge.base_system_prompt()
+        self.assertIn("knowledge-graph linker", prompt)
+        self.assertLess(len(_SYSTEM_PROMPT), len(prompt))
 
     def test_apply_links_creates_edges(self) -> None:
         """_apply_links creates edges and edge_evidence for valid links."""

@@ -21,13 +21,13 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
-from .retrieval import MemoryRetriever, RetrievalContext
+from .retrieval import MemoryRetriever
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
 
@@ -228,6 +228,10 @@ class AutoJudge:
         self.config = config
         self._provider_call = provider_call or _post_chat
 
+    def base_system_prompt(self) -> str:
+        """The base system prompt: the linker variant when link proposals are enabled."""
+        return _SYSTEM_PROMPT_LINKS if self.config.links_enabled else _SYSTEM_PROMPT
+
     def run(self, store: CortexStore) -> dict[str, Any]:
         report: dict[str, Any] = {
             "enabled": self.config.enabled,
@@ -360,9 +364,7 @@ class AutoJudge:
         # whole batch). Decisions from all chunks validate-then-commit below;
         # a failed chunk aborts the run and its proposals stay pending.
         today_utc = datetime.now(timezone.utc).date().isoformat()
-        base_prompt = (
-            _SYSTEM_PROMPT_LINKS if self.config.links_enabled else _SYSTEM_PROMPT
-        )
+        base_prompt = self.base_system_prompt()
         system_prompt = (
             base_prompt
             + f"\nToday is {today_utc}. Each candidate carries first_seen_at (UTC). "

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.metacognition import assess_retrieval
 from cortex.retrieval import MemoryRetriever, RetrievalResult

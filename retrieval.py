@@ -411,9 +411,8 @@ class MemoryRetriever:
         # merely re-ranking it: the measured gain comes from embeddings finding
         # memories the lexical signals never surfaced, which re-ranking alone
         # cannot do. Inert (empty dict) unless semantic_weight > 0.
-        semantic_rank: dict[str, int] = {}
         if self.semantic_weight > 0.0:
-            semantic_rank = self._inject_semantic_candidates(
+            self._inject_semantic_candidates(
                 query,
                 scored,
                 limit=limit,

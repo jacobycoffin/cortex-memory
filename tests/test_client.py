@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.client import CortexMemory, RecallBatch, estimate_text_tokens
 from cortex.retrieval import MemoryRetriever, RetrievalResult

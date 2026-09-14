@@ -8,10 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.retrieval import MemoryRetriever
-from cortex.store import SCHEMA_VERSION, CortexStore, StaleCreationProposalError, creation_proposal_revision
+from cortex.store import SCHEMA_VERSION, CortexStore, creation_proposal_revision
 
 
 class MemoryCreationProposalTests(unittest.TestCase):

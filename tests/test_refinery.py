@@ -11,8 +11,6 @@ from pathlib import Path
 from tests._bootstrap import ROOT  # noqa: F401 - loads the cortex package
 
 from cortex.refinery import (
-    PRESENTATION_VERSION,
-    ROLE_CLASSIFIER_VERSION,
     build_presentation,
     classify_record_role,
     deterministic_split_preview,

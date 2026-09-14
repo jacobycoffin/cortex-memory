@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import re
 import unittest
-from pathlib import Path
 
 from tests._bootstrap import ROOT  # noqa: F401
 

@@ -12,8 +12,6 @@ from cortex.refinery import build_presentation
 from cortex.temporal import (
     DURABLE,
     MIXED,
-    MOSTLY_DURABLE,
-    VOLATILE,
     classify_temporal,
     find_as_of,
 )
