@@ -836,7 +836,7 @@ class MemoryRetriever:
         scoring_weights: dict[str, float] | None = None,
     ) -> RetrievalResult:
         q_tokens = set(query_tokens(query))
-        m_tokens = set(query_tokens(memory["content"]))
+        m_tokens = set(_content_token_set(memory["content"]))
         intersection = len(q_tokens & m_tokens)
         union = max(1, len(q_tokens | m_tokens))
         overlap = intersection / union
@@ -1439,7 +1439,7 @@ def _content_token_set(content: str) -> frozenset[str]:
     call re-ran the tokenizer ~27,000 times for a single recall and dominated
     live prepare latency (profiled 2026-09-10: 95% of the select stage, ~3.9M
     ``casefold`` calls). The token set for a given body is immutable, so cache
-    it. Returns a ``frozenset`` for hashing; intersection/union semantics are
-    identical to the previous inline ``set(...)``.
+    it. Returns a ``frozenset`` for hashing; memory-body similarity deliberately
+    uses the full distinct-token set rather than the query-side cap.
     """
-    return frozenset(query_tokens(content))
+    return frozenset(query_tokens(content, limit=None))

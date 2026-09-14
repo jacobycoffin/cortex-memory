@@ -209,9 +209,16 @@ def content_hash(content: str) -> str:
     return hashlib.sha256(normalize_text(content).casefold().encode("utf-8")).hexdigest()
 
 
-def query_tokens(text: str) -> list[str]:
+def query_tokens(text: str, limit: int | None = 24) -> list[str]:
+    """Return normalized distinct tokens, optionally capped for query cost.
+
+    Recall queries keep the historical 24-token cap by default. Memory-body
+    comparisons pass ``limit=None`` so long documents are not represented only
+    by their opening boilerplate.
+    """
     tokens = [t.casefold().strip("'-") for t in _TOKEN.findall(text or "")]
-    return list(dict.fromkeys(t for t in tokens if t and t not in _STOP))[:24]
+    unique = list(dict.fromkeys(t for t in tokens if t and t not in _STOP))
+    return unique if limit is None else unique[: max(0, int(limit))]
 
 
 class StaleCreationProposalError(ValueError):
