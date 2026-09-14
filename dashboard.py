@@ -262,6 +262,25 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
     return data
 
 
+def _normalize_allowed_hosts(value: str) -> set[str]:
+    """Parse a comma-separated ``Host`` allowlist, dropping ports and case.
+
+    ``"127.0.0.1, LocalHost:8100, [::1]:9"`` -> ``{"127.0.0.1", "localhost",
+    "[::1]"}``. An empty value yields an empty set, which disables enforcement.
+    """
+
+    normalized: set[str] = set()
+    for entry in (value or "").split(","):
+        host = entry.strip().casefold()
+        if not host:
+            continue
+        # IPv6 literals keep their brackets: "[::1]:8100" -> "[::1]".
+        host = host.split("]", 1)[0] + "]" if host.startswith("[") else host.split(":", 1)[0]
+        if host:
+            normalized.add(host)
+    return normalized
+
+
 def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool = True) -> None:
     """Serve the dashboard on localhost until interrupted.
 
@@ -309,6 +328,15 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         for ip in os.environ.get("CORTEX_DASHBOARD_TRUSTED_PROXIES", "").split(",")
         if ip.strip()
     }
+    # Host allowlist: DNS rebinding makes an attacker's page same-origin with
+    # this server (their hostname resolves to 127.0.0.1), which defeats both the
+    # same-origin policy and the `X-Cortex-Request` header the POST paths check —
+    # the browser sends `Host: <attacker domain>` and the custom header is a
+    # same-origin request from the page's point of view. Validating `Host` is the
+    # defense. Enforcement is OPT-IN because a dashboard behind a reverse proxy
+    # or tunnel legitimately receives its public hostname here; list every host
+    # you serve, e.g. CORTEX_DASHBOARD_ALLOWED_HOSTS="127.0.0.1,localhost,brain.example.com".
+    allowed_hosts = _normalize_allowed_hosts(os.environ.get("CORTEX_DASHBOARD_ALLOWED_HOSTS", ""))
     sleep_lock = threading.RLock()
     sleep_runtime: dict[str, object] = {
         "status": "idle",
@@ -491,8 +519,28 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
 
     class Handler(BaseHTTPRequestHandler):
+        def _host_allowed(self) -> bool:
+            """True when the request's ``Host`` header is acceptable.
+
+            Rebinding defense (see ``allowed_hosts`` above): enforcement is
+            active only when the operator configured an allowlist.
+            """
+
+            if not allowed_hosts:
+                return True
+            header = (self.headers.get("Host") or "").strip()
+            host = (
+                header.split("]", 1)[0] + "]"
+                if header.startswith("[")
+                else header.split(":", 1)[0]
+            ).casefold()
+            return host in allowed_hosts
+
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._headers_only(HTTPStatus.FORBIDDEN, "application/json; charset=utf-8", 0)
+                return
             if parsed.path == "/":
                 self._headers_only(HTTPStatus.OK, "text/html; charset=utf-8", len(html))
                 return
@@ -520,6 +568,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._json(HTTPStatus.FORBIDDEN, {"error": "host not allowed"})
+                return
             if parsed.path == "/":
                 self._send(HTTPStatus.OK, "text/html; charset=utf-8", html)
                 return
@@ -680,6 +731,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._json(HTTPStatus.FORBIDDEN, {"error": "host not allowed"})
+                return
             allowed_paths = {
                 "/api/auth/login",
                 "/api/auth/change-password",

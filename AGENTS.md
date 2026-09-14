@@ -69,6 +69,17 @@ CORTEX_INSTALL_AUTO_JUDGE_TIMER=1 CORTEX_AUTO_JUDGE_DATA_EGRESS_CONSENT=1 \
 HERMES_HOME="$HOME/.hermes" PORT=8100 ./scripts/install_dashboard_service.sh
 ```
 
+Behind a proxy or tunnel, list every hostname the dashboard answers on so it can
+reject DNS-rebinding requests that arrive with a foreign `Host` header:
+
+```bash
+CORTEX_DASHBOARD_ALLOWED_HOSTS="127.0.0.1,localhost,dashboard.example.com"
+```
+
+Unset means no `Host` filtering (the pre-existing behaviour), which is what a
+loopback-only dashboard needs; set it as soon as the dashboard is reachable
+under a name a browser can be tricked into resolving.
+
 ## Verify (acceptance test)
 
 ```bash
