@@ -201,5 +201,93 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertEqual(self.store.document_chunks("_meta/Build Info.md", active_only=True), [])
 
 
+    def test_inserting_a_duplicate_slug_heading_keeps_text_with_its_memory(self) -> None:
+        """Content matching wins over position when same-slug heading keys shift.
+
+        Positional chunk keys renumber when a same-slug heading is inserted ahead
+        of existing ones. Before the reconciliation, every later memory silently
+        held the previous block's text (rewritten "in place" although nobody
+        edited it) and the moved text was imported again under a fresh key, so
+        one passage lived under two live ids.
+        """
+        note = self.vault / "notes" / "Host.md"
+        note.parent.mkdir(exist_ok=True)
+        note.write_text(
+            "# Host\n\n"
+            "## Setup\n\nFirst setup block covers the baseline cluster configuration.\n\n"
+            "## Setup\n\nSecond setup block covers the storage retention policy.\n",
+            encoding="utf-8",
+        )
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+        before = {
+            row["chunk_key"]: (row["memory_id"], self.store.get_memory(row["memory_id"])["content"])
+            for row in self.store.document_chunks("notes/Host.md", active_only=True)
+        }
+        first_id = next(mid for mid, content in before.values() if "First setup block" in content)
+        second_id = next(mid for mid, content in before.values() if "Second setup block" in content)
+        first_text = self.store.get_memory(first_id)["content"]
+        second_text = self.store.get_memory(second_id)["content"]
+
+        note.write_text(
+            "# Host\n\n"
+            "## Setup\n\nA brand new first setup block appears above the others.\n\n"
+            "## Setup\n\nFirst setup block covers the baseline cluster configuration.\n\n"
+            "## Setup\n\nSecond setup block covers the storage retention policy.\n",
+            encoding="utf-8",
+        )
+        result = indexer.apply()
+
+        self.assertEqual(result["memories_created"], 1)
+        self.assertEqual(result["memories_updated"], 0)
+        self.assertEqual(self.store.get_memory(first_id)["content"], first_text)
+        self.assertEqual(self.store.get_memory(second_id)["content"], second_text)
+        self.assertEqual(self.store.get_memory(first_id)["state"], "active")
+        self.assertEqual(self.store.get_memory(second_id)["state"], "active")
+
+        active_contents = [
+            self.store.get_memory(row["memory_id"])["content"]
+            for row in self.store.document_chunks("notes/Host.md", active_only=True)
+        ]
+        self.assertEqual(len(active_contents), 3)
+        self.assertEqual(len(set(active_contents)), len(active_contents))
+        self.assertIn(first_text, active_contents)
+        self.assertIn(second_text, active_contents)
+
+        # ...and the reconciliation is stable: a repeat pass changes nothing.
+        repeat = indexer.apply()
+        self.assertEqual(repeat["memories_created"], 0)
+        self.assertEqual(repeat["memories_updated"], 0)
+        self.assertEqual(repeat["chunks_update"], 0)
+        self.assertEqual(repeat["chunks_add"], 0)
+
+    def test_in_place_revision_still_keeps_its_memory(self) -> None:
+        """Editing a section's text is not a move: it revises in place."""
+        note = self.vault / "notes" / "Host.md"
+        note.parent.mkdir(exist_ok=True)
+        note.write_text(
+            "# Host\n\n## Setup\n\nFirst setup block covers the baseline configuration.\n",
+            encoding="utf-8",
+        )
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+        memory_id = self.store.document_chunks("notes/Host.md", active_only=True)[0]["memory_id"]
+
+        note.write_text(
+            "# Host\n\n"
+            "## Setup\n\nFirst setup block covers the baseline configuration, now revised.\n",
+            encoding="utf-8",
+        )
+        result = indexer.apply()
+
+        self.assertEqual(result["memories_created"], 0)
+        self.assertEqual(result["memories_updated"], 1)
+        self.assertEqual(
+            self.store.document_chunks("notes/Host.md", active_only=True)[0]["memory_id"], memory_id
+        )
+        self.assertIn("now revised", self.store.get_memory(memory_id)["content"])
+        self.assertTrue(result["audit"]["ok"])
+
+
 if __name__ == "__main__":
     unittest.main()

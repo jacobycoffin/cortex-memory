@@ -168,7 +168,10 @@ class VaultIndexer:
                 row["chunk_key"]: row
                 for row in self.store.document_chunks(note.relative_path, active_only=False)
             }
-            incoming = {chunk.key: chunk for chunk in note.chunks}
+            incoming = {
+                key: chunk
+                for key, chunk in _reconcile_chunk_keys(existing, note.chunks)
+            }
             if not previous:
                 report["new_files"] += 1
                 report["chunks_add"] += len(incoming)
@@ -223,9 +226,9 @@ class VaultIndexer:
                 for row in self.store.document_chunks(note.relative_path, active_only=False)
             }
             incoming_keys: set[str] = set()
-            for chunk in note.chunks:
-                incoming_keys.add(chunk.key)
-                previous = existing.get(chunk.key)
+            for key, chunk in _reconcile_chunk_keys(existing, note.chunks):
+                incoming_keys.add(key)
+                previous = existing.get(key)
                 memory_id: str
                 if previous and bool(previous["active"]) and previous["chunk_hash"] == chunk.digest:
                     if not self._should_reactivate_importer_archive(previous):
@@ -265,7 +268,7 @@ class VaultIndexer:
                             state=next_state,
                             quarantine_reason=chunk.quarantine_reason,
                             valid_from=chunk.valid_from,
-                            subject=f"vault:{note.relative_path}#{chunk.key}",
+                            subject=f"vault:{note.relative_path}#{key}",
                             predicate="documents",
                             object_value=chunk.heading,
                             extraction_method=IMPORTER_VERSION,
@@ -299,7 +302,7 @@ class VaultIndexer:
                         state="quarantine" if chunk.quarantine_reason else "active",
                         quarantine_reason=chunk.quarantine_reason,
                         valid_from=chunk.valid_from,
-                        subject=f"vault:{note.relative_path}#{chunk.key}",
+                        subject=f"vault:{note.relative_path}#{key}",
                         predicate="documents",
                         object_value=chunk.heading,
                         extraction_method=IMPORTER_VERSION,
@@ -307,7 +310,7 @@ class VaultIndexer:
                     counters["memories_created"] += int(created)
                 self.store.upsert_document_chunk(
                     source_path=note.relative_path,
-                    chunk_key=chunk.key,
+                    chunk_key=key,
                     memory_id=memory_id,
                     chunk_hash=chunk.digest,
                     heading=chunk.heading,
@@ -390,6 +393,85 @@ class VaultIndexer:
             aliases.setdefault(_normalize_link(Path(note.relative_path).stem), note.relative_path)
             aliases.setdefault(_normalize_link(note.title), note.relative_path)
         return aliases, first_chunks
+
+
+_CHUNK_KEY = re.compile(r"^(?P<base>.+)-(?P<occurrence>\d+)-p(?P<part>\d+)$")
+
+
+def _chunk_key_parts(key: str) -> tuple[str, int, int]:
+    match = _CHUNK_KEY.match(key)
+    if not match:
+        return key, 0, 1
+    return match.group("base"), int(match.group("occurrence")), int(match.group("part"))
+
+
+def _reconcile_chunk_keys(
+    existing: dict[str, Any], chunks: Iterable[VaultChunk]
+) -> list[tuple[str, VaultChunk]]:
+    """Pair incoming chunks with stored chunk keys, matching content before position.
+
+    Chunk keys are positional (`{slug}-{occurrence}-p{part}`), so inserting or
+    removing a same-slug heading shifts every later key. Positionally alone that
+    makes a stable memory hold another section's text — writing a "revised in
+    place" version for text nobody edited — and imports text that already had a
+    memory again under a fresh key, leaving the same content under two live ids.
+
+    Unchanged content therefore keeps its key: positional matches first, then
+    content matches against whatever is left, then the chunk's own key (a
+    genuine in-place revision), and only text that no stored chunk holds mints a
+    key, bumping the occurrence counter when the positional one is taken. Two
+    passes over an unchanged note therefore produce identical pairings.
+    """
+
+    chunks = list(chunks)
+    assignments: dict[int, str] = {}
+    claimed: set[str] = set()
+
+    # Pass 1: the positional key already holds this exact content.
+    for index, chunk in enumerate(chunks):
+        previous = existing.get(chunk.key)
+        if previous is not None and str(previous["chunk_hash"]) == chunk.digest:
+            assignments[index] = chunk.key
+            claimed.add(chunk.key)
+
+    # Pass 2: content that moved because headings shifted around it. Sorted so
+    # the choice is deterministic when several stored chunks share a digest.
+    by_digest: dict[str, list[str]] = {}
+    for key in sorted(existing):
+        if key not in claimed:
+            by_digest.setdefault(str(existing[key]["chunk_hash"]), []).append(key)
+    for index, chunk in enumerate(chunks):
+        if index in assignments:
+            continue
+        candidates = by_digest.get(chunk.digest)
+        if candidates:
+            key = candidates.pop(0)
+            assignments[index] = key
+            claimed.add(key)
+
+    # Pass 3: revisions keep their own key; anything whose positional key was
+    # taken by a content match mints the first unused occurrence.
+    for index, chunk in enumerate(chunks):
+        if index in assignments:
+            continue
+        key = chunk.key
+        if key not in claimed:
+            assignments[index] = key
+            claimed.add(key)
+            continue
+        base, occurrence, part = _chunk_key_parts(key)
+        for bump in range(occurrence + 1, occurrence + 1001):
+            candidate = f"{base}-{bump}-p{part}"
+            if candidate not in claimed and candidate not in existing:
+                assignments[index] = candidate
+                claimed.add(candidate)
+                break
+        else:  # pragma: no cover - 1000 same-slug headings in one note
+            fallback = f"{key}~{index}"
+            assignments[index] = fallback
+            claimed.add(fallback)
+
+    return [(assignments[index], chunk) for index, chunk in enumerate(chunks)]
 
 
 def _parse_note(
