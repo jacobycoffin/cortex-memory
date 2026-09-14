@@ -13567,18 +13567,42 @@ class CortexStore:
             if not current_left or not current_right or not _semantic_consolidation_sources_are_safe(
                 dict(current_left), dict(current_right), decision
             ):
+                # Claim the decision before touching anything. The status check
+                # ran outside this transaction, so a second applier can have
+                # finalized the same decision in between — and when that happened
+                # the loser used to overwrite an 'applied' ledger row with
+                # 'skipped' and archive the merged memory the winner had just
+                # promoted, leaving the merge recorded as skipped with its
+                # lineage edges still pointing at an archived row (measured
+                # 2026-09-14; the guarded form below is why schema formation does
+                # not have this defect).
+                if not conn.execute(
+                    """UPDATE semantic_consolidation_decisions
+                       SET status='skipped',result_memory_id=?,source_snapshot_json=?
+                       WHERE decision_id=? AND status='proposed'""",
+                    (result_memory_id, source_snapshot, decision_id),
+                ).rowcount:
+                    finalized = conn.execute(
+                        """SELECT status,result_memory_id FROM semantic_consolidation_decisions
+                           WHERE decision_id=?""",
+                        (decision_id,),
+                    ).fetchone()
+                    return {
+                        "decision_id": decision_id,
+                        "status": str(finalized["status"]) if finalized else "unknown",
+                        "reason": "already finalized by another writer",
+                        "result_memory_id": (
+                            str(finalized["result_memory_id"])
+                            if finalized and finalized["result_memory_id"]
+                            else result_memory_id
+                        ),
+                    }
                 self._refinery_state_change_tx(
                     conn,
                     dict(conn.execute("SELECT * FROM memories WHERE id=?", (result_memory_id,)).fetchone()),
                     "archived",
                     f"semantic consolidation {decision_id[:8]} became stale before apply",
                     now,
-                )
-                conn.execute(
-                    """UPDATE semantic_consolidation_decisions
-                       SET status='skipped',result_memory_id=?,source_snapshot_json=?
-                       WHERE decision_id=?""",
-                    (result_memory_id, source_snapshot, decision_id),
                 )
                 self._refresh_semantic_consolidation_run_tx(conn, str(decision["run_id"]))
                 return {
