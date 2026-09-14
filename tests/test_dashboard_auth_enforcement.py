@@ -32,7 +32,8 @@ def _handler_bound_to(auth: DashboardAuth) -> type:
 
     The handler lives inside the serve function, so the class body is compiled
     against the real dashboard module namespace with just the few names it
-    needs overridden.
+    needs overridden. ``_auto_judge_snapshot`` (which the handler calls) is a
+    module-level function now, so it comes along through the module namespace.
     """
 
     tree = ast.parse((ROOT / "dashboard.py").read_text(encoding="utf-8"))
@@ -40,11 +41,6 @@ def _handler_bound_to(auth: DashboardAuth) -> type:
         node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "serve_dashboard"
     )
     handler_def = next(node for node in serve.body if isinstance(node, ast.ClassDef) and node.name == "Handler")
-    snapshot = next(
-        node
-        for node in serve.body
-        if isinstance(node, ast.FunctionDef) and node.name == "_auto_judge_snapshot"
-    )
     namespace = dict(vars(dashboard_module))
     namespace.update(
         auth=auth,
@@ -55,7 +51,7 @@ def _handler_bound_to(auth: DashboardAuth) -> type:
     )
     exec(
         compile(
-            ast.Module(body=[handler_def, snapshot], type_ignores=[]),
+            ast.Module(body=[handler_def], type_ignores=[]),
             str(ROOT / "dashboard.py"),
             "exec",
         ),
