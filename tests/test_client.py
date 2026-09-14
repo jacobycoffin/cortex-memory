@@ -610,7 +610,35 @@ class CortexClientTests(unittest.TestCase):
         self.assertEqual(full.dropped_memory_ids, [])
         self.assertNotIn("withheld", full_text)
 
-    def test_agent_neutral_api_passes_explicit_project_and_system_context(self) -> None:
+    def test_tight_budget_preserves_fitting_evidence_when_note_would_hide_it(self) -> None:
+        """A note must not replace the last evidence line that already fits."""
+        memories = [
+            {
+                "id": f"memory-tight-{index:04d}",
+                "kind": "semantic",
+                "score": 0.9 - index * 0.01,
+                "content": "x" * 230,
+                "source_type": "conversation",
+                "source_category": "USER_EXPLICIT",
+                "source_ref": "session-42",
+                "approval_state": "operator_approved",
+            }
+            for index in range(6)
+        ]
+        batch = RecallBatch(
+            task_id="task-tight",
+            query="tight budget",
+            memories=memories,
+            _store=object(),
+            token_budget=120,
+        )
+
+        text = batch.context()
+        self.assertLessEqual(estimate_text_tokens(text), 120)
+        self.assertEqual(batch.rendered_memory_ids, [memories[0]["id"]])
+        self.assertEqual(batch.dropped_memory_ids, [item["id"] for item in memories[1:]])
+        self.assertIn("[+5 withheld]", text)
+
         with tempfile.TemporaryDirectory() as tmp:
             with CortexMemory(Path(tmp) / "cortex.db") as memory:
                 memory_id, _ = memory.remember(

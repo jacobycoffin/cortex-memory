@@ -105,31 +105,68 @@ def _fit_evidence_lines(
     Memories keep their incoming (best-score-first) order; the first lines
     that fit win. Fitting is done in characters (budget x 4) with newlines
     counted, so estimate_text_tokens() on the joined text can never exceed
-    the budget. The withheld note, when enabled, is reserved up front
-    (upper-bounded by the full memory count, newline included). Degenerate
-    budgets that cannot fit even the header still return the header:
+    the budget. When a withheld note is enabled, lines are fitted first and
+    the note is added afterward; only the last kept lines are evicted if the
+    note needs room. This avoids reserving space for a note that may not be
+    needed while keeping the final block within budget.
+    Degenerate budgets that cannot fit even the header still return the header:
     unknown evidence is more honest than an empty string for a non-empty
     batch.
     """
 
     lines = [_CONTEXT_HEADER]
     budget_chars = max(0, int(token_budget) * 4)
-    reserved = (
-        1 + len(_withheld_note(len(memories), token_budget)) if note else 0
-    )
-    used = len(_CONTEXT_HEADER) + reserved
+    used = len(_CONTEXT_HEADER)
+    content_lines: list[str] = []
+    kept_ids: list[str] = []
     dropped: list[str] = []
     for memory in memories:
         line = _evidence_line(memory)
         if used + 1 + len(line) > budget_chars:
             dropped.append(str(memory["id"]))
             continue
-        lines.append(line)
+        content_lines.append(line)
+        kept_ids.append(str(memory["id"]))
         used += 1 + len(line)
-    if dropped and note:
-        # Actual note is never longer than reserved: dropped <= memories, so
-        # its count needs no more digits than the reservation assumed.
-        lines.append(_withheld_note(len(dropped), token_budget))
+
+    if note and dropped:
+        # Do not reserve the maximum possible note before fitting evidence.
+        # Add the actual note and evict the lowest-priority kept lines only
+        # until the final rendered block fits.
+        original_content_lines = content_lines[:]
+        original_kept_ids = kept_ids[:]
+        original_dropped = dropped[:]
+        while True:
+            note_line = _withheld_note(len(dropped), token_budget)
+            candidate = [_CONTEXT_HEADER, *content_lines, note_line]
+            if len("\n".join(candidate)) <= budget_chars and (
+                content_lines or not original_content_lines
+            ):
+                lines = candidate
+                break
+            if not content_lines:
+                # The full note would consume the entire budget and hide all
+                # evidence. Prefer a compact marker; if even that cannot fit,
+                # keep the evidence and expose the exact IDs in metadata.
+                compact_note = f"[+{len(original_dropped)} withheld]"
+                compact_candidate = [_CONTEXT_HEADER, *original_content_lines, compact_note]
+                if len("\n".join(compact_candidate)) <= budget_chars:
+                    lines = compact_candidate
+                else:
+                    lines = [_CONTEXT_HEADER, *original_content_lines]
+                kept_ids = original_kept_ids
+                dropped = original_dropped
+                break
+            content_lines.pop()
+            dropped.append(kept_ids.pop())
+    else:
+        lines.extend(content_lines)
+
+    if dropped:
+        # Keep metadata in the same order as the input memories even when a
+        # kept line was evicted to make room for the note.
+        dropped_set = set(dropped)
+        dropped = [str(memory["id"]) for memory in memories if str(memory["id"]) in dropped_set]
     return lines, dropped
 
 
@@ -197,12 +234,10 @@ class RecallBatch:
             self._last_rendered_tokens = 0
             self._record_render_metrics()
             return ""
-        # Two passes: first fit against the bare budget; if anything drops,
-        # reserve space for the withheld-note and re-fit so the FINAL text
-        # (header + lines + note) stays within budget.
-        lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=False)
-        if dropped:
-            lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=True)
+        # Fit once with the actual withheld-note behavior. The fitter keeps
+        # the highest-priority incoming lines and evicts only a tail line if
+        # the final note needs room.
+        lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=True)
         text = "\n".join(lines)
         dropped_set = set(dropped)
         self._dropped_ids = dropped
