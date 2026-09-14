@@ -316,6 +316,96 @@ class VaultIndexerTests(unittest.TestCase):
         self.assertEqual(repeat["memories_created"], 0)
         self.assertEqual(edge_target(), before)
 
+    def test_repeat_pass_keeps_link_edge_timestamps_and_weight(self) -> None:
+        """A pass reconciles links; it must not rebuild every edge.
+
+        Deleting and re-adding each link rewrote created_at/last_reinforced_at
+        (so a link made months ago looked new every pass) and reset its weight
+        to 0.35, discarding any adjustment.
+        """
+        target = self.vault / "notes" / "Target.md"
+        source = self.vault / "notes" / "Source.md"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text("# Target\n\n## Body\n\nThe target note body.\n", encoding="utf-8")
+        source.write_text(
+            "# Source\n\nSee [[Target]] for the procedure.\n", encoding="utf-8"
+        )
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+
+        evidence_key = "notes/Source.md:Target:notes/Target.md"
+
+        def link_rows() -> list[tuple]:
+            return [
+                tuple(row)
+                for row in self.store._conn.execute(
+                    """SELECT e.src_id,e.dst_id,e.weight,e.created_at,e.last_reinforced_at
+                       FROM edges e
+                       JOIN edge_evidence ev
+                         ON ev.src_id=e.src_id AND ev.dst_id=e.dst_id AND ev.relation=e.relation
+                       WHERE e.relation='vault_link' AND ev.evidence_key=?""",
+                    (evidence_key,),
+                )
+            ]
+
+        before = link_rows()
+        self.assertEqual(len(before), 1)
+
+        self.store._conn.execute(
+            """UPDATE edges SET weight=0.9 WHERE relation='vault_link'
+               AND (src_id,dst_id) IN (
+                   SELECT src_id,dst_id FROM edge_evidence WHERE evidence_key=?)""",
+            (evidence_key,),
+        )
+        self.store._conn.commit()
+
+        repeat = indexer.apply()
+        after = link_rows()
+
+        self.assertEqual(len(after), 1)
+        self.assertEqual(repeat["vault_links_created"], 0)
+        self.assertEqual(repeat["vault_links_removed"], 0)
+        self.assertEqual([row[3] for row in before], [row[3] for row in after])
+        self.assertEqual([row[4] for row in before], [row[4] for row in after])
+        self.assertEqual([row[2] for row in after], [0.9])
+
+    def test_removing_a_wikilink_removes_only_its_edge(self) -> None:
+        """Pins what the reconciled link pass must still do: drop stale links."""
+        first_note = self.vault / "notes" / "First.md"
+        second_note = self.vault / "notes" / "Second.md"
+        third_note = self.vault / "notes" / "Third.md"
+        first_note.parent.mkdir(exist_ok=True)
+        third_line = "Links to [[Third]] for the runbook details.\n"
+        first_note.write_text(
+            f"# First\n\nLinks to [[Second]] for the audit notes.\n\n{third_line}",
+            encoding="utf-8",
+        )
+        second_note.write_text("# Second\n\nBody of the second note.\n", encoding="utf-8")
+        third_note.write_text("# Third\n\nBody of the third note.\n", encoding="utf-8")
+        indexer = VaultIndexer(self.store, self.vault)
+        indexer.apply()
+
+        def first_note_link_keys() -> list[str]:
+            return sorted(
+                row[0]
+                for row in self.store._conn.execute(
+                    """SELECT evidence_key FROM edge_evidence
+                       WHERE relation='vault_link' AND evidence_key LIKE 'notes/First.md:%'"""
+                )
+            )
+
+        self.assertEqual(
+            first_note_link_keys(),
+            ["notes/First.md:Second:notes/Second.md", "notes/First.md:Third:notes/Third.md"],
+        )
+
+        first_note.write_text(f"# First\n\n{third_line}", encoding="utf-8")
+        result = indexer.apply()
+
+        self.assertEqual(result["vault_links_removed"], 1)
+        self.assertEqual(result["vault_links_created"], 0)
+        self.assertEqual(first_note_link_keys(), ["notes/First.md:Third:notes/Third.md"])
+
     def test_in_place_revision_still_keeps_its_memory(self) -> None:
         """Editing a section's text is not a move: it revises in place."""
         note = self.vault / "notes" / "Host.md"

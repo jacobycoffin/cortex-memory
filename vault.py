@@ -211,6 +211,7 @@ class VaultIndexer:
             "memories_superseded": 0,
             "memories_archived": 0,
             "vault_links_created": 0,
+            "vault_links_removed": 0,
         }
 
         for note in scan.notes:
@@ -327,9 +328,12 @@ class VaultIndexer:
             if source["status"] == "active" and source_path not in scanned_paths:
                 counters["memories_archived"] += len(self.store.mark_document_missing(source_path))
 
-        self.store.clear_edges("vault_link")
         aliases, first_chunks = self._note_aliases(scan)
-        linked_pairs: set[tuple[str, str]] = set()
+        # Links are reconciled, not rebuilt. Clearing and re-adding every link
+        # each pass rewrote each edge's created_at/last_reinforced_at and reset
+        # its weight to 0.35, so a link established months ago looked new every
+        # 15 minutes and any weight adjustment was discarded.
+        desired: dict[tuple[str, str], dict[str, Any]] = {}
         for note in scan.notes:
             source_memory = first_chunks.get(note.relative_path)
             if not source_memory:
@@ -340,18 +344,14 @@ class VaultIndexer:
                 if not target_memory or target_memory == source_memory:
                     continue
                 pair = tuple(sorted((source_memory, target_memory)))
-                if pair in linked_pairs:
+                if pair in desired:
                     continue
-                linked_pairs.add(pair)
                 link_reason = dict(note.link_reasons).get(link, "")
-                if self.store.add_edge(
-                    source_memory,
-                    target_memory,
-                    "vault_link",
-                    weight=0.35,
-                    evidence_type="explicit_wikilink",
-                    evidence_key=f"{note.relative_path}:{link}:{target_path}",
-                    explanation=(
+                desired[pair] = {
+                    "src_id": source_memory,
+                    "dst_id": target_memory,
+                    "evidence_key": f"{note.relative_path}:{link}:{target_path}",
+                    "explanation": (
                         f"The vault note {note.title} explicitly links to {link}. "
                         + (
                             f"Source context: {link_reason}"
@@ -359,15 +359,40 @@ class VaultIndexer:
                             else "This is a documented relationship, not a similarity guess."
                         )
                     ),
-                    source_ref=f"vault:{note.relative_path}",
-                    metadata={
+                    "source_ref": f"vault:{note.relative_path}",
+                    "metadata": {
                         "source_path": note.relative_path,
                         "target_path": target_path,
                         "wikilink": link,
                         "link_context": link_reason,
                     },
-                ):
-                    counters["vault_links_created"] += 1
+                }
+
+        stored_links = self.store.vault_link_evidence()
+
+        for pair in list(stored_links):
+            stored_src, stored_dst, _evidence = stored_links[pair]
+            if pair not in desired and self.store.delete_edge(stored_src, stored_dst, "vault_link"):
+                counters["vault_links_removed"] += 1
+
+        for pair, payload in desired.items():
+            current = stored_links.get(pair)
+            if current and (payload["evidence_key"], payload["explanation"]) in current[2]:
+                continue  # already present and unchanged: keep its timestamps and weight
+            if current:
+                self.store.delete_edge(current[0], current[1], "vault_link")
+            if self.store.add_edge(
+                payload["src_id"],
+                payload["dst_id"],
+                "vault_link",
+                weight=0.35,
+                evidence_type="explicit_wikilink",
+                evidence_key=payload["evidence_key"],
+                explanation=payload["explanation"],
+                source_ref=payload["source_ref"],
+                metadata=payload["metadata"],
+            ):
+                counters["vault_links_created"] += 1
 
         return {**report, **counters, "applied": True, "audit": self.store.audit(), "stats": self.store.stats()}
 

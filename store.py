@@ -8213,6 +8213,44 @@ class CortexStore:
             result = conn.execute("DELETE FROM edges WHERE relation=?", (relation,))
             return result.rowcount
 
+    def vault_link_evidence(self) -> dict[tuple[str, str], tuple[str, str, set[tuple[str, str]]]]:
+        """Stored vault_link edges, keyed by the pair in sorted order.
+
+        ``{(src, dst) sorted: (stored_src, stored_dst, {(evidence_key, summary)})}``
+        — the indexer dedupes links by sorted pair, so it needs the same key to
+        reconcile links instead of deleting and re-adding every edge each pass.
+        """
+
+        links: dict[tuple[str, str], tuple[str, str, set[tuple[str, str]]]] = {}
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT e.src_id, e.dst_id, ev.evidence_key, ev.summary
+                   FROM edges e
+                   LEFT JOIN edge_evidence ev
+                     ON ev.src_id=e.src_id AND ev.dst_id=e.dst_id AND ev.relation=e.relation
+                   WHERE e.relation='vault_link'"""
+            ).fetchall()
+        for row in rows:
+            src_id, dst_id = str(row["src_id"]), str(row["dst_id"])
+            key = tuple(sorted((src_id, dst_id)))
+            entry = links.setdefault(key, (src_id, dst_id, set()))
+            entry[2].add((str(row["evidence_key"] or ""), str(row["summary"] or "")))
+        return links
+
+    def delete_edge(self, src_id: str, dst_id: str, relation: str) -> bool:
+        """Remove one edge and its evidence rows. True when an edge was removed."""
+
+        with self.transaction() as conn:
+            conn.execute(
+                "DELETE FROM edge_evidence WHERE src_id=? AND dst_id=? AND relation=?",
+                (src_id, dst_id, relation),
+            )
+            result = conn.execute(
+                "DELETE FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                (src_id, dst_id, relation),
+            )
+            return bool(result.rowcount)
+
     def versions(self, memory_id: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(
