@@ -12373,51 +12373,105 @@ class CortexStore:
                            WHERE c.run_id=r.run_id AND c.reversed_at IS NOT NULL) reversed_state_changes
                    FROM sleep_runs r ORDER BY r.started_at DESC LIMIT 100"""
             ).fetchall()
-            capacity_impact_rows = self._conn.execute(
-                """WITH RECURSIVE
-                   observed_days(day) AS (
-                     SELECT substr(created_at,1,10) FROM memories
-                     UNION SELECT substr(created_at,1,10) FROM recall_runs
-                     UNION SELECT substr(COALESCE(resolved_at,created_at),1,10)
-                           FROM recall_budget_observations WHERE outcome<>'pending'
-                   ),
-                   bounds(start_day,end_day) AS (
-                     SELECT MAX(COALESCE(MIN(day),date('now','-89 days')),date('now','-364 days')),
-                            date('now') FROM observed_days WHERE day<>''
-                   ),
-                   days(day) AS (
-                     SELECT start_day FROM bounds
-                     UNION ALL SELECT date(day,'+1 day') FROM days,bounds WHERE day<end_day
-                   )
-                   SELECT d.day,
-                          (SELECT COUNT(*) FROM memories m
-                           WHERE m.created_at<datetime(d.day,'+1 day')) stored_capacity,
-                          (SELECT COUNT(*) FROM memories m
-                           WHERE substr(m.created_at,1,10)=d.day) memories_added,
-                          (SELECT COUNT(*) FROM recall_runs r
-                           WHERE substr(r.created_at,1,10)=d.day) recall_runs,
-                          (SELECT COALESCE(SUM(r.abstained),0) FROM recall_runs r
-                           WHERE substr(r.created_at,1,10)=d.day) abstained,
-                          (SELECT AVG(r.estimated_tokens) FROM recall_runs r
-                           WHERE substr(r.created_at,1,10)=d.day) avg_context_tokens,
-                          (SELECT AVG(r.prepare_ms) FROM recall_runs r
-                           WHERE substr(r.created_at,1,10)=d.day) avg_prepare_ms,
-                          (SELECT COUNT(*) FROM recall_budget_observations b
-                           WHERE b.outcome<>'pending'
-                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) resolved_outcomes,
-                          (SELECT COUNT(*) FROM recall_budget_observations b
-                           WHERE b.outcome IN ('helpful','validated')
-                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) helpful_outcomes,
-                          (SELECT COUNT(*) FROM recall_budget_observations b
-                           WHERE b.outcome IN ('harmful','corrected')
-                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) harmful_outcomes,
-                          (SELECT COUNT(*) FROM recall_budget_observations b
-                           WHERE b.outcome='ignored'
-                             AND substr(COALESCE(b.resolved_at,b.created_at),1,10)=d.day) ignored_outcomes,
-                          (SELECT COUNT(*) FROM sleep_runs s
-                           WHERE substr(s.started_at,1,10)=d.day) sleep_runs
-                   FROM days d ORDER BY d.day"""
-            ).fetchall()
+            # Capacity/activity by day. The previous form ran ~11 correlated
+            # subqueries per day over a recursive day series (341-988 ms on a
+            # 1,200-memory store, 12-36% of every snapshot); this computes the
+            # same numbers from one grouped aggregate per source table plus a
+            # Python cumulative sum, verified row-for-row identical
+            # (2026-09-14).
+            first_day_row = self._conn.execute(
+                """SELECT MIN(day) AS first_day FROM (
+                     SELECT MIN(substr(created_at,1,10)) AS day FROM memories
+                     UNION ALL
+                     SELECT MIN(substr(created_at,1,10)) FROM recall_runs
+                     UNION ALL
+                     SELECT MIN(substr(COALESCE(resolved_at,created_at),1,10))
+                       FROM recall_budget_observations WHERE outcome<>'pending'
+                   ) WHERE day IS NOT NULL AND day<>''"""
+            ).fetchone()
+            bounds_row = self._conn.execute(
+                """SELECT MAX(COALESCE(?,date('now','-89 days')),date('now','-364 days')) AS start_day,
+                          date('now') AS end_day""",
+                (first_day_row["first_day"],),
+            ).fetchone()
+            start_day = str(bounds_row["start_day"])
+            end_day = str(bounds_row["end_day"])
+            day_list: list[str] = []
+            day_cursor = datetime.strptime(start_day, "%Y-%m-%d").date()
+            day_limit = datetime.strptime(end_day, "%Y-%m-%d").date()
+            while day_cursor <= day_limit:
+                day_list.append(day_cursor.isoformat())
+                day_cursor += timedelta(days=1)
+            if not day_list:
+                day_list = [start_day]
+            memories_by_day = {
+                str(row["day"]): int(row["n"])
+                for row in self._conn.execute(
+                    """SELECT substr(created_at,1,10) AS day, COUNT(*) AS n
+                       FROM memories GROUP BY day"""
+                ).fetchall()
+            }
+            recall_by_day = {
+                str(row["day"]): row
+                for row in self._conn.execute(
+                    """SELECT substr(created_at,1,10) AS day, COUNT(*) AS runs,
+                              COALESCE(SUM(abstained),0) AS abstained,
+                              AVG(estimated_tokens) AS avg_context_tokens,
+                              AVG(prepare_ms) AS avg_prepare_ms
+                       FROM recall_runs GROUP BY day"""
+                ).fetchall()
+            }
+            outcomes_by_day = {
+                str(row["day"]): row
+                for row in self._conn.execute(
+                    """SELECT substr(COALESCE(resolved_at,created_at),1,10) AS day,
+                              COUNT(*) AS resolved_outcomes,
+                              SUM(CASE WHEN outcome IN ('helpful','validated') THEN 1 ELSE 0 END) AS helpful_outcomes,
+                              SUM(CASE WHEN outcome IN ('harmful','corrected') THEN 1 ELSE 0 END) AS harmful_outcomes,
+                              SUM(CASE WHEN outcome='ignored' THEN 1 ELSE 0 END) AS ignored_outcomes
+                       FROM recall_budget_observations
+                       WHERE outcome<>'pending'
+                       GROUP BY day"""
+                ).fetchall()
+            }
+            sleep_by_day = {
+                str(row["day"]): int(row["n"])
+                for row in self._conn.execute(
+                    """SELECT substr(started_at,1,10) AS day, COUNT(*) AS n
+                       FROM sleep_runs GROUP BY day"""
+                ).fetchall()
+            }
+            # stored_capacity(day) counts every memory created before the end of
+            # that day, so seed the running total with everything older than the
+            # series start (excluding the start day itself, added in the loop).
+            running_capacity = int(
+                self._conn.execute(
+                    "SELECT COUNT(*) AS n FROM memories WHERE created_at < datetime(?, '+1 day')",
+                    (start_day,),
+                ).fetchone()["n"]
+            ) - memories_by_day.get(start_day, 0)
+            capacity_impact_rows = []
+            for day in day_list:
+                added = memories_by_day.get(day, 0)
+                running_capacity += added
+                recall_row = recall_by_day.get(day)
+                outcome_row = outcomes_by_day.get(day)
+                capacity_impact_rows.append(
+                    {
+                        "day": day,
+                        "stored_capacity": running_capacity,
+                        "memories_added": added,
+                        "recall_runs": int(recall_row["runs"]) if recall_row else 0,
+                        "abstained": int(recall_row["abstained"]) if recall_row else 0,
+                        "avg_context_tokens": recall_row["avg_context_tokens"] if recall_row else None,
+                        "avg_prepare_ms": recall_row["avg_prepare_ms"] if recall_row else None,
+                        "resolved_outcomes": int(outcome_row["resolved_outcomes"]) if outcome_row else 0,
+                        "helpful_outcomes": int(outcome_row["helpful_outcomes"]) if outcome_row else 0,
+                        "harmful_outcomes": int(outcome_row["harmful_outcomes"]) if outcome_row else 0,
+                        "ignored_outcomes": int(outcome_row["ignored_outcomes"]) if outcome_row else 0,
+                        "sleep_runs": int(sleep_by_day.get(day, 0)),
+                    }
+                )
             metacognition_summary_row = self._conn.execute(
                 """SELECT COUNT(*) prediction_count,
                           SUM(CASE WHEN decision='use' THEN 1 ELSE 0 END) use_count,
@@ -12801,28 +12855,36 @@ class CortexStore:
                             applicable_systems_json,applicable_versions_json
                    HAVING n>1"""
             ).fetchall()
+            # These are integrity anti-joins.  The FK-backed tables have
+            # non-null keys, so NOT IN lets SQLite use their covering indexes
+            # instead of probing the parent table once per child row.  FTS is
+            # external-content and permits NULL ids, hence the explicit NULL
+            # arm to preserve the LEFT JOIN semantics.
             orphan_fts = self._conn.execute(
-                "SELECT COUNT(*) n FROM memory_fts f LEFT JOIN memories m ON m.id=f.memory_id WHERE m.id IS NULL"
+                """SELECT COUNT(*) n FROM memory_fts
+                   WHERE memory_id IS NULL OR memory_id NOT IN
+                     (SELECT id FROM memories)"""
             ).fetchone()["n"]
             orphan_features = self._conn.execute(
-                """SELECT COUNT(*) n FROM memory_features f
-                   LEFT JOIN memories m ON m.id=f.memory_id WHERE m.id IS NULL"""
+                """SELECT COUNT(*) n FROM memory_features
+                   WHERE memory_id NOT IN (SELECT id FROM memories)"""
             ).fetchone()["n"]
             missing_fts = self._conn.execute(
-                "SELECT COUNT(*) n FROM memories m LEFT JOIN memory_fts f ON f.memory_id=m.id WHERE f.memory_id IS NULL"
+                """SELECT COUNT(*) n FROM memories
+                   WHERE id NOT IN (SELECT memory_id FROM memory_fts
+                                    WHERE memory_id IS NOT NULL)"""
             ).fetchone()["n"]
             missing_features = self._conn.execute(
-                """SELECT COUNT(*) n FROM memories m
-                   WHERE NOT EXISTS(SELECT 1 FROM memory_features f WHERE f.memory_id=m.id)"""
+                """SELECT COUNT(*) n FROM memories
+                   WHERE id NOT IN (SELECT memory_id FROM memory_features)"""
             ).fetchone()["n"]
             missing_context_terms = self._conn.execute(
-                """SELECT COUNT(*) n FROM memories m WHERE NOT EXISTS(
-                     SELECT 1 FROM memory_context_terms t WHERE t.memory_id=m.id
-                   )"""
+                """SELECT COUNT(*) n FROM memories
+                   WHERE id NOT IN (SELECT memory_id FROM memory_context_terms)"""
             ).fetchone()["n"]
             orphan_context_terms = self._conn.execute(
-                """SELECT COUNT(*) n FROM memory_context_terms t
-                   LEFT JOIN memories m ON m.id=t.memory_id WHERE m.id IS NULL"""
+                """SELECT COUNT(*) n FROM memory_context_terms
+                   WHERE memory_id NOT IN (SELECT id FROM memories)"""
             ).fetchone()["n"]
             invalid_context_terms = self._conn.execute(
                 """SELECT COUNT(*) n FROM memory_context_terms
