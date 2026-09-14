@@ -310,6 +310,12 @@ class CortexStore:
             AFTER UPDATE ON main.tool_workflow_stats BEGIN SELECT cortex_bump_revision(); END;
             CREATE TEMP TRIGGER cortex_local_revision_workflow_stats_delete
             AFTER DELETE ON main.tool_workflow_stats BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_embedding_insert
+            AFTER INSERT ON main.memory_embeddings BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_embedding_update
+            AFTER UPDATE ON main.memory_embeddings BEGIN SELECT cortex_bump_revision(); END;
+            CREATE TEMP TRIGGER cortex_local_revision_embedding_delete
+            AFTER DELETE ON main.memory_embeddings BEGIN SELECT cortex_bump_revision(); END;
             CREATE TEMP TRIGGER cortex_local_context_terms_memory_insert
             AFTER INSERT ON main.memories BEGIN
               INSERT OR IGNORE INTO memory_context_terms(memory_id,term_type,term_key,term_value)
@@ -10729,8 +10735,8 @@ class CortexStore:
         Brute-force cosine over the stored vectors. At Cortex's scale (a few
         thousand memories x 384 dims is ~5 MB) this is about a millisecond of
         numpy and needs no vector database. The matrix is cached and
-        self-invalidates when the row count changes, so it is not rebuilt or
-        re-read on every query.
+        self-invalidates on the retrieval revision (local writes plus other
+        connections' commits), so it is not rebuilt or re-read on every query.
 
         Returns ``[]`` when there is no embedding signal available — no vectors
         for this model, a dimension mismatch, or numpy missing. Callers treat
@@ -10763,20 +10769,19 @@ class CortexStore:
     def _embedding_matrix(self, model_id: str):
         """Cached ``(ids, L2-normalised float32 matrix)`` for one model.
 
-        Validity is keyed on the row count, which is cheap to read (indexed) and
-        changes on every write — so a backfill or an incremental embed
-        invalidates the cache without the write path having to know about it.
+        Validity is keyed on the retrieval revision (local write trigger +
+        ``data_version`` for other connections), so an INSERT, UPDATE, or
+        DELETE of a stored vector — including a same-count replacement — is
+        reflected on the next call. Reading the revision before the rows means
+        a write that lands in between can only cause a needless rebuild, never
+        a stale matrix.
         """
         import numpy as np
 
         with self._lock:
-            total = self._conn.execute(
-                "SELECT COUNT(*) AS total FROM memory_embeddings WHERE model_id=?",
-                (model_id,),
-            ).fetchone()
-            row_count = int(total["total"]) if total else 0
+            revision = self.retrieval_revision()
             cached = getattr(self, "_embedding_cache", None)
-            if cached and cached[0] == model_id and cached[1] == row_count:
+            if cached and cached[0] == model_id and cached[1] == revision:
                 return cached[2], cached[3]
             rows = self._conn.execute(
                 "SELECT memory_id, vector FROM memory_embeddings WHERE model_id=?",
@@ -10794,7 +10799,7 @@ class CortexStore:
             matrix = matrix / np.clip(norms, 1e-12, None)
 
         with self._lock:
-            self._embedding_cache = (model_id, row_count, ids, matrix)
+            self._embedding_cache = (model_id, revision, ids, matrix)
         return ids, matrix
 
     def memory_ids_missing_embeddings(
