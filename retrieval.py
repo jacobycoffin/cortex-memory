@@ -255,6 +255,16 @@ class MemoryRetriever:
     ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
         if not query or limit <= 0 or token_budget <= 0:
             return [], RetrievalDiagnostics(0, 0, 0, True)
+        # A query with no usable tokens — blank, punctuation-only, stopword-only
+        # or a single character — carries no retrieval signal. Without this guard
+        # the store's no-token FTS fallback answers it with the newest memories,
+        # which then clear the score threshold and reach the model as confident
+        # context (measured 2026-09-14: `"   "`, `"?!..."`, `",,,"`, `"a"` and
+        # `"the and of to"` each selected 3 unrelated memories at ~0.29 with
+        # `abstained=False`). Non-Latin scripts are unaffected: CJK tokenizes into
+        # a single token, so `日本語のテキスト` still recalls.
+        if not query_tokens(query):
+            return [], RetrievalDiagnostics(0, 0, 0, True)
         expanded_query = _expand_query(query)
         retrieval_context = _normalize_retrieval_context(context, goal=query)
         scoring_profile = self.store.active_scoring_weights(

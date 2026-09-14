@@ -142,5 +142,59 @@ class RetrievalStageTimingTests(unittest.TestCase):
             self.store = CortexStore(self.db)
 
 
+class DegenerateQueryAbstentionTests(unittest.TestCase):
+    """A query with no retrieval signal must abstain, not return the newest rows.
+
+    Regression (2026-09-14): the store's no-token FTS fallback answered a blank,
+    punctuation-only, stopword-only or single-character query with the newest
+    memories. Those cleared the score threshold, so the model received three
+    unrelated memories at ~0.29 presented as relevant context — for a turn that
+    said nothing to recall. Measured before the guard: `"   "`, `"?!..."`,
+    `",,,"`, `"a"` and `"the and of to"` each selected 3 memories with
+    `abstained=False`.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+        self.store.add_memory("The homelab router hands out leases on 10.20.0.0/24.", kind="semantic")
+        self.store.add_memory("Plex runs on the r630 host behind the proxy.", kind="semantic")
+        self.store.add_memory("Deployments require a verified backup before release.", kind="procedure")
+        self.store.add_memory("日本語のメモ は ここ に あります。", kind="semantic")
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_no_token_queries_abstain_instead_of_returning_newest_memories(self) -> None:
+        for query in ("   ", "?!...", ",,,", "a", "the and of to", "\n\t "):
+            with self.subTest(query=query):
+                results, diagnostics = MemoryRetriever(self.store, threshold=0.0).search_detailed(
+                    query, limit=6, token_budget=700, graph_depth=0
+                )
+                self.assertEqual(results, [], f"{query!r} must not recall memories")
+                self.assertTrue(diagnostics.abstained)
+                # Same shape as the empty-query early return: no stage timings.
+                self.assertEqual(diagnostics.stage_ms, {})
+
+    def test_queries_with_signal_still_recall(self) -> None:
+        retriever = MemoryRetriever(self.store, threshold=0.0)
+        for query, expected in (
+            ("homelab router leases", "10.20.0.0/24"),
+            ("plex r630", "r630"),
+            ("verified backup", "backup"),
+            ("日本語のメモ", "日本語"),
+        ):
+            with self.subTest(query=query):
+                results, diagnostics = retriever.search_detailed(
+                    query, limit=6, token_budget=700, graph_depth=0
+                )
+                self.assertFalse(diagnostics.abstained, f"{query!r} must still recall")
+                self.assertTrue(
+                    any(expected in result.memory["content"] for result in results),
+                    f"{query!r} did not recall the expected memory",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
