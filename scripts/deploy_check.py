@@ -87,13 +87,13 @@ def classify(
 
 def _git(*args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=str(REPO_ROOT), capture_output=True, text=True
+        ["git", *args], cwd=str(REPO_ROOT), capture_output=True, text=True, check=False
     ).stdout.strip()
 
 
 def _blob(ref: str, rel: str) -> bytes:
     return subprocess.run(
-        ["git", "show", f"{ref}:{rel}"], cwd=str(REPO_ROOT), capture_output=True
+        ["git", "show", f"{ref}:{rel}"], cwd=str(REPO_ROOT), capture_output=True, check=False
     ).stdout
 
 
@@ -109,8 +109,6 @@ def collect(live_root: Path, lookback: int) -> tuple[dict[str, bytes], dict[str,
     for rel in live_files:
         if (REPO_ROOT / rel).exists():
             head_blobs[rel] = _blob("HEAD", rel)
-    tracked = set(_git("ls-files").splitlines())
-
     cache: dict[str, list] = {}
 
     def ancestor_lookup(rel: str) -> list:
