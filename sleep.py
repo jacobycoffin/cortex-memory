@@ -590,10 +590,14 @@ def _propose_associations(store: CortexStore, run_id: str, config: SleepConfig) 
                      AND status='applied'""",
                 (src_id, dst_id),
             ).fetchone()["n"]
+            # Any status that already put this pair in front of an operator
+            # counts as prior evidence -- open, expired by retention, denied, or
+            # filtered by policy. Counting only 'proposed' let retention expiry
+            # re-cycle the same pair into the review inbox on the next pass.
             prior_shadow = store._conn.execute(
                 """SELECT MAX(evidence_count) n FROM sleep_proposals
                    WHERE src_id=? AND dst_id=? AND kind IN ('association','association_reinforcement')
-                     AND status='proposed'""",
+                     AND status IN ('proposed','expired','operator_denied','policy_filtered')""",
                 (src_id, dst_id),
             ).fetchone()["n"]
             existing = store._conn.execute(

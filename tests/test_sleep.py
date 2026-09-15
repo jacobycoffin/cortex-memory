@@ -68,6 +68,39 @@ class CortexSleepTests(unittest.TestCase):
         self.assertEqual(repeated["usage_tasks_replayed"], 0)
         self.assertEqual(repeated["association_proposals"], 0)
 
+    def test_expired_proposal_does_not_recycle_into_the_review_inbox(self) -> None:
+        """Retention expiry must not hand the same pair back to the inbox.
+
+        The retention pass moves undecided proposals to ``expired``. If only
+        ``proposed`` counts as prior evidence, the next nightly pass re-proposes
+        the same pair from the same evidence and the inbox cycles forever
+        (propose -> expire -> propose). A terminal status has to keep vetoing
+        the pair at equal or lower evidence.
+        """
+        first, second = self._memory_pair()
+        self._two_helpful_witnesses((first, second))
+
+        report = run_sleep(self.store, SleepConfig(mode="shadow"))
+        self.assertEqual(report["association_proposals"], 1)
+        with self.store._lock:
+            # Exactly what run_cortex_sleep_retention.sh does to a stale row.
+            self.store._conn.execute(
+                "UPDATE sleep_proposals SET status='expired' WHERE run_id=?",
+                (report["run_id"],),
+            )
+            self.store._conn.commit()
+
+        repeated = run_sleep(self.store, SleepConfig(mode="shadow"))
+        with self.store._lock:
+            rows = [
+                (row["status"], row["kind"])
+                for row in self.store._conn.execute(
+                    "SELECT status,kind FROM sleep_proposals ORDER BY created_at"
+                )
+            ]
+        self.assertEqual(repeated["association_proposals"], 0)
+        self.assertEqual(rows, [("expired", "association")])
+
     def test_apply_association_is_explicit_and_reversible(self) -> None:
         first, second = self._memory_pair()
         self._two_helpful_witnesses((first, second))
