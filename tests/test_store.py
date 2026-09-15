@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -1869,6 +1870,86 @@ class CortexStoreTests(unittest.TestCase):
             )
         }
         self.assertEqual(features, {"stage1_spy"})
+
+    def test_trace_storage_keeps_detail_only_where_it_explains_a_decision(self) -> None:
+        """The 69 %-of-payload scoring dump is stored for the candidates that matter.
+
+        Measured 2026-09-15: `components` was ~125 KB of a ~181 KB candidate
+        payload per recall, written on the turn hot path. It is kept for the
+        selected candidates plus the top-N by score, dropped elsewhere with a
+        marker, and every other field of every candidate survives.
+        """
+        import json as _json
+
+        from cortex.store import TRACE_COMPONENT_DETAIL_TOP_N
+
+        used_id, _ = self.store.add_memory("Gateway selection uses the verified Cortex endpoint.")
+        candidates = [
+            {
+                "memory_id": used_id,
+                "kind": "semantic",
+                # deliberately ranked LAST so selection, not score, is what keeps it
+                "score": 0.11,
+                "rank": 40,
+                "selected": True,
+                "components": {f"component-{i}": 0.5 for i in range(40)},
+                "reason": "selected",
+            }
+        ]
+        for index in range(40):
+            candidates.append(
+                {
+                    "memory_id": f"candidate-{index:03d}",
+                    "kind": "semantic",
+                    "score": 0.9 - index / 1000.0,
+                    "rank": index,
+                    "selected": False,
+                    "components": {f"component-{i}": 0.5 for i in range(40)},
+                    "reason": "below threshold",
+                }
+            )
+
+        task_id = str(uuid.uuid4())
+        self.store.record_memory_trace_decision(
+            task_id=task_id,
+            session_id="trace-detail",
+            goal="Which Cortex gateway is verified?",
+            context_summary="active_project=Cortex",
+            task_type="deployment",
+            recall_mode="focused",
+            retrieval_used=True,
+            retrieval_reason="selected for trace-detail test",
+            queries=["Which Cortex gateway is verified?"],
+            candidate_memories=candidates,
+        )
+
+        with self.store._lock:
+            row = self.store._conn.execute(
+                "SELECT candidate_memories_json FROM memory_traces WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        stored = _json.loads(row["candidate_memories_json"])
+        self.assertEqual(len(stored), len(candidates))
+
+        by_id = {entry["memory_id"]: entry for entry in stored}
+        # the selected candidate keeps its dump even though it scored last
+        self.assertIn("components", by_id[used_id])
+        # the top-N by score keep theirs
+        for entry in stored:
+            if entry["memory_id"].startswith("candidate-00"):
+                self.assertIn("components", entry)
+        # everything else keeps every other field but loses the dump, with a marker
+        omitted = [e for e in stored if "components" not in e]
+        self.assertTrue(omitted)
+        for entry in omitted:
+            self.assertTrue(entry.get("components_omitted"))
+            self.assertIn("score", entry)
+            self.assertIn("rank", entry)
+            self.assertIn("reason", entry)
+            self.assertIn("content_preview", entry)
+        kept = len(stored) - len(omitted)
+        self.assertEqual(kept, TRACE_COMPONENT_DETAIL_TOP_N + 1)
+        self.assertLess(len(omitted), len(stored))
 
 
 if __name__ == "__main__":

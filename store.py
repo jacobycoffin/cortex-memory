@@ -5755,6 +5755,7 @@ class CortexStore:
         if not task_id_value:
             raise ValueError("task_id is required for a memory trace")
         candidates = [_normalize_trace_candidate(candidate) for candidate in candidate_memories[:100]]
+        candidates = _trim_trace_candidate_detail(candidates)
         selected_ids = [
             str(candidate["memory_id"]) for candidate in candidates if bool(candidate.get("selected"))
         ]
@@ -16574,6 +16575,40 @@ def _normalize_trace_candidate(candidate: dict[str, Any]) -> dict[str, Any]:
             else {}
         ),
     }
+
+
+# The per-candidate ``components`` dict is a scoring dump. Measured 2026-09-15 it
+# is ~69 % of a recall's stored candidate payload (~125 KB of ~181 KB per trace;
+# ~23 MB/day), written on the turn hot path, and therefore the single largest
+# writer into cortex.db and the largest contributor to write-lock hold time.
+# Keep the full dump for the candidates that can actually be explained by it --
+# the selected ones plus the top-N by score -- and drop it for the rest, leaving
+# a marker so an absent dump cannot be mistaken for a lost one. Every other field
+# of every candidate is kept.
+TRACE_COMPONENT_DETAIL_TOP_N = 10
+
+
+def _trim_trace_candidate_detail(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop the per-candidate scoring dump from candidates it cannot explain."""
+
+    keep: set[str] = {
+        str(candidate.get("memory_id") or "")
+        for candidate in candidates
+        if bool(candidate.get("selected"))
+    }
+    ranked = sorted(
+        candidates,
+        key=lambda candidate: float(candidate.get("score") or 0.0),
+        reverse=True,
+    )
+    for candidate in ranked[:TRACE_COMPONENT_DETAIL_TOP_N]:
+        keep.add(str(candidate.get("memory_id") or ""))
+    for candidate in candidates:
+        if str(candidate.get("memory_id") or "") in keep:
+            continue
+        if candidate.pop("components", None) is not None:
+            candidate["components_omitted"] = True
+    return candidates
 
 
 def _normalize_trace_action(action: dict[str, Any]) -> dict[str, Any]:
