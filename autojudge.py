@@ -7,6 +7,11 @@ Every applied decision uses the existing reversible review ledger.
 
 When enabled, the judge may also suggest semantic links to existing memories
 for approved candidates, creating a connected knowledge graph.
+
+Two decision engines are supported (``CORTEX_AUTO_JUDGE_ENGINE``):
+``chat`` (default) calls an OpenAI-compatible chat endpoint; ``jev`` routes
+admission and link judgments through the Jev (TypeSafe System One) bridge in
+``jev.py`` with calibrated thresholds, keeping the chat provider as fallback.
 """
 
 from __future__ import annotations
@@ -21,12 +26,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
+from . import jev
 from .retrieval import MemoryRetriever
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
@@ -99,6 +106,19 @@ class AutoJudgeConfig:
     positive_feedback_boost: float = 0.02
     links_enabled: bool = False
     links_top_k: int = _LINKS_TOP_K_DEFAULT
+    # Decision engines: "chat" (OpenAI-compatible chat endpoint, current
+    # default) or "jev" (TypeSafe System One bridge with calibrated policy).
+    engine: str = "chat"
+    # Orphan-link engine: "chat" or "jev" (pairwise link judgments).
+    link_engine: str = "chat"
+    # When the jev engine is active, fetch link suggestions via Jev
+    # (candidates only need a call when they are actually admitted).
+    # Default on: the 2026-09-18 link-quality replay shows the gate re-creates
+    # 91% of operator edges and 84% of auto-judge edges at 3% random-pair
+    # pressure. Set `CORTEX_AUTO_JUDGE_JEV_LINKS=0` for a links-off canary.
+    jev_links: bool = True
+    # Fall back to the chat provider for a chunk if the Jev engine fails.
+    jev_fallback: bool = True
 
     @classmethod
     def from_env(cls) -> "AutoJudgeConfig":
@@ -128,6 +148,12 @@ class AutoJudgeConfig:
             ),
             links_enabled=_env_bool("CORTEX_AUTO_JUDGE_LINKS_ENABLED", False),
             links_top_k=_env_int("CORTEX_AUTO_JUDGE_LINKS_TOP_K", _LINKS_TOP_K_DEFAULT),
+            engine=(os.environ.get("CORTEX_AUTO_JUDGE_ENGINE", "chat").strip().lower() or "chat"),
+            link_engine=(
+                os.environ.get("CORTEX_AUTO_JUDGE_LINK_ENGINE", "chat").strip().lower() or "chat"
+            ),
+            jev_links=_env_bool("CORTEX_AUTO_JUDGE_JEV_LINKS", True),
+            jev_fallback=_env_bool("CORTEX_AUTO_JUDGE_JEV_FALLBACK", True),
         )
 
     def validate(self) -> None:
@@ -205,6 +231,14 @@ class AutoJudgeConfig:
             or not 1 <= self.links_top_k <= 20
         ):
             raise AutoJudgeError("auto-judge links_top_k must be between 1 and 20")
+        if self.engine not in {"chat", "jev"}:
+            raise AutoJudgeError("auto-judge engine must be chat or jev")
+        if self.link_engine not in {"chat", "jev"}:
+            raise AutoJudgeError("auto-judge link_engine must be chat or jev")
+        if not isinstance(self.jev_links, bool):
+            raise AutoJudgeError("auto-judge jev_links must be a boolean")
+        if not isinstance(self.jev_fallback, bool):
+            raise AutoJudgeError("auto-judge jev_fallback must be a boolean")
 
     def api_key(self) -> str:
         if self.api_key_env:
@@ -224,13 +258,110 @@ class AutoJudge:
         config: AutoJudgeConfig,
         *,
         provider_call: ProviderCall | None = None,
+        jev_call: ProviderCall | None = None,
+        jev_settings: jev.JevSettings | None = None,
     ) -> None:
         self.config = config
         self._provider_call = provider_call or _post_chat
+        self._jev_call = jev_call
+        self._jev_settings = jev_settings
+        self._run_ref = uuid.uuid4().hex[:12]
+        self._link_context: dict[str, list[dict[str, Any]]] = {}
 
     def base_system_prompt(self) -> str:
         """The base system prompt: the linker variant when link proposals are enabled."""
         return _SYSTEM_PROMPT_LINKS if self.config.links_enabled else _SYSTEM_PROMPT
+
+    def _resolved_jev_settings(self) -> jev.JevSettings:
+        if self._jev_settings is None:
+            self._jev_settings = jev.JevSettings.from_env()
+        return self._jev_settings
+
+    def _decide_chunk_with_jev(
+        self, chunk_records: list[dict[str, Any]], report: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Route one chunk through the Jev engine; counters land in ``report``."""
+        settings = self._resolved_jev_settings()
+        decisions = jev.judge_admission_batch(
+            settings,
+            chunk_records,
+            strong_boost=self.config.strong_feedback_boost,
+            positive_boost=self.config.positive_feedback_boost,
+            call=self._jev_call,
+            run_ref=self._run_ref,
+        )
+        stats = report["jev"]
+        batch_size = max(1, min(settings.batch_size, len(chunk_records)))
+        stats["calls"] += (len(chunk_records) + batch_size - 1) // batch_size
+        usage_sums: dict[str, float] = stats.setdefault("usage", {})  # type: ignore[assignment]
+        for decision in decisions:
+            stats["models"].append(str(decision.get("model") or settings.model))
+            if isinstance(decision.get("latency_ms"), int):
+                stats["latency_ms"].append(int(decision["latency_ms"]))
+            if decision.get("audit"):
+                stats["audit_flagged"] += 1
+            for usage_key, usage_value in (decision.get("usage") or {}).items():
+                if isinstance(usage_value, (int, float)) and not isinstance(usage_value, bool):
+                    usage_sums[str(usage_key)] = usage_sums.get(str(usage_key), 0.0) + float(
+                        usage_value
+                    )
+        return decisions
+
+    def _jev_link_suggestions(
+        self, proposal: dict[str, Any], report: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Link suggestions for an admitted candidate, via Jev pair judgments."""
+        content = str(proposal.get("content") or "")
+        related = self._link_context.get(str(proposal.get("proposal_id"))) or []
+        if not content.strip() or not related:
+            return []
+        settings = self._resolved_jev_settings()
+        try:
+            suggestions = jev.judge_links(
+                settings,
+                candidate={
+                    "memory_id": str(proposal.get("proposal_id") or ""),
+                    "content": content,
+                    "kind": proposal.get("kind"),
+                },
+                related=related,
+                call=self._jev_call,
+                log_context="admission",
+            )
+        except Exception as exc:
+            logger.warning(
+                "auto-judge jev link suggestions failed for %s: %s",
+                proposal.get("proposal_id"),
+                exc,
+            )
+            report["jev"]["link_errors"] += 1
+            return []
+        report["jev"]["link_calls"] += 1
+        stats = report["jev"]
+        for suggestion in suggestions:
+            if suggestion.get("model"):
+                stats["models"].append(str(suggestion["model"]))
+        return suggestions
+
+    def _actor_for_engine(self, report: dict[str, Any]) -> str:
+        """Ledger actor for this run: the model that actually judged."""
+        if self.config.engine == "jev":
+            models = report.get("jev", {}).get("models") or []
+            model = models[0] if models else self._resolved_jev_settings().model
+            return "cortex-auto-judge:" + _actor_model(model)
+        return "cortex-auto-judge:" + _actor_model(self.config.model)
+
+    def _finalize_jev_report(self, report: dict[str, Any]) -> None:
+        """Collapse the per-decision latency samples into the final report shape."""
+        stats = report.get("jev")
+        if not isinstance(stats, dict):
+            return
+        latencies = stats.pop("latency_ms", [])
+        if latencies:
+            ordered = sorted(int(value) for value in latencies)
+            stats["latency_p50_ms"] = ordered[len(ordered) // 2]
+        stats["models"] = sorted(set(stats.get("models") or []))
+        stats["defer_by_path"] = dict(sorted(stats.get("defer_by_path", {}).items()))
 
     def run(self, store: CortexStore) -> dict[str, Any]:
         report: dict[str, Any] = {
@@ -245,6 +376,21 @@ class AutoJudge:
             "guarded": 0,
             "model": self.config.model,
             "usage": {},
+            # Decision engine reporting
+            "engine": self.config.engine,
+            "link_engine": self.config.link_engine,
+            "jev": {
+                "run_ref": self._run_ref,
+                "calls": 0,
+                "fallback_chunks": 0,
+                "unavailable_chunks": 0,
+                "audit_flagged": 0,
+                "link_calls": 0,
+                "link_errors": 0,
+                "defer_by_path": {},
+                "latency_ms": [],
+                "models": [],
+            },
             # Link reporting
             "links_enabled": self.config.links_enabled,
             "linked": 0,
@@ -290,7 +436,8 @@ class AutoJudge:
             return report
 
         # Pre-compute related memories for all candidates if linking is enabled
-        link_context: dict[str, list[dict[str, Any]]] = {}
+        self._link_context = {}
+        link_context = self._link_context
         if self.config.links_enabled:
             try:
                 retriever = MemoryRetriever(store)
@@ -374,7 +521,20 @@ class AutoJudge:
         )
         api_key = self.config.api_key()
         parsed = urlparse(self.config.endpoint)
-        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} and not api_key:
+        chat_credentials = bool(api_key) or parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+        if self.config.engine == "jev":
+            jev_settings = self._resolved_jev_settings()
+            jev_settings.validate()
+            if self._jev_call is None and not jev_settings.api_key():
+                raise AutoJudgeError(
+                    f"jev engine credential {jev_settings.api_key_env or '<unset>'} is unavailable"
+                )
+            if self.config.jev_fallback and not chat_credentials:
+                logger.warning(
+                    "auto-judge jev fallback credential %s is unavailable; a jev outage will fail closed",
+                    self.config.api_key_env or "<unset>",
+                )
+        elif not chat_credentials:
             raise AutoJudgeError(
                 f"auto-judge credential {self.config.api_key_env or '<unset>'} is unavailable"
             )
@@ -391,69 +551,99 @@ class AutoJudge:
                 chunk_start : chunk_start + _JUDGE_LLM_CHUNK_SIZE
             ]
             chunk_ids = {item["proposal_id"] for item in chunk_proposals}
-            # Calculate dynamic max_tokens: base + extra room for links
-            link_extra = 500 if self.config.links_enabled else 0
-            effective_max_tokens = min(4096, self.config.max_output_tokens + link_extra)
-
-            candidate_content = json.dumps(
-                {"candidates": chunk_records},
-                ensure_ascii=True,
-                separators=(",", ":"),
-            )
-            payload = {
-                "model": self.config.model,
-                "temperature": 0,
-                "max_tokens": effective_max_tokens,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {
-                        "role": "user",
-                        "content": candidate_content,
-                    },
-                ],
-            }
-            if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) > _MAX_PROVIDER_REQUEST_BYTES:
-                raise AutoJudgeError("auto-judge provider request exceeded the size limit")
             sent_rotation_ids.extend(str(proposal_id) for proposal_id in chunk_ids)
-            try:
-                response = self._provider_call(
-                    self.config.endpoint,
-                    api_key,
-                    payload,
-                    self.config.timeout_seconds,
-                )
-            except Exception as exc:
-                # This chunk's candidates were already sent, so they were billed
-                # even though the call came back unusable — and so were every
-                # earlier chunk's. Rotate them before re-raising so the next run
-                # offers a different batch instead of paying for this payload
-                # again. The proposals themselves stay pending (nothing is
-                # applied on a failed run), so moving them back costs nothing.
-                _advance_deferral_rotation(
-                    store,
-                    list(dict.fromkeys(sent_rotation_ids)),
-                    now=datetime.now(timezone.utc).isoformat(),
-                )
-                # The cooldown memo is what actually keeps the next run from
-                # re-offering this batch (the ordering key alone does not: the
-                # selection window is newest-first, so advancing `last_seen_at`
-                # leaves the batch in front). Both must be applied together.
-                _mark_deferred_recently(store, list(dict.fromkeys(sent_rotation_ids)))
-                if isinstance(exc, AutoJudgeError):
-                    raise
-                raise AutoJudgeError(
-                    f"auto-judge provider call failed: {type(exc).__name__}"
-                ) from exc
+            chunk_decisions: list[dict[str, Any]] | None = None
+            if self.config.engine == "jev":
+                try:
+                    chunk_decisions = self._decide_chunk_with_jev(chunk_records, report)
+                except Exception as exc:
+                    if not self.config.jev_fallback:
+                        # Fail closed: nothing is applied on a failed run, so
+                        # rotate the paid-for batch and abort (proposals stay
+                        # pending; the next run offers a different batch).
+                        report["jev"]["unavailable_chunks"] += 1
+                        _advance_deferral_rotation(
+                            store,
+                            list(dict.fromkeys(sent_rotation_ids)),
+                            now=datetime.now(timezone.utc).isoformat(),
+                        )
+                        _mark_deferred_recently(store, list(dict.fromkeys(sent_rotation_ids)))
+                        raise AutoJudgeError(
+                            f"jev engine failed for a chunk: {type(exc).__name__}"
+                        ) from exc
+                    report["jev"]["fallback_chunks"] += 1
+                    logger.warning(
+                        "jev engine failed for a chunk (%s); falling back to the chat provider",
+                        type(exc).__name__,
+                    )
+            if chunk_decisions is None:
+                # Chat provider path: the chat engine itself, or the Jev fallback.
+                # Calculate dynamic max_tokens: base + extra room for links
+                link_extra = 500 if self.config.links_enabled else 0
+                effective_max_tokens = min(4096, self.config.max_output_tokens + link_extra)
 
-            decisions.extend(_parse_decisions(response, chunk_ids))
-            for usage_key, usage_value in _safe_usage(response.get("usage")).items():
-                if isinstance(usage_value, bool):
-                    continue
-                if isinstance(usage_value, (int, float)):
-                    usage_totals[usage_key] = usage_totals.get(usage_key, 0) + usage_value
+                candidate_content = json.dumps(
+                    {"candidates": chunk_records},
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                )
+                payload = {
+                    "model": self.config.model,
+                    "temperature": 0,
+                    "max_tokens": effective_max_tokens,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {
+                            "role": "user",
+                            "content": candidate_content,
+                        },
+                    ],
+                }
+                if len(json.dumps(payload, ensure_ascii=True).encode("utf-8")) > _MAX_PROVIDER_REQUEST_BYTES:
+                    raise AutoJudgeError("auto-judge provider request exceeded the size limit")
+                try:
+                    response = self._provider_call(
+                        self.config.endpoint,
+                        api_key,
+                        payload,
+                        self.config.timeout_seconds,
+                    )
+                except Exception as exc:
+                    # This chunk's candidates were already sent, so they were billed
+                    # even though the call came back unusable — and so were every
+                    # earlier chunk's. Rotate them before re-raising so the next run
+                    # offers a different batch instead of paying for this payload
+                    # again. The proposals themselves stay pending (nothing is
+                    # applied on a failed run), so moving them back costs nothing.
+                    _advance_deferral_rotation(
+                        store,
+                        list(dict.fromkeys(sent_rotation_ids)),
+                        now=datetime.now(timezone.utc).isoformat(),
+                    )
+                    # The cooldown memo is what actually keeps the next run from
+                    # re-offering this batch (the ordering key alone does not: the
+                    # selection window is newest-first, so advancing `last_seen_at`
+                    # leaves the batch in front). Both must be applied together.
+                    _mark_deferred_recently(store, list(dict.fromkeys(sent_rotation_ids)))
+                    if isinstance(exc, AutoJudgeError):
+                        raise
+                    raise AutoJudgeError(
+                        f"auto-judge provider call failed: {type(exc).__name__}"
+                    ) from exc
+
+                chunk_decisions = _parse_decisions(response, chunk_ids)
+                for usage_key, usage_value in _safe_usage(response.get("usage")).items():
+                    if isinstance(usage_value, bool):
+                        continue
+                    if isinstance(usage_value, (int, float)):
+                        usage_totals[usage_key] = usage_totals.get(usage_key, 0) + usage_value
+            decisions.extend(chunk_decisions)
+        for usage_key, usage_value in (report["jev"].get("usage") or {}).items():
+            if isinstance(usage_value, (int, float)) and not isinstance(usage_value, bool):
+                usage_totals[usage_key] = usage_totals.get(usage_key, 0) + usage_value
         report["usage"] = usage_totals
         by_id = {item["proposal_id"]: item for item in provider_candidates}
-        actor = "cortex-auto-judge:" + _actor_model(self.config.model)
+        actor = self._actor_for_engine(report)
         deferred_for_rotation: list[str] = []
 
         # Validate the complete response before the first mutation, then apply
@@ -462,6 +652,7 @@ class AutoJudge:
             proposal = by_id[decision["proposal_id"]]
             action = decision["action"]
             confidence = decision["confidence"]
+            gate_applied = bool(decision.get("gate_applied"))
             guarded_reason = _guarded_reason(proposal, action)
             if guarded_reason:
                 action = "needs_context"
@@ -488,19 +679,31 @@ class AutoJudge:
             )
             if not guarded_reason and action == "defer":
                 report["deferred"] += 1
+                if gate_applied:
+                    stats = report["jev"]
+                    key = str(decision.get("path") or "unknown")
+                    stats["defer_by_path"][key] = stats["defer_by_path"].get(key, 0) + 1
                 deferred_for_rotation.append(str(proposal["proposal_id"]))
                 continue
-            if not guarded_reason and adjusted_confidence < required:
+            if not guarded_reason and not gate_applied and adjusted_confidence < required:
                 report["deferred"] += 1
                 deferred_for_rotation.append(str(proposal["proposal_id"]))
                 continue
 
-            reason = (
-                f"Automatic LLM judgment ({self.config.model}); model confidence "
-                f"{confidence:.2f}, feedback-adjusted {adjusted_confidence:.2f}; "
-                f"positive feedback {positive_count}, strong feedback {strong_count}. "
-                + (guarded_reason or decision["reason"])
-            )
+            if gate_applied:
+                # The Jev engine already applied its calibrated thresholds
+                # (feedback boost included); only guards can override them.
+                reason = str(decision.get("reason") or "")
+                if guarded_reason:
+                    reason = (reason + " " + guarded_reason).strip()
+                reason = reason[:1000]
+            else:
+                reason = (
+                    f"Automatic LLM judgment ({self.config.model}); model confidence "
+                    f"{confidence:.2f}, feedback-adjusted {adjusted_confidence:.2f}; "
+                    f"positive feedback {positive_count}, strong feedback {strong_count}. "
+                    + (guarded_reason or decision["reason"])
+                )
             try:
                 result = store.review_memory_creation(
                     proposal["proposal_id"],
@@ -536,6 +739,16 @@ class AutoJudge:
 
             # --- Link creation: apply LLM-suggested edges for remembered/evidence_only candidates ---
             links = decision.get("links")
+            if (
+                self.config.links_enabled
+                and status in ("remembered", "evidence_only")
+                and not links
+                and self.config.engine == "jev"
+                and self.config.jev_links
+            ):
+                # Jev engine: judge links lazily, only for candidates that were
+                # actually admitted (the chat engine suggests them in-call).
+                links = self._jev_link_suggestions(proposal, report)
             if (
                 self.config.links_enabled
                 and status in ("remembered", "evidence_only")
@@ -600,6 +813,7 @@ class AutoJudge:
             now=datetime.now(timezone.utc).isoformat(),
         )
         _mark_deferred_recently(store, rotation_ids)
+        self._finalize_jev_report(report)
         return report
 
 
@@ -1388,14 +1602,18 @@ def link_orphan_memories(
     max_orphans: int = _ORPHAN_LINK_MAX_DEFAULT,
     batch_size: int = _ORPHAN_LINK_BATCH_SIZE,
     link_top_k: int = 5,
+    jev_call: ProviderCall | None = None,
+    jev_settings: jev.JevSettings | None = None,
 ) -> dict[str, Any]:
     """Find memories with no edges and create links via the LLM + contradiction detection.
 
     Two passes:
       1. **Contradiction pass** — runs ``assess_storage_candidate`` on each
          orphan and creates ``contradicts`` edges where found.
-      2. **LLM linking pass** — retrieves top-K related memories per orphan and
-         asks the LLM to suggest links.
+      2. **Linking pass** — retrieves top-K related memories per orphan and asks
+         the configured link engine (``chat`` or ``jev``) to suggest links.
+         The Jev engine judges each (orphan, related) pair with typed questions
+         and gates edge creation on its calibrated probability.
 
     Returns a report with counts of orphans_found, links_suggested,
     links_created, contradictions_found, contradiction_edges_created.
@@ -1407,6 +1625,7 @@ def link_orphan_memories(
         "links_created": 0,
         "contradictions_found": 0,
         "contradiction_edges_created": 0,
+        "link_engine": config.link_engine,
     }
     if not config.enabled:
         return report
@@ -1479,7 +1698,56 @@ def link_orphan_memories(
     if retriever is None:
         return report
 
-    # --- PASS 2: LLM linking ---
+    # --- PASS 2 (Jev engine): pairwise link judgments ---
+    if config.link_engine == "jev":
+        settings = jev_settings or jev.JevSettings.from_env()
+        settings.validate()
+        if jev_call is None and not settings.api_key():
+            logger.warning("orphan-link: jev credential unavailable; linking skipped")
+            store._conn.commit()
+            return report
+        for row in orphans:
+            mem_id = str(row["id"])
+            content = str(row["content"] or "")
+            if not content.strip():
+                continue
+            related = _find_related_memories(
+                store, retriever, content, top_k=link_top_k,
+            )
+            if not related:
+                continue
+            try:
+                suggestions = jev.judge_links(
+                    settings,
+                    candidate={
+                        "memory_id": mem_id,
+                        "content": content,
+                        "kind": str(row["kind"] or "semantic"),
+                    },
+                    related=related,
+                    call=jev_call,
+                    log_context="orphan",
+                )
+            except Exception:
+                logger.debug("orphan-link: jev call failed for %s", mem_id)
+                continue
+            if not suggestions:
+                continue
+            report["linked"] += 1
+            report["links_suggested"] += len(suggestions)
+            created = _apply_links(
+                store,
+                new_memory_id=mem_id,
+                links=suggestions,
+                review_id="orphan-link",
+                actor="cortex-auto-judge:orphan-link",
+                proposal_id="orphan-link",
+            )
+            report["links_created"] += created
+        store._conn.commit()
+        return report
+
+    # --- PASS 2 (chat engine): batched LLM linking ---
     for batch_start in range(0, len(orphans), batch_size):
         batch = orphans[batch_start:batch_start + batch_size]
         batch_records: list[dict[str, Any]] = []

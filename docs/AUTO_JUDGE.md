@@ -4,6 +4,11 @@ Cortex can run a silent, bounded LLM review of staged memory-creation proposals.
 This is separate from the foreground Hermes turn: capture remains deterministic
 and non-recallable, while the judge makes an audited decision later.
 
+The judge supports two decision engines: the chat provider (default) and the
+**Jev engine** (TypeSafe System One) with corpus-calibrated thresholds — see
+[docs/JEV.md](JEV.md) for the question sets, policy paths, configuration, and
+canary procedure.
+
 ---
 
 ## Quick start
