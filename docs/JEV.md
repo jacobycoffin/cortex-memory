@@ -91,7 +91,7 @@ All knobs are environment variables (the auto-judge service reads
 | `CORTEX_AUTO_JUDGE_LINK_ENGINE` | `chat` | `chat` or `jev` (orphan-link pass) |
 | `CORTEX_AUTO_JUDGE_JEV_LINKS` | `1` | link suggestions for admitted candidates when the jev engine is on |
 | `CORTEX_AUTO_JUDGE_JEV_FALLBACK` | `1` | fall back to the chat provider on Jev failure |
-| `CORTEX_JEV_ENDPOINT` | `https://api.typesafe.ai/v1/systemone` | 
+| `CORTEX_JEV_ENDPOINT` | `https://api.typesafe.ai/v1/systemone` |
 | `CORTEX_JEV_MODEL` | `jev-latest` | pin the versioned id measured here: `jev-1.13.0` |
 | `CORTEX_JEV_API_KEY_ENV` | `TYPESAFE_API_KEY` | key name resolved from the env or credential file |
 | `CORTEX_JEV_CREDENTIAL_FILE` | inherits the auto-judge file | dotenv file holding the key |
