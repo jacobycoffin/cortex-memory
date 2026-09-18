@@ -10,8 +10,8 @@ Two uses are shipped today:
 
 | Use | Env switch | Status |
 | --- | --- | --- |
-| Admission (memory creation) | `CORTEX_AUTO_JUDGE_ENGINE=jev` | canary-ready (validated on the recorded corpus) |
-| Link judgments (new memories + orphan linker) | `CORTEX_AUTO_JUDGE_JEV_LINKS=1` · `CORTEX_AUTO_JUDGE_LINK_ENGINE=jev` | validated on recorded edges (see below) |
+| Admission (memory creation) | `CORTEX_AUTO_JUDGE_ENGINE=jev` | **live since 2026-09-18** (validated on the recorded corpus) |
+| Link judgments (new memories + orphan linker) | `CORTEX_AUTO_JUDGE_JEV_LINKS=1` · `CORTEX_AUTO_JUDGE_LINK_ENGINE=jev` | **live since 2026-09-18** (validated on recorded edges, see below) |
 
 The chat provider stays the fallback for admission
 (`CORTEX_AUTO_JUDGE_JEV_FALLBACK=1`, default): retry → fallback provider →
@@ -115,9 +115,9 @@ links`). No raw memory content ever enters the log.
 ## Canary procedure
 
 1. Set `CORTEX_AUTO_JUDGE_ENGINE=jev`, `CORTEX_JEV_MODEL=jev-1.13.0` in
-   `auto-judge.env`. Leave `CORTEX_AUTO_JUDGE_LINK_ENGINE=chat` until the link
-   canary is requested; `CORTEX_AUTO_JUDGE_JEV_LINKS=1` covers admission-time
-   links.
+   `auto-judge.env`, and `CORTEX_AUTO_JUDGE_LINK_ENGINE=jev` once the link
+   replay justifies it (the reference deployment enabled both together on
+   2026-09-18); `CORTEX_AUTO_JUDGE_JEV_LINKS=1` covers admission-time links.
 2. Watch for one week: defer rate by path, operator override rate on
    Jev-decided rows, weekly disagreement audit vs recorded expectations, cost
    per day (usage is summed into the run report under `jev.usage`), latency
@@ -134,6 +134,24 @@ links`). No raw memory content ever enters the log.
 - Test–retest stability: 59/60 verdict-band stable, `worth_saving` mean |Δ|
   0.013.
 - Link replay: see the table above.
+
+### Live results (2026-09-18)
+
+- Admissions: first day ran entirely on the engine (actor
+  `cortex-auto-judge:jev-1.13.0`; 6 `reject` / 5 `remember` across the day,
+  remainder deferred pending the rotation); zero chat fallbacks.
+- Orphan linker: 63/74 linked across three passes, +103 edges, backlog
+  72 → 6.
+- Same-input A/B (identical 30-orphan set engineered in database copies):
+  **13.8 s / 38 edges** (jev) vs **26.9 s / 49 edges** (chat fallback);
+  per-judgment p50 **0.374 s** vs 0.772 s; 8-judgment burst 0.52 s vs 1.00 s;
+  ≈ **$0.033** vs $0.058 per 1,000 judgments (token-usage estimates).
+  Earlier "~7–8 minutes per pass" figures described the flash-free-model era,
+  not the current chat fallback — quote the A/B.
+
+> Operational note: deferred items re-enter the five-minute rotation while
+> they stay pending. A defer-count escalation (route to human review after N
+> defers) is a known follow-up, not yet shipped.
 
 ### Known limits
 

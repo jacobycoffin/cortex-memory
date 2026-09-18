@@ -56,7 +56,8 @@ HERMES_HOME="$HOME/.hermes" ./scripts/install_sleep_timer.sh
 ```
 
 4. Automatic judge (remote LLM review of staged proposals — privacy-sensitive,
-   normally billed; read [docs/AUTO_JUDGE.md](docs/AUTO_JUDGE.md) first):
+   normally billed; read [docs/AUTO_JUDGE.md](docs/AUTO_JUDGE.md) first, and
+   [docs/JEV.md](docs/JEV.md) for the Jev decision engine and its rollback):
 
 ```bash
 CORTEX_INSTALL_AUTO_JUDGE_TIMER=1 CORTEX_AUTO_JUDGE_DATA_EGRESS_CONSENT=1 \

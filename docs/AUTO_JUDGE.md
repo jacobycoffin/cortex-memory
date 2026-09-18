@@ -49,9 +49,11 @@ store.close()
    search until a review approves it.
 2. **Waiting period**: candidates sit for at least 120 seconds so a following
    user turn can provide feedback that influences the decision.
-3. **LLM evaluation**: the judge sends pending proposals (up to 12 at a time)
-   to the configured LLM in a single request. The oldest candidates are selected
-   first so a large backlog cannot starve them.
+3. **LLM evaluation**: the judge sends pending proposals (up to
+   `CORTEX_AUTO_JUDGE_MAX_PROPOSALS`, default 12) to the configured LLM in
+   bounded chunks of 10, so a deep backlog cannot overflow a reasoning model's
+   output budget. The oldest candidates are selected first so a large backlog
+   cannot starve them.
 4. **Decision parsing**: the LLM must return valid JSON with exactly the
    proposal IDs it was given. Accepted actions:
    - `remember` — promote to recallable memory
@@ -97,7 +99,8 @@ The automatic judge:
 - receives no session ID, source reference, or `source_context`; bounded
   entities, scope, preconditions, systems, and versions carry applicability
   instead;
-- processes at most 12 proposals and bounds the complete serialized request,
+- processes at most `CORTEX_AUTO_JUDGE_MAX_PROPOSALS` (default 12, up to 50) in
+  bounded chunks and bounds the complete serialized request,
   each candidate, applicability map/list entry counts, keys, and values;
   candidates with incomplete transport metadata are deferred without provider
   egress, and a truncated content excerpt cannot be admitted automatically;
@@ -132,8 +135,23 @@ one-shot runs).
 | `CORTEX_AUTO_JUDGE_MODEL` | `openai/gpt-4o-mini` | Model identifier the endpoint understands |
 | `CORTEX_BRAIN_MECHANICS_MODEL` | same as Auto-Judge | Optional separate model for consolidation, pruning, reconsolidation, schemas, and weight proposals |
 | `CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS` | same as Auto-Judge | Optional separate provider timeout for the lower-frequency mechanics passes; bounded to 1–120 seconds |
+| `CORTEX_BRAIN_MECHANICS_ENDPOINT` | same as Auto-Judge | Optional separate endpoint for the mechanics passes (consolidation, pruning, reconsolidation, schemas, weights) |
+| `CORTEX_BRAIN_MECHANICS_API_KEY_ENV` | same as Auto-Judge | Key env-var name for that separate endpoint |
 | `CORTEX_AUTO_JUDGE_API_KEY_ENV` | `OPENROUTER_API_KEY` | Name of env var holding the API key |
 | `CORTEX_AUTO_JUDGE_CREDENTIAL_FILE` | — | Path to a dotenv file (optional, alternative to direct env var) |
+| `CORTEX_OPENCODE_REASONING_EFFORT` | — | Extra `reasoning_effort` payload field sent to `opencode.ai` endpoints; set `low` when a reasoning model spends the completion budget on hidden reasoning (observed live: a pass returned `finish=length` with empty content until `low` was set) |
+
+### Decision engines
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORTEX_AUTO_JUDGE_ENGINE` | `chat` | Admission engine: `chat` provider or the `jev` engine |
+| `CORTEX_AUTO_JUDGE_LINK_ENGINE` | `chat` | Orphan-link engine: `chat` or `jev` |
+| `CORTEX_AUTO_JUDGE_JEV_LINKS` | `1` | Fetch admission-time link suggestions via the Jev engine when it is active |
+| `CORTEX_AUTO_JUDGE_JEV_FALLBACK` | `1` | Fall back to the chat provider per chunk on a Jev failure |
+
+The full Jev reference — question sets, policy paths, thresholds, decision log,
+fallback behavior, live results, and rollback — is [docs/JEV.md](JEV.md).
 
 ### Timing and batch size
 
@@ -220,14 +238,24 @@ Free / cheap models on OpenRouter:
 - `google/gemini-2.0-flash-001` — free tier
 - `deepseek/deepseek-v4-flash` — free tier
 
-### OpenCode Zen
+### OpenCode (Zen / Go)
+
+OpenCode relay endpoints (`opencode.ai`) require an `x-opencode-session`
+affinity header; the judge sends one automatically for those hosts, and any
+stable opaque value is accepted — headless callers need no interactive login.
+Reasoning models on the relay can spend the entire completion budget on hidden
+reasoning and return `finish=length` with empty content; set
+`CORTEX_OPENCODE_REASONING_EFFORT=low` for those. A typical split is to keep
+the admission judge on its own provider and point only the mechanics passes at
+the relay:
 
 ```bash
 export CORTEX_AUTO_JUDGE_ENABLED=true
-export CORTEX_AUTO_JUDGE_ENDPOINT="https://opencode.ai/zen/v1/chat/completions"
-export CORTEX_AUTO_JUDGE_MODEL="deepseek-v4-flash-free"
-export CORTEX_AUTO_JUDGE_API_KEY_ENV="OPENCODE_ZEN_API_KEY"
-export OPENCODE_ZEN_API_KEY="sk-..."
+export CORTEX_BRAIN_MECHANICS_ENDPOINT="https://opencode.ai/zen/go/v1/chat/completions"
+export CORTEX_BRAIN_MECHANICS_MODEL="deepseek-v4.1-flash"
+export CORTEX_BRAIN_MECHANICS_API_KEY_ENV="OPENCODE_GO_API_KEY"
+export CORTEX_OPENCODE_REASONING_EFFORT="low"
+export OPENCODE_GO_API_KEY="sk-..."
 ```
 
 ### Local via Ollama
@@ -506,13 +534,20 @@ python3 -m cortex.cli auto-judge --once --link-orphans --quiet
 
 - **Orphans**: memories with zero edges — no outgoing (`src_id`) and no incoming
   (`dst_id`) edges in the memory graph.
-- **Batch size**: up to 50 orphans per invocation, sorted newest-first.
+- **Batch size**: up to 30 orphans per invocation by default
+  (`_ORPHAN_LINK_MAX_DEFAULT`), newest-first; the limit is configurable at the
+  call site.
 - **Contradiction pass**: reads each orphan's `subject`/`predicate`/`object_value`
   (structured claims) and calls `assess_storage_candidate()` against the full
   memory store to find contradictions.
-- **LLM pass**: batches 10 orphans per LLM call. Each orphan gets its top-5
-  related memories from the retriever. The LLM is asked to suggest links via a
-  simpler, linking-only prompt (`batch_links` JSON format).
+- **LLM pass (chat engine)**: batches 3 orphans per LLM call
+  (`_ORPHAN_LINK_BATCH_SIZE`). Each orphan gets its top-5 related memories from
+  the retriever; the LLM suggests links via a simpler, linking-only prompt
+  (`batch_links` JSON format). With the Jev engine
+  (`CORTEX_AUTO_JUDGE_LINK_ENGINE=jev`) the chat batch is replaced by pairwise
+  typed questions — one gate plus one relation question per (orphan, related)
+  pair, judged individually at up to 8-way concurrency (same report fields,
+  gate/cap via `CORTEX_JEV_LINK_THRESHOLD` / `CORTEX_JEV_MAX_LINKS_PER_ITEM`).
 
 ### Report fields
 
@@ -789,8 +824,13 @@ service behavior, install/upgrade copying, and wheel-content hygiene.
 Run the test suite:
 
 ```bash
-python3 -m pytest tests/test_autojudge.py -v
+python3 -m pytest tests/test_autojudge.py tests/test_jev_engine.py -v
 ```
+
+The Jev engine paths (policy mapping, calibrated decisions, guard overrides,
+chat fallback, fail-closed mode, decision-log hygiene, orphan-linker engine
+routing) are covered by `tests/test_jev_engine.py` (15 tests, offline via an
+injected provider stub).
 
 ---
 

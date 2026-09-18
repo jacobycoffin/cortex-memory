@@ -187,6 +187,45 @@ Use a paired agent test with isolated profiles:
 
 Measure first-tool accuracy, attempts before success, tool-error rate, task completion rate, total latency, and tokens. Also include cross-category negative controls: web-search experience must not alter a filesystem recommendation. Human reviewers should score task completion while blinded to the condition.
 
+## Test 7: judge-engine A/B (Jev vs chat fallback)
+
+Swapping the decision engine must be measured on **identical inputs**. The
+reference method (2026-09-18) snapshots the live database, derives an identical
+engineered orphan set in two copies (both arms must print the same
+`target_hash`), and runs the same command against each:
+
+```bash
+# per copy: engineer the same orphans deterministically, then time the pass
+python3 make_orphans.py <abs/path/copy-a.db>   # prints target_hash
+CORTEX_DB=<abs/path/copy-a.db> python3 -m cortex.cli auto-judge --link-orphans
+
+# arm B: same orphans, previous engine
+python3 make_orphans.py <abs/path/copy-b.db>   # target_hash must match
+CORTEX_DB=<abs/path/copy-b.db> CORTEX_AUTO_JUDGE_LINK_ENGINE=chat \
+  python3 -m cortex.cli auto-judge --link-orphans
+```
+
+Measured on 30 identical orphans (VPS, 2026-09-18):
+
+| Metric | Jev engine | Chat fallback |
+|---|---|---|
+| Full pass, wall | **13.8 s** | 26.9 s |
+| Orphans linked | 28/30 | 27/30 |
+| Edges created | 38 | 49 |
+| Per-judgment p50 | 0.374 s | 0.772 s |
+| 8-judgment burst, wall | 0.52 s | 1.00 s |
+| ≈ cost per 1,000 judgments | $0.033 | $0.058 |
+
+Admission-side replays over the recorded September corpus: **96.3%** (Jev) vs
+93.6% (chat) binary agreement on the current-judge slice (93.4% vs 89.4% over
+all decisions). Link re-creation at the shipped gate of 0.65 (400-pair replay):
+operator edges 90.9%, auto-judge edges 84.0%, random-pair false links 3.3%.
+
+> Historical note: earlier "~7–8 minutes per orphan pass" figures described the
+> flash-free-model era (3 orphans per batch, 30–45 s per batch). The current
+> chat fallback measures ~27 s for the same pass — quote the A/B, not the
+> folklore.
+
 ## Claim checklist before posting
 
 - Name the baseline precisely: `Hermes built-in bounded snapshot`, not “no memory.”
@@ -198,4 +237,5 @@ Measure first-tool accuracy, attempts before success, tool-error rate, task comp
 - Say when tokens are approximate.
 - Publish the script and raw aggregate JSON.
 - Call synthetic evidence synthetic.
+- For engine comparisons, state both engines, their gates/thresholds, and that both arms saw identical inputs (matched `target_hash`).
 - Avoid “brain-like,” “self-healing,” or “faster inference” as a proven claim unless the corresponding test supports it.
