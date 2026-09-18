@@ -12,14 +12,14 @@ Cortex is an engineering system, not a simulated brain. Psychology and neuroscie
 
 | Question | Measured result | What it means |
 | --- | --- | --- |
-| Can it find memory at scale? | **98.5–99.5% recall@6** from 100 to 2,000 synthetic memories. | The relevant fact was almost always in Cortex's first six results. |
-| Does adaptive recall reduce Cortex context? | **21.7% fewer** approximate memory-context tokens than fixed verbose Cortex, with the same 93.3% labeled answer availability. | The attention gate and compact format avoided unnecessary memory text in this workload. |
-| Did answers improve in a live paired run? | **6.7% → 96.7% exact-answer accuracy** across 90 pairs in additive mode. | Cortex made the labeled answer available; the built-in bounded snapshot usually could not hold it. |
-| Is inference proven faster? | **No clear latency difference.** TTFT was 1,339 ms with Cortex and 1,337 ms built-in; the confidence interval crossed zero. | The proven benefit is memory capacity and answer availability, not raw model speed—yet. |
+| Can it find memory at scale? | **98.5–100% recall@6** from 100 to 2,000 synthetic memories. | The relevant fact was almost always in Cortex's first six results. |
+| Does adaptive recall reduce Cortex context? | **16.4% fewer** approximate memory-context tokens than fixed verbose Cortex, with the same 100% labeled answer-context recall. | The attention gate and compact format avoided unnecessary memory text in this workload. |
+| Did answers improve in a live paired run? | **3.3% → 90.0% exact-answer accuracy** across 30 paired questions in additive mode. | Cortex made the labeled answer available; the built-in bounded snapshot usually could not hold it. |
+| Is inference proven faster? | **No clear latency difference.** TTFT was 841 ms with Cortex and 845 ms built-in; the confidence interval crossed zero. | The proven benefit is memory capacity and answer availability, not raw model speed—yet. |
 
 ![Cortex capacity and retrieval scaling profile](docs/assets/cortex-scale-profile.svg)
 
-These are reproducible synthetic benchmarks, not a promise about every agent or vault. The live accuracy comparison uses the Hermes reference adapter, intentionally tests beyond its built-in snapshot's capacity, and used 51.8% more median prompt tokens in that run to supply the missing evidence. Read the [method, raw results, and required caveats](docs/BENCHMARKING.md), then run representative tests on your own harness and history.
+These are reproducible synthetic benchmarks, not a promise about every agent or vault. The live accuracy comparison uses the Hermes reference adapter, intentionally tests beyond its built-in snapshot's capacity, and used 50.1% more median prompt tokens in that run to supply the missing evidence. Read the [method, raw results, and required caveats](docs/BENCHMARKING.md), then run representative tests on your own harness and history.
 
 ## Why Cortex
 
@@ -395,9 +395,9 @@ Keep mutation modes and metacognition in `shadow` until you have reviewed your o
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
 - [Development roadmap](docs/ROADMAP.md) — phased work, safety rules, and promotion gates.
 
-The July 13, 2026 additive benchmark on 90 paired questions / 500 synthetic memories measured 96.7% answer accuracy with Cortex versus 6.7% with Hermes's bounded built-in snapshot. Whole-agent TTFT was effectively tied; Cortex added prompt tokens in that pre-0.2 fixed-recall run. Treat it as a published baseline, not proof of universal speed or accuracy. Raw aggregates and methodology live in [`benchmark-results`](benchmark-results/).
+The September 2026 rerun — 30 paired questions on a 500-memory synthetic corpus in additive mode (`deepseek-chat`) — measured 90.0% answer accuracy with Cortex versus 3.3% for Hermes's bounded built-in snapshot, with whole-agent TTFT effectively tied (841 ms vs 845 ms; the interval crosses zero). The July 13, 2026 run (96.7% vs 6.7% on 90 pairs) remains a published baseline; neither is proof of universal speed or accuracy. Raw aggregates, reruns, and methodology live in [`benchmark-results`](benchmark-results/).
 
-On the local 0.2 retrieval run, Cortex reached 99.5% recall@6 at 2,000 synthetic memories with 34.0 ms p95 retrieval. The 500-memory mixed-workload ablation used 21.7% fewer approximate memory-context tokens than fixed verbose recall with no change in labeled answer availability. See the [0.2 retrieval report](benchmark-results/cortex-v020-retrieval.md) and [adaptive-context report](benchmark-results/cortex-adaptive-v020.md). These are local retrieval/prompt-preparation results; re-run the paired live-model benchmark before making a new inference-speed claim.
+On the September 2026 local rerun, Cortex held 98.5–100% recall@6 from 100 to 2,000 synthetic memories (99.5% at 2,000; 85.7 ms p95 retrieval), and the 500-memory mixed-workload ablation used 16.4% fewer approximate memory-context tokens than fixed verbose recall at unchanged labeled answer-context recall. See the [retrieval report](benchmark-results/cortex-v030-retrieval.md) and [adaptive-context report](benchmark-results/cortex-v030-adaptive.md); the [0.2 reports](benchmark-results/cortex-v020-retrieval.md) remain for history. These are local retrieval/prompt-preparation results; re-run the paired live-model benchmark before making a new inference-speed claim.
 
 ## Development
 
