@@ -11,7 +11,7 @@ They deliberately produce machine-readable JSON. They do not upload a Cortex dat
 
 The authenticated Outcome & Causality Lab provides the operator path for ongoing measurement:
 
-1. Use Kaya normally on a task where Cortex memory was attributed to the response.
+1. Use the agent normally on a task where Cortex memory was attributed to the response.
 2. Label the task helpful, validated, harmful, or corrected. The decision is audited and reversible.
 3. Helpful and validated labels become private real-history cases; negative labels deactivate the case.
 4. At eight active positive cases, run the private evaluation button. Cortex evaluates fixed and adaptive retrieval over the same cases in a disposable SQLite snapshot.

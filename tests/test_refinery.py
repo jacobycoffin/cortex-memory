@@ -172,7 +172,7 @@ class RefineryStoreTests(unittest.TestCase):
 
     def test_automatic_capture_with_clarity_flags_stays_a_claim(self) -> None:
         memory_id, created = self.store.add_memory(
-            "Kaya observed that the operator currently favors reviewing pull requests in the morning hours.",
+            "The agent observed that the operator currently favors reviewing pull requests in the morning hours.",
             kind="semantic",
             source_category="AGENT_INFERENCE",
             source_context="Observed across three morning review sessions.",

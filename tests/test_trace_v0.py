@@ -25,7 +25,7 @@ class TraceV0Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.store, self.tmp = make_store()
         self.memory_id, _ = self.store.add_memory(
-            "Kaya's verification standard: every claim is backed by real tool output.",
+            "The agent's verification standard: every claim is backed by real tool output.",
             kind="preference",
             confidence=0.9,
             importance=0.9,

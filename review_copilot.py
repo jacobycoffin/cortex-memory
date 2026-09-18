@@ -40,7 +40,7 @@ _DENIAL_REASONS = {
     "unrelated": "No meaningful relationship",
     "co_occurrence_only": "Only appeared near each other",
     "too_broad": "Relationship would be too broad",
-    "confusing_link": "Recalling these together would confuse Kaya",
+    "confusing_link": "Recalling these together would confuse the agent",
 }
 
 _ACTION_DETAILS = {
@@ -147,7 +147,7 @@ class ReviewCopilot:
             raise ValueError("Review Copilot currently supports connection proposals only")
         thought = _clean_text(operator_text, 2000)
         if len(thought) < 3:
-            raise ValueError("tell Kaya what you think before asking for a recommendation")
+            raise ValueError("tell the copilot what you think before asking for a recommendation")
         transcript = _clean_conversation(conversation or [])
         allowed_actions = _allowed_action_keys(item)
         review_data = _review_context(item, allowed_actions)

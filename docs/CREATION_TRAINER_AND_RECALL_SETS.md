@@ -32,7 +32,7 @@ Cortex must not treat these objects as interchangeable:
 - An **episode** records that something happened. It is history, not
   automatically a durable fact.
 - A **source** preserves where a statement came from. It is evidence, not
-  automatically something Kaya should inject into an unrelated answer.
+  automatically something the agent should inject into an unrelated answer.
 - A **creation candidate** is Cortex asking whether a statement is worth
   remembering. Candidates live outside the retrieval index.
 - An **approved memory** is a concise, reusable statement admitted into a recall
@@ -117,7 +117,7 @@ Train these layers in order:
 
 1. **Creation:** should this candidate become a memory at all?
 2. **Readability:** is the approved memory understandable on its own?
-3. **Retrieval:** did Kaya select it for the right question?
+3. **Retrieval:** was it selected for the right question?
 4. **Outcome:** did using it help, mislead, or make no difference?
 5. **Connections:** does a typed, evidence-backed relationship improve recall
    or explanation?

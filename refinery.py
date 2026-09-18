@@ -417,7 +417,7 @@ def _retention_reason(memory: dict[str, Any], role: str, has_active_dependencies
             "until you review it or evidence links are added."
         )
     if source_category == "USER_EXPLICIT":
-        return "You explicitly asked Kaya to remember this."
+        return "You explicitly asked for this to be remembered."
     if source_category == "TOOL_VERIFIED":
         return "Verified by an observed tool outcome."
     if source_category in {"AGENT_INFERENCE", "REFLECTION"} and has_active_dependencies:

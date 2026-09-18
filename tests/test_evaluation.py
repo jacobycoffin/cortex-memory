@@ -22,7 +22,7 @@ from cortex.store import CortexStore
 class RealHistoryEvaluationTests(unittest.TestCase):
     def test_dashboard_private_comparison_is_paired_and_omits_private_fields(self) -> None:
         with tempfile.TemporaryDirectory(prefix="cortex-private-evaluation-") as tmp:
-            database_path = Path(tmp) / "private-kaya-history.db"
+            database_path = Path(tmp) / "private-agent-history.db"
             store = CortexStore(database_path)
             cases = []
             try:
@@ -50,7 +50,7 @@ class RealHistoryEvaluationTests(unittest.TestCase):
             self.assertTrue(report["privacy"]["raw_private_text_omitted"])
             serialized = json.dumps(report)
             self.assertNotIn("orchid-0-private", serialized)
-            self.assertNotIn("private-kaya-history.db", serialized)
+            self.assertNotIn("private-agent-history.db", serialized)
             self.assertNotIn(cases[0].relevant_memory_ids[0], serialized)
 
     def test_report_scores_private_labels_without_copying_private_fields(self) -> None:
