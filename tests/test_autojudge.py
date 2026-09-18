@@ -194,6 +194,36 @@ class AutoJudgeTests(unittest.TestCase):
         headers = {key.lower(): value for key, value in request.header_items()}
         self.assertNotIn("x-opencode-session", headers)
 
+    def test_opencode_reasoning_effort_env_applies_only_to_opencode(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with (
+            patch.dict(os.environ, {"CORTEX_OPENCODE_REASONING_EFFORT": "low"}, clear=False),
+            patch("cortex.autojudge.urllib.request.build_opener", return_value=opener),
+        ):
+            _post_chat(
+                "https://opencode.ai/zen/go/v1/chat/completions",
+                "synthetic-key",
+                {"model": "deepseek-v4.1-flash"},
+                5.0,
+            )
+            body = json.loads(opener.open.call_args.args[0].data)
+            self.assertEqual(body.get("reasoning_effort"), "low")
+
+            opener.open.reset_mock()
+            _post_chat(
+                "https://api.example.com/v1/chat/completions",
+                "synthetic-key",
+                {"model": "synthetic"},
+                5.0,
+            )
+            body = json.loads(opener.open.call_args.args[0].data)
+            self.assertNotIn("reasoning_effort", body)
+
     def test_keep_creates_honestly_labeled_reversible_memory(self) -> None:
         proposal = self.store.propose_memory_creation(
             "Project Acorn deployments require a verified backup checklist.",

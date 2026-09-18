@@ -1233,6 +1233,15 @@ def _first_content(response: dict[str, Any]) -> str:
     return value
 
 
+def _is_opencode_host(endpoint: str) -> bool:
+    """True when *endpoint* addresses the OpenCode relay (Zen/Go)."""
+    try:
+        host = (urlparse(endpoint).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == "opencode.ai" or host.endswith(".opencode.ai")
+
+
 def _opencode_session_headers(endpoint: str) -> dict[str, str]:
     """Affinity header for OpenCode relay endpoints (Zen/Go).
 
@@ -1242,18 +1251,35 @@ def _opencode_session_headers(endpoint: str) -> dict[str, str]:
     headless callers (this plugin) send one instead of failing
     ``MissingSessionID``. Non-OpenCode endpoints get no extra headers.
     """
-    try:
-        host = (urlparse(endpoint).hostname or "").lower()
-    except ValueError:
-        return {}
-    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+    if _is_opencode_host(endpoint):
         return {"x-opencode-session": "cortex-auto-judge"}
     return {}
+
+
+def _opencode_effort_override(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply ``CORTEX_OPENCODE_REASONING_EFFORT`` to a payload, non-mutating.
+
+    OpenCode-served reasoning models can exhaust the completion budget on
+    reasoning alone (observed: the weights audit via ``deepseek-v4.1-flash``
+    returned ``finish=length`` with empty content and 12.5k chars of
+    reasoning). ``reasoning_effort: low`` preserves the answer budget; the
+    relay validates the value, and callers that set the field explicitly win.
+    """
+    if "reasoning_effort" in payload:
+        return payload
+    effort = os.environ.get("CORTEX_OPENCODE_REASONING_EFFORT", "").strip()
+    if not effort:
+        return payload
+    updated = dict(payload)
+    updated["reasoning_effort"] = effort[:24]
+    return updated
 
 
 def _post_chat(endpoint: str, api_key: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     headers = {"Content-Type": "application/json", "User-Agent": "cortex-auto-judge/1.0"}
     headers.update(_opencode_session_headers(endpoint))
+    if _is_opencode_host(endpoint):
+        payload = _opencode_effort_override(payload)
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
