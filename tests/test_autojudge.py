@@ -156,6 +156,44 @@ class AutoJudgeTests(unittest.TestCase):
                 "https://other.example/target",
             )
 
+    def test_opencode_endpoints_get_a_stable_session_header(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with patch("cortex.autojudge.urllib.request.build_opener", return_value=opener):
+            _post_chat(
+                "https://opencode.ai/zen/go/v1/chat/completions",
+                "synthetic-key",
+                {"model": "deepseek-v4.1-flash"},
+                5.0,
+            )
+
+        request = opener.open.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers.get("x-opencode-session"), "cortex-auto-judge")
+
+    def test_other_endpoints_get_no_opencode_session_header(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with patch("cortex.autojudge.urllib.request.build_opener", return_value=opener):
+            _post_chat(
+                "https://provider.example/v1/chat/completions",
+                "synthetic-key",
+                {"model": "synthetic"},
+                5.0,
+            )
+
+        request = opener.open.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertNotIn("x-opencode-session", headers)
+
     def test_keep_creates_honestly_labeled_reversible_memory(self) -> None:
         proposal = self.store.propose_memory_creation(
             "Project Acorn deployments require a verified backup checklist.",

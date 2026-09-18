@@ -1233,8 +1233,27 @@ def _first_content(response: dict[str, Any]) -> str:
     return value
 
 
+def _opencode_session_headers(endpoint: str) -> dict[str, str]:
+    """Affinity header for OpenCode relay endpoints (Zen/Go).
+
+    The relay requires an ``x-opencode-session`` value on every request and
+    pins equal values to the same upstream backend (prompt-cache warmth). The
+    value only has to be opaque and stable — any non-empty constant works, so
+    headless callers (this plugin) send one instead of failing
+    ``MissingSessionID``. Non-OpenCode endpoints get no extra headers.
+    """
+    try:
+        host = (urlparse(endpoint).hostname or "").lower()
+    except ValueError:
+        return {}
+    if host == "opencode.ai" or host.endswith(".opencode.ai"):
+        return {"x-opencode-session": "cortex-auto-judge"}
+    return {}
+
+
 def _post_chat(endpoint: str, api_key: str, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     headers = {"Content-Type": "application/json", "User-Agent": "cortex-auto-judge/1.0"}
+    headers.update(_opencode_session_headers(endpoint))
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
