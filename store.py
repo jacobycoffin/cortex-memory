@@ -61,6 +61,12 @@ from .cortex_schema import (
 # inline set literal — or the API boundary and storage will disagree.
 TASK_OUTCOMES = frozenset({"helpful", "harmful", "validated", "corrected"})
 
+# Closed vocabulary for admission-time classification (not an authority signal).
+MEMORY_KINDS = frozenset({
+    "identity", "preference", "decision", "procedure",
+    "prospective", "operational", "semantic", "episode",
+})
+
 
 # Local embedding storage. Vectors are little-endian float32 blobs from
 # `cortex.embeddings.pack_vector`, keyed by (memory_id, model_id) so a memory
@@ -1817,8 +1823,16 @@ class CortexStore:
         decision_scope: str = "item_only",
         approval_authority: str = "operator",
         expected_revision: str | None = None,
+        approved_kind: str | None = None,
     ) -> dict[str, Any]:
-        """Decide one staged candidate and apply its explicit recall boundary."""
+        """Decide a candidate atomically; preserve its original capture label.
+
+        ``approved_kind`` affects new memories only, never reused duplicates.
+        """
+        if approved_kind is not None and (
+            not isinstance(approved_kind, str) or approved_kind not in MEMORY_KINDS
+        ):
+            raise ValueError("approved_kind must be a supported memory kind")
 
         aliases = {
             "edited_remember": "remember_edited",
@@ -1992,7 +2006,7 @@ class CortexStore:
                     # lookup-only evidence atomically.
                     memory_id, memory_created = self.add_memory(
                         remembered_content,
-                        kind=str(proposal.get("kind") or "semantic"),
+                        kind=approved_kind or str(proposal.get("kind") or "semantic"),
                         source_type=str(proposal.get("source_type") or "conversation"),
                         source_category=(
                             "AUTOMATIC_APPROVED"
@@ -2094,6 +2108,11 @@ class CortexStore:
                 "approval_authority": authority_value,
                 "quality_flags": list((proposal.get("assessment") or {}).get("quality_flags") or []),
             }
+            if approved_kind is not None:
+                effect["proposed_kind"] = proposal["kind"]
+                effect["classification_kind"] = approved_kind
+                if memory_id:
+                    effect["kind"] = self.get_memory(memory_id)["kind"]
             signal = {
                 "item_type": "creation",
                 "action": action_value,

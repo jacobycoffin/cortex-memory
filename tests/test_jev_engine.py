@@ -105,7 +105,8 @@ class _JevStub:
                 "type": "choice",
                 "choice": relation,
                 "confidence": 0.9,
-                "probabilities": {relation: 0.9},
+                "probabilities": {key: 1.0 if key == relation else 0.0
+                                  for key in payload["questions"][f"r{index}"]["criteria"]},
             }
         return {"model": "jev-1.13.0", "answers": answers, "usage": {"input_tokens": 90}}
 

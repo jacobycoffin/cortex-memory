@@ -29,6 +29,10 @@ Seven nouls per candidate: `worth_saving`, `durable`, `standalone`,
 annotations in the decision log. `scope_clear` and `duplicate_of_related` are
 never hard rules — measured compound rules collapsed agreement.
 
+When `CORTEX_JEV_KIND_MODE` is not `off`, one additional `memory_kind` Choice
+question (`cortex_kind.2026-09-21-v1`) rides in the same request — classification
+costs no extra call, only the question's own tokens.
+
 ### Policy (`cortex_admission_policy.2026-09-18.1`)
 
 | Path | Applies to | admit ≥ | reject ≤ | note |
@@ -48,6 +52,47 @@ A config/env comment in `cortex/jev.py` documents why `builtin_memory` is
 held: 72.7% agreement on the September slice with disagreements interleaved at
 every confidence level — threshold tuning cannot separate them, so the canary
 routes them to review until the operator sets a policy.
+
+### Category classification (`cortex_kind.2026-09-21-v1`)
+
+The model classifies each candidate into one primary category — `identity`,
+`preference`, `decision`, `procedure`, `prospective`, `operational`,
+`semantic`, `episode`, `unknown` — in the same request as admission. This
+answers "what kind of thing is this" (the stored `kind`), not "should it be
+linked to X" (that is the link pass). An answer is only **accepted** when all
+of the following hold; anything else keeps the captured kind:
+
+- the option is valid and not `unknown`;
+- the probability map covers exactly the question's own options, each finite
+  in [0, 1], sums to 1 (±0.01), and the chosen option is at its maximum;
+- `confidence ≥ CORTEX_JEV_KIND_THRESHOLD` (default **0.80** — a conservative
+  initial gate; calibrate it on the corpus before relying on `apply`).
+
+Rollout is explicit and reversible:
+
+| Mode | Behaviour |
+| --- | --- |
+| `off` (default) | question not asked; nothing changes |
+| `shadow` | classified + logged per candidate; stored kind unchanged |
+| `apply` | accepted classifications become the new memory's kind |
+
+Safety properties (all test-pinned):
+
+- **Classification cannot relax admission.** The calibrated policy path is
+  chosen from the *captured* kind/source_type before the answer is seen.
+- **History is never rewritten.** The proposal keeps its capture label; the
+  review ledger's `effect_json` records `proposed_kind` and
+  `classification_kind`, and replayed exact duplicates keep their own kind.
+- **Closed vocabulary, pre-validated.** `approved_kind` is validated against
+  `cortex.store.MEMORY_KINDS` before any write; a rejected value aborts the
+  review with no side effects.
+- **One decision, one write.** Classification travels through the same
+  review transaction as the admission itself — a ledger failure rolls the
+  whole decision back.
+
+Shadow is the measurement step: run `shadow` for a while, review the
+`classification` blocks in `~/.hermes/cortex/jev-decisions.jsonl`, and only
+then switch to `apply`.
 
 ### Fallback and failure
 
@@ -102,12 +147,16 @@ All knobs are environment variables (the auto-judge service reads
 | `CORTEX_JEV_LINK_THRESHOLD` | `0.65` | link gate |
 | `CORTEX_JEV_MAX_LINKS_PER_ITEM` | `3` | cap per item |
 | `CORTEX_JEV_DECISION_LOG` | `~/.hermes/cortex/jev-decisions.jsonl` | append-only JSONL; empty string disables |
+| `CORTEX_JEV_KIND_MODE` | `off` | category classification: `off` / `shadow` / `apply` |
+| `CORTEX_JEV_KIND_THRESHOLD` | `0.80` | minimum Choice confidence for an applied classification |
+| `CORTEX_JEV_LINK_RELATION_THRESHOLD` | `0.60` | minimum Choice confidence for a link relation; below it the pair is not linked |
 
 ### Decision log
 
 One line per judgment: `question_set`, `policy`, `run_ref`, `proposal_id`,
-`kind`, `source_type`, `path`, the seven answers, `worth_adjusted`, `action`,
-`audit`, `model`, `latency_ms`. Link judgments log separately (`event:
+`kind`, `source_type`, `path`, the seven answers, the `classification` block
+when classification is enabled (`kind`, `confidence`, `mode`, `accepted`,
+`question_set`), `worth_adjusted`, `action`, `audit`, `model`, `latency_ms`. Link judgments log separately (`event:
 links`). No raw memory content ever enters the log.
 
 ---

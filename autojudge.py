@@ -316,6 +316,7 @@ class AutoJudge:
         if not content.strip() or not related:
             return []
         settings = self._resolved_jev_settings()
+        telemetry: dict[str, Any] = {}
         try:
             suggestions = jev.judge_links(
                 settings,
@@ -327,6 +328,7 @@ class AutoJudge:
                 related=related,
                 call=self._jev_call,
                 log_context="admission",
+                telemetry=telemetry,
             )
         except Exception as exc:
             logger.warning(
@@ -336,7 +338,9 @@ class AutoJudge:
             )
             report["jev"]["link_errors"] += 1
             return []
-        report["jev"]["link_calls"] += 1
+        report["jev"]["link_calls"] += telemetry.get("calls", 0)
+        for key, value in telemetry.get("usage", {}).items():
+            report["usage"][key] = report["usage"].get(key, 0) + value
         stats = report["jev"]
         for suggestion in suggestions:
             if suggestion.get("model"):
@@ -713,6 +717,9 @@ class AutoJudge:
                     decision_scope="item_only",
                     approval_authority="automatic",
                     expected_revision=creation_proposal_revision(proposal),
+                    **({"approved_kind": decision["approved_kind"]}
+                       if decision.get("approved_kind") and action in {"remember", "evidence_only"}
+                       else {}),
                 )
             except StaleCreationProposalError:
                 # Legacy: kept only for callers using the old exception. All
@@ -1772,6 +1779,7 @@ def link_orphan_memories(
                     related=related,
                     call=jev_call,
                     log_context="orphan",
+                    telemetry=report.setdefault("jev", {}),
                 )
             except Exception:
                 logger.debug("orphan-link: jev call failed for %s", mem_id)
