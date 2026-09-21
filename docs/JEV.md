@@ -111,11 +111,21 @@ Pairwise questions (`cortex_links.2026-09-18-v1`): per related memory, one
 `l{i}` noul gate ("should the candidate be linked?") plus one `r{i}` choice
 relation (`supports`/`extends`/`refines`/`example_of`/`generalizes`/
 `prerequisite`/`contradicts`/`none`). Edge creation requires gate ≥
-`CORTEX_JEV_LINK_THRESHOLD` (default **0.65**) and a non-`none` relation, capped
-at `CORTEX_JEV_MAX_LINKS_PER_ITEM` (default 3) per item. The model cannot
-invent memory ids: answers map back onto the supplied related list by index.
+`CORTEX_JEV_LINK_THRESHOLD` (default **0.65**), a non-`none` relation with a
+well-formed answer (exact option set, probabilities summing to 1, argmax
+agreement), and relation confidence ≥ `CORTEX_JEV_LINK_RELATION_THRESHOLD`
+(default **0.30** — a noise floor: measured 2026-09-21 on six clear-true
+pairs, relation confidence ranged 0.44–0.98 while near-uniform labels score
+below 0.2; the model often picks an adjacent relation label such as
+`supports` for `extends`, so the floor keeps edges with approximate labels
+instead of demanding crisp ones). Capped at `CORTEX_JEV_MAX_LINKS_PER_ITEM`
+(default 3) per item. The model cannot invent memory ids: answers map back
+onto the supplied related list by index; self-referential and duplicate
+related entries are dropped before the request (no wasted questions).
 
-Validation (2026-09-18, 400 sampled pairs over the live graph):
+Validation — the 2026-09-18 replay below predates the relation-confidence
+requirement and the answer-shape hardening (2026-09-21). Re-measure on the
+live corpus in shadow mode before tuning the floor:
 
 | pair class | ≥ 0.65 |
 | --- | --- |
@@ -149,7 +159,7 @@ All knobs are environment variables (the auto-judge service reads
 | `CORTEX_JEV_DECISION_LOG` | `~/.hermes/cortex/jev-decisions.jsonl` | append-only JSONL; empty string disables |
 | `CORTEX_JEV_KIND_MODE` | `off` | category classification: `off` / `shadow` / `apply` |
 | `CORTEX_JEV_KIND_THRESHOLD` | `0.80` | minimum Choice confidence for an applied classification |
-| `CORTEX_JEV_LINK_RELATION_THRESHOLD` | `0.60` | minimum Choice confidence for a link relation; below it the pair is not linked |
+| `CORTEX_JEV_LINK_RELATION_THRESHOLD` | `0.30` | noise floor for the relation Choice; below it the pair is not linked |
 
 ### Decision log
 

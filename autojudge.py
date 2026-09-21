@@ -282,30 +282,41 @@ class AutoJudge:
     ) -> list[dict[str, Any]]:
         """Route one chunk through the Jev engine; counters land in ``report``."""
         settings = self._resolved_jev_settings()
-        decisions = jev.judge_admission_batch(
-            settings,
-            chunk_records,
-            strong_boost=self.config.strong_feedback_boost,
-            positive_boost=self.config.positive_feedback_boost,
-            call=self._jev_call,
-            run_ref=self._run_ref,
-        )
+        telemetry: dict[str, Any] = {}
+        try:
+            decisions = jev.judge_admission_batch(
+                settings,
+                chunk_records,
+                strong_boost=self.config.strong_feedback_boost,
+                positive_boost=self.config.positive_feedback_boost,
+                call=self._jev_call,
+                run_ref=self._run_ref,
+                telemetry=telemetry,
+            )
+        finally:
+            # Billed calls count even when a sibling batch failed and the chunk
+            # falls back to the chat provider: the run still paid for them.
+            self._merge_jev_telemetry(report, telemetry)
         stats = report["jev"]
-        batch_size = max(1, min(settings.batch_size, len(chunk_records)))
-        stats["calls"] += (len(chunk_records) + batch_size - 1) // batch_size
-        usage_sums: dict[str, float] = stats.setdefault("usage", {})  # type: ignore[assignment]
         for decision in decisions:
             stats["models"].append(str(decision.get("model") or settings.model))
             if isinstance(decision.get("latency_ms"), int):
                 stats["latency_ms"].append(int(decision["latency_ms"]))
             if decision.get("audit"):
                 stats["audit_flagged"] += 1
-            for usage_key, usage_value in (decision.get("usage") or {}).items():
-                if isinstance(usage_value, (int, float)) and not isinstance(usage_value, bool):
-                    usage_sums[str(usage_key)] = usage_sums.get(str(usage_key), 0.0) + float(
-                        usage_value
-                    )
         return decisions
+
+    @staticmethod
+    def _merge_jev_telemetry(report: dict[str, Any], telemetry: dict[str, Any]) -> None:
+        """Merge per-request call/usage counts into the run report (once each)."""
+        stats = report.setdefault("jev", {})
+        stats["calls"] = int(stats.get("calls", 0)) + int(telemetry.get("calls", 0))
+        usage_sums: dict[str, float] = stats.setdefault("usage", {})  # type: ignore[assignment]
+        for usage_key, usage_value in (telemetry.get("usage") or {}).items():
+            if isinstance(usage_value, (int, float)) and not isinstance(usage_value, bool):
+                usage_sums[str(usage_key)] = usage_sums.get(str(usage_key), 0.0) + float(
+                    usage_value
+                )
 
     def _jev_link_suggestions(
         self, proposal: dict[str, Any], report: dict[str, Any]
@@ -338,9 +349,11 @@ class AutoJudge:
             )
             report["jev"]["link_errors"] += 1
             return []
-        report["jev"]["link_calls"] += telemetry.get("calls", 0)
-        for key, value in telemetry.get("usage", {}).items():
-            report["usage"][key] = report["usage"].get(key, 0) + value
+        finally:
+            # A failed parse after a successful call still paid for that call.
+            report["jev"]["link_calls"] += int(telemetry.get("calls", 0))
+            for key, value in (telemetry.get("usage") or {}).items():
+                report["usage"][key] = report["usage"].get(key, 0) + value
         stats = report["jev"]
         for suggestion in suggestions:
             if suggestion.get("model"):
@@ -1758,6 +1771,7 @@ def link_orphan_memories(
             logger.warning("orphan-link: jev credential unavailable; linking skipped")
             store._conn.commit()
             return report
+        telemetry: dict[str, Any] = {}
         for row in orphans:
             mem_id = str(row["id"])
             content = str(row["content"] or "")
@@ -1779,7 +1793,7 @@ def link_orphan_memories(
                     related=related,
                     call=jev_call,
                     log_context="orphan",
-                    telemetry=report.setdefault("jev", {}),
+                    telemetry=telemetry,
                 )
             except Exception:
                 logger.debug("orphan-link: jev call failed for %s", mem_id)
@@ -1797,6 +1811,14 @@ def link_orphan_memories(
                 proposal_id="orphan-link",
             )
             report["links_created"] += created
+        # Orphan spend lands on the same top-level "usage" key every other pass
+        # uses, with the call count under "jev" for engine bookkeeping.
+        if telemetry.get("calls"):
+            jev_stats = report.setdefault("jev", {})
+            jev_stats["calls"] = int(jev_stats.get("calls", 0)) + int(telemetry["calls"])
+        usage_sums = report.setdefault("usage", {})
+        for key, value in (telemetry.get("usage") or {}).items():
+            usage_sums[key] = usage_sums.get(key, 0.0) + float(value)
         store._conn.commit()
         return report
 

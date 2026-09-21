@@ -112,7 +112,11 @@ class JevSettings:
     # the gate. See the link-quality replay in the Jev integration report.
     link_threshold: float = 0.65
     max_links_per_item: int = 3
-    link_relation_threshold: float = 0.60  # initial abstention gate; validate in shadow
+    # Floor on the relation Choice. Measured 2026-09-21 on six clear-true pairs:
+    # relation confidence ranged 0.44-0.98 (near-uniform labels score < 0.2, the
+    # case this floor exists for). Initial value - calibrate on the corpus in
+    # shadow mode before relying on it.
+    link_relation_threshold: float = 0.30
     decision_log: Path | None = None
     kind_mode: str = "off"  # off | shadow | apply; rollout is explicit
     kind_threshold: float = 0.80  # conservative initial gate, not corpus-calibrated
@@ -163,9 +167,9 @@ class JevSettings:
             max_attempts=_int("CORTEX_JEV_MAX_ATTEMPTS", 3),
             link_threshold=_float("CORTEX_JEV_LINK_THRESHOLD", 0.65),
             max_links_per_item=_int("CORTEX_JEV_MAX_LINKS_PER_ITEM", 3),
-            link_relation_threshold=_float("CORTEX_JEV_LINK_RELATION_THRESHOLD", 0.60),
+            link_relation_threshold=_float("CORTEX_JEV_LINK_RELATION_THRESHOLD", 0.30),
             decision_log=decision_log,
-            kind_mode=_text("CORTEX_JEV_KIND_MODE", "off"),
+            kind_mode=_text("CORTEX_JEV_KIND_MODE", "off").casefold(),
             kind_threshold=_float("CORTEX_JEV_KIND_THRESHOLD", 0.80),
         )
 
@@ -499,6 +503,20 @@ def _safe_usage(value: Any) -> dict[str, float]:
             and type(number) in (int, float) and math.isfinite(number) and number >= 0}
 
 
+def _bump_telemetry(telemetry: dict[str, Any] | None, response: Mapping[str, Any]) -> None:
+    """Count one successfully billed call. Safe to call before any parsing.
+
+    Called immediately after a provider response returns so that a later
+    parse/validation error cannot make a paid call read as free.
+    """
+    if telemetry is None:
+        return
+    telemetry["calls"] = int(telemetry.get("calls", 0)) + 1
+    totals = telemetry.setdefault("usage", {})
+    for key, value in _safe_usage(response.get("usage")).items():
+        totals[key] = totals.get(key, 0) + value
+
+
 def _answers_as_floats(response: dict[str, Any]) -> dict[str, float | None]:
     """Flatten noul answers to floats; non-noul or malformed entries become None."""
     out: dict[str, float | None] = {}
@@ -640,6 +658,7 @@ def judge_admission_batch(
     call: ProviderCall | None = None,
     run_ref: str | None = None,
     log_decisions: bool = True,
+    telemetry: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Judge up to ``len(records)`` candidates; returns one decision per record.
 
@@ -665,6 +684,7 @@ def judge_admission_batch(
         questions = _batch_questions(refs, batched, classify=settings.kind_mode != "off")
         started = time.perf_counter()
         response = systemone_call(settings, state, questions, call=call)
+        _bump_telemetry(telemetry, response)
         latency_ms = int((time.perf_counter() - started) * 1000)
         model = str(response.get("model") or settings.model)
         floats = _answers_as_floats(response)
@@ -858,6 +878,8 @@ def judge_links(
     bounded_related: list[Mapping[str, Any]] = []
     seen_ids = {str(candidate.get("memory_id") or "").strip(), ""}
     for item in related:
+        if not isinstance(item, Mapping):
+            continue
         target_id = str(item.get("memory_id") or "").strip()
         if target_id in seen_ids or not str(item.get("content") or "").strip():
             continue
@@ -885,11 +907,7 @@ def judge_links(
     }
     started = time.perf_counter()
     response = systemone_call(settings, state, link_questions(len(bounded_related)), call=call)
-    if telemetry is not None:
-        telemetry["calls"] = telemetry.get("calls", 0) + 1
-        totals = telemetry.setdefault("usage", {})
-        for key, value in _safe_usage(response.get("usage")).items():
-            totals[key] = totals.get(key, 0) + value
+    _bump_telemetry(telemetry, response)
     latency_ms = int((time.perf_counter() - started) * 1000)
     model = str(response.get("model") or settings.model)
     floats = _answers_as_floats(response)
