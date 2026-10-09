@@ -57,7 +57,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      HERMES_HOME: ${{ runner.temp }}/cortex-embedding-tests
       CORTEX_REQUIRE_EMBEDDINGS: "1"
     steps:
       - name: Check out Cortex
@@ -72,9 +71,13 @@ jobs:
         run: python -m pip install '.[embeddings]'
 
       - name: Download verified embedding artifacts
+        env:
+          HERMES_HOME: ${{ runner.temp }}/cortex-embedding-tests
         run: python scripts/download_embedding_model.py --output "$HERMES_HOME/models/bge-small-en-v1.5"
 
       - name: Run full suite with embeddings required
+        env:
+          HERMES_HOME: ${{ runner.temp }}/cortex-embedding-tests
         run: python -m unittest discover -s tests -v
 
   recall-performance:
