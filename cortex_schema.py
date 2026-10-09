@@ -21,11 +21,10 @@ from .security import normalize_text
 from .semantics import semantic_features
 
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
-# Moved verbatim out of ``CortexStore._create_schema`` (indentation included,
-# so the stored DDL is byte-identical). It stays a single ``executescript``
-# call, so SQLite's implicit pre-script COMMIT stays exactly where it was.
+# Extracted from ``CortexStore._create_schema``. It stays a single
+# ``executescript`` call; additive schema changes keep explicit migrations.
 SCHEMA_SQL = """
             CREATE TABLE IF NOT EXISTS meta (
                 key TEXT PRIMARY KEY,
@@ -1520,7 +1519,7 @@ SCHEMA_SQL = """
                 weight REAL NOT NULL,
                 PRIMARY KEY(memory_id,feature)
             );
-            CREATE INDEX IF NOT EXISTS idx_memory_features_feature ON memory_features(feature,memory_id);
+            CREATE INDEX IF NOT EXISTS idx_memory_features_feature ON memory_features(feature,memory_id,weight);
 
             CREATE TABLE IF NOT EXISTS memory_context_terms (
                 memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -1543,6 +1542,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
     """Run the base CREATE TABLE / CREATE INDEX block on ``conn``."""
 
     conn.executescript(SCHEMA_SQL)
+
+    # v34 replaces the posting index in place with a covering index. Existing
+    # databases retain every feature row; old code can still read this schema.
+    columns = [row[2] for row in conn.execute("PRAGMA index_info(idx_memory_features_feature)")]
+    if columns != ["feature", "memory_id", "weight"]:
+        conn.execute("DROP INDEX IF EXISTS idx_memory_features_feature")
+        conn.execute("CREATE INDEX idx_memory_features_feature ON memory_features(feature,memory_id,weight)")
 
 
 def _migrate_columns(conn: sqlite3.Connection) -> None:
@@ -1732,7 +1738,8 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
     )[0]:
         conn.execute("PRAGMA foreign_keys=OFF")
         conn.executescript(
-            """CREATE TABLE IF NOT EXISTS operator_review_decisions_v26 (
+            """DROP TABLE IF EXISTS operator_review_decisions_v26;
+            CREATE TABLE IF NOT EXISTS operator_review_decisions_v26 (
                 review_id TEXT PRIMARY KEY,
                 item_type TEXT NOT NULL,
                 item_key TEXT NOT NULL,
@@ -1751,8 +1758,21 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
                 created_at TEXT NOT NULL,
                 reversed_at TEXT
             );
-            INSERT INTO operator_review_decisions_v26
-                SELECT * FROM operator_review_decisions;
+            -- Named columns, not SELECT *: a pre-schema-17 database gets
+            -- decision_scope APPENDED at column 16, while this table declares
+            -- it at 13; a positional copy shifted actor/created_at/reversed_at
+            -- and failed the NOT NULL on created_at for any DB with a single
+            -- review row (verified 2026-09-14).
+            INSERT INTO operator_review_decisions_v26(
+                review_id, item_type, item_key, proposal_id, src_id, dst_id,
+                action, reason_code, reason_text, prior_json, effect_json,
+                learning_signal_json, decision_scope, actor, created_at, reversed_at
+            )
+            SELECT review_id, item_type, item_key, proposal_id, src_id, dst_id,
+                   action, reason_code, reason_text, prior_json, effect_json,
+                   learning_signal_json, COALESCE(decision_scope, 'policy_evidence'),
+                   actor, created_at, reversed_at
+            FROM operator_review_decisions;
             DROP TABLE operator_review_decisions;
             ALTER TABLE operator_review_decisions_v26 RENAME TO operator_review_decisions;
             CREATE INDEX IF NOT EXISTS idx_operator_review_created

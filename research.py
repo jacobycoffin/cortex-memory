@@ -16,7 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from .security import normalize_text
+from .security import normalize_text, sanitize_memory
 from .store import CortexStore, utc_now
 
 
@@ -78,6 +78,17 @@ def assign_recall_condition(
     task_type: str,
 ) -> dict[str, Any] | None:
     """Assign one task using a balanced randomized block inside its task type."""
+
+    # Most deployments do not run a controlled experiment. A read-only probe
+    # avoids acquiring SQLite's writer lock and committing an empty transaction
+    # on every foreground recall. Recheck inside the transaction when active.
+    with store._lock:
+        active = store._conn.execute(
+            "SELECT 1 FROM controlled_experiments WHERE experiment_key=? AND status='active' LIMIT 1",
+            (RECALL_EXPERIMENT_KEY,),
+        ).fetchone()
+    if not active:
+        return None
 
     with store.transaction() as conn:
         experiment = conn.execute(
@@ -156,7 +167,7 @@ def record_agent_task_start(
                 session_id,
                 task_type,
                 _query_hash(query),
-                normalize_text(query)[:240],
+                normalize_text(sanitize_memory(str(query or "")).text)[:240],
                 recall_condition,
                 recall_mode,
                 max(0, int(memory_count)),

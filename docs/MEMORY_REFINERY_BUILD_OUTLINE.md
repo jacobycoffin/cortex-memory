@@ -25,7 +25,7 @@ Do not copy private memory text, source paths, identifiers, or live-data example
 The default Cortex experience should feel like a readable knowledge base:
 
 1. The Index opens to **Readable memories**.
-2. Each card states what Kaya should remember, when it applies, why it was retained, and where it came from.
+2. Each card states what Cortex should remember, when it applies, why it was retained, and where it came from.
 3. Raw evidence is collapsed but always available.
 4. Code, tables, logs, and imported sections live under **Reference evidence** instead of masquerading as normal memories.
 5. Unclear records enter a **Clarity review** workflow with reversible actions.
@@ -198,13 +198,13 @@ Each readable-memory card should show:
 - recall/use/outcome evidence;
 - an affordance to open provenance and raw evidence.
 
-Reference cards should emphasize what the source contains, not “what Kaya believes.” Raw content must be collapsed by default.
+Reference cards should emphasize what the source contains, not “what Cortex believes.” Raw content must be collapsed by default.
 
 ### Memory detail
 
 Organize detail into plain-language sections:
 
-- **What Kaya remembers**;
+- **What the agent remembers**;
 - **When this applies**;
 - **Why it is retained**;
 - **Source and evidence**;
@@ -215,7 +215,7 @@ Every connection must continue to display its evidence or explicitly say that pr
 
 ### Clarity review
 
-Add a `Clarity` category to Train Kaya or a directly connected refinery inbox. Reuse the simplified progressive decision pattern:
+Add a `Clarity` category to Train Cortex or a directly connected refinery inbox. Reuse the simplified progressive decision pattern:
 
 1. choose what should happen;
 2. choose where it applies;
@@ -232,7 +232,7 @@ Actions should be phrased as outcomes:
 - **Archive it**;
 - **Move to trash**.
 
-`Rewrite clearly` and `Split into separate memories` must show an editable preview and source dependencies before confirmation. Default reach remains one item. Exact-copy handling and **Teach Kaya from this** must retain their current semantics.
+`Rewrite clearly` and `Split into separate memories` must show an editable preview and source dependencies before confirmation. Default reach remains one item. Exact-copy handling and **Teach Cortex from this** must retain their current semantics.
 
 After confirmation, show exactly what changed and provide Undo when the underlying action supports it.
 
@@ -264,7 +264,7 @@ Compare current retrieval with a proposed tiered policy:
 - event records respect temporal relevance;
 - unsupported claims remain gated.
 
-Show which results would differ without changing Kaya’s context.
+Show which results would differ without changing the agent’s context.
 
 ### Stage 3: controlled activation
 
@@ -394,7 +394,7 @@ Checkpoint: retrieval changes are measurable and optional, not bundled into the 
 - every action defaults to item-only;
 - role change, rewrite, and split show a correct preview;
 - reason is optional;
-- exact-copy and Teach Kaya scopes remain distinct;
+- exact-copy and Teach Cortex scopes remain distinct;
 - source dependencies are preserved;
 - Undo restores the previous state without overwriting later changes;
 - unauthenticated and cross-origin mutations fail.
@@ -457,5 +457,5 @@ When handing the work back, report:
 - test, smoke-test, and browser-QA results;
 - privacy/security checks;
 - deployed commit and backup path if deployment was authorized;
-- a short user test path beginning with **Index → Readable memories** and **Train Kaya → Clarity**;
+- a short user test path beginning with **Index → Readable memories** and **Train Cortex → Clarity**;
 - any remaining blocked or intentionally deferred work, especially role-aware retrieval activation.

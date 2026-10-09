@@ -43,8 +43,8 @@ def make_result(content: str, *, memory_id: str = "m1") -> RetrievalResult:
 
 def uncached_similarity(left: RetrievalResult, right: RetrievalResult) -> float:
     """The pre-memoisation definition, kept here as the reference."""
-    a = set(query_tokens(left.memory["content"]))
-    b = set(query_tokens(right.memory["content"]))
+    a = set(query_tokens(left.memory["content"], limit=None))
+    b = set(query_tokens(right.memory["content"], limit=None))
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
@@ -77,6 +77,20 @@ class SelectTokenMemoTests(unittest.TestCase):
                     places=12,
                 )
 
+    def test_long_bodies_do_not_collapse_on_shared_boilerplate_prefix(self) -> None:
+        prefix = " ".join(f"boilerplate{index}" for index in range(24))
+        left = make_result(prefix + " left_unique_alpha " + " ".join(f"left{index}" for index in range(80)), memory_id="l")
+        right = make_result(prefix + " right_unique_beta " + " ".join(f"right{index}" for index in range(80)), memory_id="r")
+
+        self.assertLess(_memory_similarity(left, right), 0.5)
+
+    def test_full_memory_tokens_find_matches_after_query_token_cap(self) -> None:
+        body = " ".join(f"boilerplate{index}" for index in range(30)) + " late distinctive target"
+        left = make_result(body, memory_id="l")
+        right = make_result("late distinctive target unrelated", memory_id="r")
+
+        self.assertGreater(_memory_similarity(left, right), 0.0)
+
     def test_repeated_calls_return_the_same_value(self) -> None:
         left = make_result("alpha beta gamma delta", memory_id="l")
         right = make_result("alpha beta epsilon", memory_id="r")
@@ -99,9 +113,9 @@ class SelectTokenMemoTests(unittest.TestCase):
         calls: list[str] = []
         original = retrieval.query_tokens
 
-        def counting(text: str) -> list[str]:
+        def counting(text: str, *, limit: int | None = 24) -> list[str]:
             calls.append(text)
-            return original(text)
+            return original(text, limit=limit)
 
         retrieval.query_tokens = counting  # type: ignore[assignment]
         try:

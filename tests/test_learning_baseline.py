@@ -5,7 +5,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.store import CortexStore, _retention_score
 from cortex.retrieval import MemoryRetriever

@@ -122,9 +122,28 @@ class ReciprocalRankFusionTests(unittest.TestCase):
             reciprocal_rank_fusion([["a"]], weights=[-0.1])
         with self.assertRaises(ValueError):
             fuse_semantic(["a"], ["b"], semantic_weight=-1.0)
+        # Non-finite weights would otherwise propagate into every fused score
+        # (and, for `fuse_semantic`, into a caller-supplied semantic weight).
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            with self.assertRaises(ValueError):
+                reciprocal_rank_fusion([["a"], ["b"]], weights=[1.0, bad])
+            with self.assertRaises(ValueError):
+                fuse_semantic(["a"], ["b"], semantic_weight=bad)
         # Valid calls must not raise.
         self.assertEqual(reciprocal_rank_fusion([["a"], ["b"]], weights=(1.0, 0.5)), ["a", "b"])
         self.assertEqual(reciprocal_rank_fusion([], weights=[]), [])
+
+    def test_damping_constant_validation(self) -> None:
+        # A negative k divides by zero at rank 0 and flips later contributions;
+        # it must fail loudly at the call, not deep inside the rank arithmetic.
+        for bad in (-1, -60, float("nan"), float("inf")):
+            with self.assertRaises(ValueError):
+                reciprocal_rank_fusion([["a"]], k=bad)
+            with self.assertRaises(ValueError):
+                fuse_semantic(["a"], ["b"], k=bad)
+        # k=0 and fractional k are arithmetic-valid and stay accepted.
+        self.assertEqual(reciprocal_rank_fusion([["a"]], k=0), ["a"])
+        self.assertEqual(reciprocal_rank_fusion([["a"]], k=1.5), ["a"])
 
     def test_weights_change_relative_influence(self) -> None:
         rankings = [["a", "b"], ["b", "a"]]

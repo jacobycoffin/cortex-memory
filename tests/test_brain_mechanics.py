@@ -61,6 +61,28 @@ class BrainMechanicsSchedulerTests(unittest.TestCase):
         self.assertEqual(self.config.model, "synthetic-mechanics")
         self.assertEqual(self.config.timeout_seconds, 5.0)
 
+    def test_mechanics_provider_overrides_are_scoped_to_the_pass(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "CORTEX_BRAIN_MECHANICS_MODEL": "deepseek-v4.1-flash",
+                "CORTEX_BRAIN_MECHANICS_ENDPOINT": "https://opencode.ai/zen/go/v1/chat/completions",
+                "CORTEX_BRAIN_MECHANICS_API_KEY_ENV": "OPENCODE_GO_API_KEY",
+            },
+            clear=False,
+        ):
+            overridden = brain_mechanics_config(self.config)
+
+        self.assertEqual(overridden.model, "deepseek-v4.1-flash")
+        self.assertEqual(
+            overridden.endpoint, "https://opencode.ai/zen/go/v1/chat/completions"
+        )
+        self.assertEqual(overridden.api_key_env, "OPENCODE_GO_API_KEY")
+        # The admission judge's own provider stays untouched.
+        self.assertEqual(self.config.model, "synthetic-mechanics")
+        self.assertEqual(self.config.endpoint, "http://127.0.0.1:9999/v1/chat/completions")
+        self.assertEqual(self.config.api_key_env, "")
+
     def test_invalid_mechanics_timeout_is_rejected(self) -> None:
         with patch.dict(
             os.environ,

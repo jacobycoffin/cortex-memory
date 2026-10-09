@@ -6,15 +6,14 @@ access-history dashboard read.
 """
 from __future__ import annotations
 
-import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from pathlib import Path
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
-from cortex.store import CortexStore, utc_now, utc_now_dt
+from cortex.store import CortexStore, utc_now_dt
 
 
 def make_store() -> tuple[CortexStore, tempfile.TemporaryDirectory]:
@@ -26,7 +25,7 @@ class TraceV0Tests(unittest.TestCase):
     def setUp(self) -> None:
         self.store, self.tmp = make_store()
         self.memory_id, _ = self.store.add_memory(
-            "Kaya's verification standard: every claim is backed by real tool output.",
+            "The agent's verification standard: every claim is backed by real tool output.",
             kind="preference",
             confidence=0.9,
             importance=0.9,

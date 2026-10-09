@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import io
 import json
 import sys
 import unittest
-from contextlib import redirect_stdout
-from pathlib import Path
 
 from tests._bootstrap import ROOT  # noqa: F401
 

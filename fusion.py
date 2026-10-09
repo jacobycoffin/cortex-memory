@@ -14,6 +14,7 @@ outside the standard library plus ``numpy``.
 
 from __future__ import annotations
 
+import math
 from typing import Mapping, Sequence
 
 import numpy as np
@@ -22,7 +23,7 @@ __all__ = ["reciprocal_rank_fusion", "cosine_ranking", "fuse_semantic"]
 
 
 def _validate_weights(weights: Sequence[float] | None, count: int) -> list[float]:
-    """Resolve ``weights`` to a list of ``count`` non-negative floats."""
+    """Resolve ``weights`` to a list of ``count`` finite, non-negative floats."""
     if weights is None:
         return [1.0] * count
     resolved = [float(weight) for weight in weights]
@@ -31,6 +32,13 @@ def _validate_weights(weights: Sequence[float] | None, count: int) -> list[float
             f"weights has length {len(resolved)} but {count} ranking(s) were given"
         )
     for index, weight in enumerate(resolved):
+        # NaN/inf are reachable from config-like inputs (`float('nan')`, YAML
+        # `.nan`/`.inf`) and would otherwise propagate silently into every fused
+        # score, so they are rejected here rather than sorted on downstream.
+        if not math.isfinite(weight):
+            raise ValueError(
+                f"weights[{index}] is not finite ({weight}); RRF weights must be finite and >= 0"
+            )
         if weight < 0.0:
             raise ValueError(f"weights[{index}] is negative ({weight}); RRF weights must be >= 0")
     return resolved
@@ -59,6 +67,12 @@ def _fused_scores(
     keep their own index in the supplied ranking (duplicates are not re-packed).
     """
     resolved = _validate_weights(weights, len(rankings))
+    # `k + rank + 1` is the denominator, so a negative damping constant divides
+    # by zero (k=-1 at rank 0) or flips the sign of the contribution further down
+    # a ranking. Rejecting it here turns a deep ZeroDivisionError into a clear
+    # argument error; fractional k stays accepted and is arithmetically fine.
+    if not math.isfinite(k) or k < 0:
+        raise ValueError(f"k must be a finite, non-negative damping constant, got {k!r}")
 
     scores: dict[str, float] = {}
     for index, ranking in enumerate(rankings):

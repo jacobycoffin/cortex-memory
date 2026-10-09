@@ -6,13 +6,15 @@ import logging
 import math
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
 from .metacognition import assess_retrieval
+from .preload import BackgroundPreloader
 from .retrieval import MemoryRetriever, RetrievalContext
-from .security import sanitize_memory
+from .security import neutralize_role_tags, sanitize_memory
 from .sleep import SleepConfig, run_sleep
 from .store import CortexStore, TASK_OUTCOMES
 
@@ -40,13 +42,13 @@ def _provenance_label(memory: dict[str, Any]) -> str:
     source = _SOURCE_LABELS.get(origin_category, origin_category.casefold().replace("_", "-"))
     parts = [f"source: {source}"]
 
-    source_type = str(memory.get("source_type") or "").strip()
+    source_type = neutralize_role_tags(str(memory.get("source_type") or "")).strip()
     if source_type and source_type.casefold() not in source.casefold():
         safe_type = " ".join(source_type.replace("_", " ").split())[:32]
         if safe_type:
             parts.append(f"via {safe_type}")
 
-    source_ref = " ".join(str(memory.get("source_ref") or "").split())
+    source_ref = neutralize_role_tags(" ".join(str(memory.get("source_ref") or "").split()))
     if source_ref:
         parts.append(f"ref: {source_ref[:64]}")
 
@@ -87,7 +89,7 @@ def estimate_text_tokens(text: str) -> int:
 
 def _evidence_line(memory: dict[str, Any]) -> str:
     return (
-        f"- [{str(memory['id'])[:8]} · {memory['kind']} · score {float(memory['score']):.3f}"
+        f"- [{str(memory['id'])[:8]} · {neutralize_role_tags(str(memory['kind']))} · score {float(memory['score']):.3f}"
         f" · {_provenance_label(memory)}] "
         f"{memory['content']}"
     )
@@ -105,31 +107,68 @@ def _fit_evidence_lines(
     Memories keep their incoming (best-score-first) order; the first lines
     that fit win. Fitting is done in characters (budget x 4) with newlines
     counted, so estimate_text_tokens() on the joined text can never exceed
-    the budget. The withheld note, when enabled, is reserved up front
-    (upper-bounded by the full memory count, newline included). Degenerate
-    budgets that cannot fit even the header still return the header:
+    the budget. When a withheld note is enabled, lines are fitted first and
+    the note is added afterward; only the last kept lines are evicted if the
+    note needs room. This avoids reserving space for a note that may not be
+    needed while keeping the final block within budget.
+    Degenerate budgets that cannot fit even the header still return the header:
     unknown evidence is more honest than an empty string for a non-empty
     batch.
     """
 
     lines = [_CONTEXT_HEADER]
     budget_chars = max(0, int(token_budget) * 4)
-    reserved = (
-        1 + len(_withheld_note(len(memories), token_budget)) if note else 0
-    )
-    used = len(_CONTEXT_HEADER) + reserved
+    used = len(_CONTEXT_HEADER)
+    content_lines: list[str] = []
+    kept_ids: list[str] = []
     dropped: list[str] = []
     for memory in memories:
         line = _evidence_line(memory)
         if used + 1 + len(line) > budget_chars:
             dropped.append(str(memory["id"]))
             continue
-        lines.append(line)
+        content_lines.append(line)
+        kept_ids.append(str(memory["id"]))
         used += 1 + len(line)
-    if dropped and note:
-        # Actual note is never longer than reserved: dropped <= memories, so
-        # its count needs no more digits than the reservation assumed.
-        lines.append(_withheld_note(len(dropped), token_budget))
+
+    if note and dropped:
+        # Do not reserve the maximum possible note before fitting evidence.
+        # Add the actual note and evict the lowest-priority kept lines only
+        # until the final rendered block fits.
+        original_content_lines = content_lines[:]
+        original_kept_ids = kept_ids[:]
+        original_dropped = dropped[:]
+        while True:
+            note_line = _withheld_note(len(dropped), token_budget)
+            candidate = [_CONTEXT_HEADER, *content_lines, note_line]
+            if len("\n".join(candidate)) <= budget_chars and (
+                content_lines or not original_content_lines
+            ):
+                lines = candidate
+                break
+            if not content_lines:
+                # The full note would consume the entire budget and hide all
+                # evidence. Prefer a compact marker; if even that cannot fit,
+                # keep the evidence and expose the exact IDs in metadata.
+                compact_note = f"[+{len(original_dropped)} withheld]"
+                compact_candidate = [_CONTEXT_HEADER, *original_content_lines, compact_note]
+                if len("\n".join(compact_candidate)) <= budget_chars:
+                    lines = compact_candidate
+                else:
+                    lines = [_CONTEXT_HEADER, *original_content_lines]
+                kept_ids = original_kept_ids
+                dropped = original_dropped
+                break
+            content_lines.pop()
+            dropped.append(kept_ids.pop())
+    else:
+        lines.extend(content_lines)
+
+    if dropped:
+        # Keep metadata in the same order as the input memories even when a
+        # kept line was evicted to make room for the note.
+        dropped_set = set(dropped)
+        dropped = [str(memory["id"]) for memory in memories if str(memory["id"]) in dropped_set]
     return lines, dropped
 
 
@@ -197,12 +236,10 @@ class RecallBatch:
             self._last_rendered_tokens = 0
             self._record_render_metrics()
             return ""
-        # Two passes: first fit against the bare budget; if anything drops,
-        # reserve space for the withheld-note and re-fit so the FINAL text
-        # (header + lines + note) stays within budget.
-        lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=False)
-        if dropped:
-            lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=True)
+        # Fit once with the actual withheld-note behavior. The fitter keeps
+        # the highest-priority incoming lines and evicts only a tail line if
+        # the final note needs room.
+        lines, dropped = _fit_evidence_lines(self.memories, self.token_budget, note=True)
         text = "\n".join(lines)
         dropped_set = set(dropped)
         self._dropped_ids = dropped
@@ -335,9 +372,14 @@ class RecallBatch:
 class CortexMemory:
     """Framework-independent facade over Cortex storage, recall, and Sleep."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, cache_ttl_seconds: float = 45):
         self.store = CortexStore(db_path)
+        self._last_recall_ms = 0.0
         self.retriever = MemoryRetriever(self.store)
+        self.retriever.recall_cache.ttl_seconds = max(0.0, min(300.0, float(cache_ttl_seconds)))
+        self._preloader = BackgroundPreloader(
+            lambda query, options: self.retriever.search_cached(query, speculative=True, **options)
+        )
 
     def remember(
         self,
@@ -439,6 +481,10 @@ class CortexMemory:
         limit: int = 6,
         token_budget: int = 700,
         include_archived: bool = False,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        graph_depth: int = 1,
+        threshold: float | None = None,
         active_project: str | None = None,
         entities: Sequence[str] = (),
         scope: dict[str, str] | None = None,
@@ -448,6 +494,7 @@ class CortexMemory:
     ) -> RecallBatch:
         """Retrieve bounded evidence and open an outcome-tracking batch."""
 
+        prepare_start = time.perf_counter()
         retrieval_scope = dict(scope or {})
         retrieval_scope.setdefault("task_type", task_type)
         retrieval_context = RetrievalContext(
@@ -459,11 +506,15 @@ class CortexMemory:
             applicable_systems=tuple(str(item) for item in applicable_systems),
             applicable_versions=tuple(str(item) for item in applicable_versions),
         )
-        results, diagnostics = self.retriever.search_detailed(
+        results, diagnostics = self.retriever.search_cached(
             query,
             limit=limit,
             token_budget=token_budget,
             include_archived=include_archived,
+            temporal_mode=temporal_mode,
+            as_of=as_of,
+            graph_depth=graph_depth,
+            threshold=threshold,
             context=retrieval_context,
         )
         assessments = []
@@ -476,79 +527,83 @@ class CortexMemory:
             )
             assessments.append(assess_retrieval(result, calibration=learned))
         items = [(str(result.memory["id"]), float(result.score)) for result in results]
-        task_id = self.store.create_usage_batch(
-            items,
-            query=query,
-            session_id=session_id,
-            task_type=task_type,
-            recall_mode="external_adapter",
-            requested_budget=token_budget,
-            estimated_tokens=sum(int(result.estimated_tokens) for result in results),
-            metacognitive_assessments=[assessment.as_record() for assessment in assessments],
-            metacognition_mode="shadow",
-        )
-        memories = [result.as_dict() for result in results]
-        assessment_by_id = {assessment.memory_id: assessment for assessment in assessments}
-        trace_candidates: list[dict[str, Any]] = []
-        for raw in diagnostics.candidate_decisions:
-            candidate = dict(raw)
-            assessment = assessment_by_id.get(str(candidate.get("memory_id") or ""))
-            if assessment:
-                candidate["metacognition"] = {
-                    "decision": assessment.decision,
-                    "calibrated_probability": assessment.calibrated_probability,
-                    "reason": assessment.reason,
-                    "applied": False,
-                }
-            trace_candidates.append(candidate)
-        for memory in memories:
-            assessment = assessment_by_id.get(str(memory["id"]))
-            if assessment:
-                memory["metacognition"] = assessment.as_record()
-            self.store.log_access(
-                str(memory["id"]),
-                "selected",
+        with self.store.transaction():
+            task_id = self.store.create_usage_batch(
+                items,
                 query=query,
                 session_id=session_id,
-                score=float(memory["score"]),
+                task_type=task_type,
+                recall_mode="external_adapter",
+                requested_budget=token_budget,
+                estimated_tokens=sum(int(result.estimated_tokens) for result in results),
+                metacognitive_assessments=[assessment.as_record() for assessment in assessments],
+                metacognition_mode="shadow",
             )
-        estimated_tokens = sum(int(result.estimated_tokens) for result in results)
-        self.store.record_recall_run(
-            session_id=session_id,
-            query=query,
-            mode="external_adapter",
-            reason="adapter requested bounded memory retrieval",
-            requested_limit=limit,
-            token_budget=token_budget,
-            candidate_count=diagnostics.candidate_count,
-            selected_count=len(results),
-            estimated_tokens=estimated_tokens,
-            prepare_ms=0.0,
-            abstained=not results,
-            task_id=task_id,
-            stage_ms=dict(diagnostics.stage_ms),
-        )
-        self.store.record_memory_trace_decision(
-            task_id=task_id,
-            session_id=session_id,
-            goal=query,
-            context_summary=(
-                f"task_type={task_type}; session_scope={session_id or 'unspecified'}; "
-                f"active_project={active_project or 'unavailable'}; adapter=framework_neutral; "
-                f"requested_limit={limit}; token_budget={token_budget}"
-            ),
-            task_type=task_type,
-            recall_mode="external_adapter",
-            retrieval_used=bool(results),
-            retrieval_reason=(
-                "adapter requested bounded memory retrieval; candidates selected"
-                if results
-                else "adapter requested bounded memory retrieval; Cortex abstained"
-            ),
-            queries=[query],
-            candidate_memories=trace_candidates,
-            retrieval_context=retrieval_context.as_record(),
-        )
+            memories = [result.as_dict() for result in results]
+            assessment_by_id = {assessment.memory_id: assessment for assessment in assessments}
+            trace_candidates: list[dict[str, Any]] = []
+            for raw in diagnostics.candidate_decisions:
+                candidate = dict(raw)
+                assessment = assessment_by_id.get(str(candidate.get("memory_id") or ""))
+                if assessment:
+                    candidate["metacognition"] = {
+                        "decision": assessment.decision,
+                        "calibrated_probability": assessment.calibrated_probability,
+                        "reason": assessment.reason,
+                        "applied": False,
+                    }
+                trace_candidates.append(candidate)
+            for memory in memories:
+                assessment = assessment_by_id.get(str(memory["id"]))
+                if assessment:
+                    memory["metacognition"] = assessment.as_record()
+                self.store.log_access(
+                    str(memory["id"]),
+                    "selected",
+                    query=query,
+                    session_id=session_id,
+                    score=float(memory["score"]),
+                )
+            estimated_tokens = sum(int(result.estimated_tokens) for result in results)
+            self.store.record_recall_run(
+                session_id=session_id,
+                query=query,
+                mode="external_adapter",
+                reason="adapter requested bounded memory retrieval",
+                requested_limit=limit,
+                token_budget=token_budget,
+                candidate_count=diagnostics.candidate_count,
+                selected_count=len(results),
+                estimated_tokens=estimated_tokens,
+                prepare_ms=(time.perf_counter() - prepare_start) * 1000,
+                abstained=not results,
+                task_id=task_id,
+                stage_ms=dict(diagnostics.stage_ms),
+            )
+            self.store.record_memory_trace_decision(
+                task_id=task_id,
+                session_id=session_id,
+                goal=query,
+                context_summary=(
+                    f"task_type={task_type}; session_scope={session_id or 'unspecified'}; "
+                    f"active_project={active_project or 'unavailable'}; adapter=framework_neutral; "
+                    f"requested_limit={limit}; token_budget={token_budget}; "
+                    f"temporal_mode={temporal_mode}; as_of={as_of or 'unspecified'}; "
+                    f"graph_depth={graph_depth}; threshold={threshold}"
+                ),
+                task_type=task_type,
+                recall_mode="external_adapter",
+                retrieval_used=bool(results),
+                retrieval_reason=(
+                    "adapter requested bounded memory retrieval; candidates selected"
+                    if results
+                    else "adapter requested bounded memory retrieval; Cortex abstained"
+                ),
+                queries=[query],
+                candidate_memories=trace_candidates,
+                retrieval_context=retrieval_context.as_record(),
+            )
+        self._last_recall_ms = (time.perf_counter() - prepare_start) * 1000
         return RecallBatch(
             task_id=task_id,
             query=query,
@@ -556,6 +611,38 @@ class CortexMemory:
             _store=self.store,
             token_budget=token_budget,
         )
+
+    def preload(self, query: str, *, task_type: str = "general", **options: Any) -> bool:
+        """Warm a likely next recall in the background, without usage credit.
+
+        Use the same options as recall(). Explicit task hints are more useful
+        than guessing a future query; a context or database change forces fresh
+        retrieval. No worker starts until this method is called.
+        """
+
+        if self.retriever.recall_cache.ttl_seconds <= 0:
+            return False
+        context = RetrievalContext(
+            active_project=options.pop("active_project", None), goal=query,
+            entities=tuple(options.pop("entities", ())),
+            scope={"task_type": task_type, **dict(options.pop("scope", None) or {})},
+            system_state=dict(options.pop("system_state", None) or {}),
+            applicable_systems=tuple(options.pop("applicable_systems", ())),
+            applicable_versions=tuple(options.pop("applicable_versions", ())),
+        )
+        options.pop("session_id", None)
+        defaults = dict(limit=6, token_budget=700, include_archived=False,
+                        temporal_mode="current", as_of=None, graph_depth=1, threshold=None)
+        unknown = set(options) - defaults.keys()
+        if unknown:
+            raise TypeError(f"unknown preload options: {', '.join(sorted(unknown))}")
+        defaults.update(options)
+        return self._preloader.submit(query, {**defaults, "context": context})
+
+    def preload_stats(self) -> dict[str, Any]:
+        """Aggregate counters only; no memory content, queries, or IDs."""
+        return {"worker": self._preloader.stats(), "cache": self.retriever.recall_cache.stats(),
+                "foreground_last_ms": round(self._last_recall_ms, 3)}
 
     def record_episode(
         self,
@@ -582,6 +669,8 @@ class CortexMemory:
         return self.store.audit()
 
     def close(self) -> None:
+        self._preloader.close()
+        self.retriever.recall_cache.clear()
         self.store.close()
 
     def __enter__(self) -> CortexMemory:

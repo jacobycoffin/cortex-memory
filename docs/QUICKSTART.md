@@ -81,7 +81,7 @@ To stop it again without uninstalling:
 systemctl --user disable --now cortex-auto-judge.timer
 ```
 
-Remote candidate review is privacy-sensitive and normally billable; read [Automatic memory judge](AUTO_JUDGE.md) before opting in or changing provider, model, credential-file, threshold, or feedback settings.
+Remote candidate review is privacy-sensitive and normally billable; read [Automatic memory judge](AUTO_JUDGE.md) before opting in or changing provider, model, credential-file, threshold, or feedback settings. Engine choices (chat provider vs the Jev engine) and their rollback steps live in [JEV.md](JEV.md).
 
 The installed environment file also contains disabled-by-default switches for
 semantic consolidation, relevance pruning, adaptive reconsolidation, schema

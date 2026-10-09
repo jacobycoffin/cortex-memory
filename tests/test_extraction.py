@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.extraction import extract_candidates
 

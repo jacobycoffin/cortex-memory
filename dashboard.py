@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -136,6 +137,155 @@ def _basic_credentials(header: str | None) -> tuple[str, str] | None:
         return None
 
 
+def _auto_judge_snapshot(
+    store: CortexStore, *, now: datetime | None = None
+) -> dict[str, object]:
+    """Query the Cortex DB for auto-judge analytics and decision history."""
+    current = now or datetime.now(timezone.utc)
+    cutoff = (current.astimezone(timezone.utc).date() - timedelta(days=14)).isoformat()
+    conn = store._conn
+    data: dict[str, object] = {
+        "config": {},
+        "summary": {},
+        "recent_decisions": [],
+        "proposals": {},
+        "orphan_linking": {},
+        "edges": {},
+        "daily_decisions": [],
+    }
+    try:
+        # Config from env
+        data["config"] = {
+            "enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_ENABLED", "0") in ("1", "true", "True")),
+            "model": os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
+            "brain_mechanics_model": os.environ.get(
+                "CORTEX_BRAIN_MECHANICS_MODEL",
+                os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
+            ),
+            "brain_mechanics_timeout_seconds": os.environ.get(
+                "CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS",
+                os.environ.get("CORTEX_AUTO_JUDGE_TIMEOUT_SECONDS", "45"),
+            ),
+            "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
+            "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
+            "consolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_CONSOLIDATE", "false"),
+            "pruning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_PRUNE", "false"),
+            "reconsolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_RECONSOLIDATE", "false"),
+            "schemas_enabled": os.environ.get("CORTEX_AUTO_JUDGE_SCHEMAS", "false"),
+            "weight_tuning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_TUNE_WEIGHTS", "false"),
+            "lability_minutes": os.environ.get("CORTEX_LABILITY_WINDOW_MINUTES", "30"),
+        }
+        # Summary stats
+        summary = dict(conn.execute("""
+            SELECT
+                COUNT(CASE WHEN action='remember' THEN 1 END) AS remembered,
+                COUNT(CASE WHEN action='reject' THEN 1 END) AS rejected,
+                COUNT(CASE WHEN action='evidence_only' THEN 1 END) AS evidence_only,
+                COUNT(*) AS total
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+        """).fetchone())
+        summary["deferred"] = conn.execute("""
+            SELECT COUNT(*) FROM memory_creation_proposals
+            WHERE status='pending' OR status='needs_context'
+        """).fetchone()[0]
+        data["summary"] = dict(summary)
+
+        # Recent decisions
+        recent = conn.execute("""
+            SELECT review_id, item_type, action, decision_scope, created_at, reason_text
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+            ORDER BY created_at DESC LIMIT 20
+        """).fetchall()
+        data["recent_decisions"] = [
+            {
+                "review_id": r[0],
+                "item_type": r[1],
+                "action": r[2],
+                "scope": r[3],
+                "created_at": r[4],
+                "reason": (r[5] or "")[:120],
+            }
+            for r in recent
+        ]
+
+        # Proposal pipeline funnel
+        funnel = dict(conn.execute("""
+            SELECT
+                COUNT(*) AS total,
+                COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
+                COUNT(CASE WHEN status='needs_context' THEN 1 END) AS needs_context,
+                COUNT(CASE WHEN status='remembered' THEN 1 END) AS remembered,
+                COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected,
+                COUNT(CASE WHEN status='evidence_only' THEN 1 END) AS evidence_only
+            FROM memory_creation_proposals
+        """).fetchone())
+        data["proposals"] = dict(funnel)
+
+        # Orphan linking stats
+        total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        total_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
+        orphans = conn.execute("""
+            SELECT COUNT(*) FROM memories m
+            WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
+            AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
+        """).fetchone()[0]
+        data["orphan_linking"] = {
+            "total_memories": total_memories,
+            "total_edges": total_edges,
+            "orphan_memories": orphans,
+            "linked_percentage": round((total_memories - orphans) / max(total_memories, 1) * 100, 1),
+        }
+
+        # Edge type breakdown
+        edge_relations = conn.execute("""
+            SELECT relation, COUNT(*) AS cnt
+            FROM edges GROUP BY relation ORDER BY cnt DESC
+        """).fetchall()
+        data["edges"]["by_relation"] = {r[0]: r[1] for r in edge_relations}
+        data["edges"]["total"] = total_edges
+
+        # Daily decision counts (last 14 days)
+        daily = conn.execute("""
+            SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
+            FROM operator_review_decisions
+            WHERE actor LIKE 'cortex-auto-judge%'
+              AND created_at >= ?
+            GROUP BY DATE(created_at), action
+            ORDER BY day
+        """, (cutoff,)).fetchall()
+        # Array triples [day, action, count]: the dashboard chart reads
+        # positions, and raw sqlite Rows are not JSON-serializable --
+        # json.dumps(default=str) would degrade them to opaque reprs.
+        data["daily_decisions"] = [
+            [str(row[0]), str(row[1]), int(row[2])] for row in daily
+        ]
+
+    except Exception as exc:
+        data["_error"] = str(exc)
+    return data
+
+
+def _normalize_allowed_hosts(value: str) -> set[str]:
+    """Parse a comma-separated ``Host`` allowlist, dropping ports and case.
+
+    ``"127.0.0.1, LocalHost:8100, [::1]:9"`` -> ``{"127.0.0.1", "localhost",
+    "[::1]"}``. An empty value yields an empty set, which disables enforcement.
+    """
+
+    normalized: set[str] = set()
+    for entry in (value or "").split(","):
+        host = entry.strip().casefold()
+        if not host:
+            continue
+        # IPv6 literals keep their brackets: "[::1]:8100" -> "[::1]".
+        host = host.split("]", 1)[0] + "]" if host.startswith("[") else host.split(":", 1)[0]
+        if host:
+            normalized.add(host)
+    return normalized
+
+
 def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool = True) -> None:
     """Serve the dashboard on localhost until interrupted.
 
@@ -183,6 +333,15 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         for ip in os.environ.get("CORTEX_DASHBOARD_TRUSTED_PROXIES", "").split(",")
         if ip.strip()
     }
+    # Host allowlist: DNS rebinding makes an attacker's page same-origin with
+    # this server (their hostname resolves to 127.0.0.1), which defeats both the
+    # same-origin policy and the `X-Cortex-Request` header the POST paths check —
+    # the browser sends `Host: <attacker domain>` and the custom header is a
+    # same-origin request from the page's point of view. Validating `Host` is the
+    # defense. Enforcement is OPT-IN because a dashboard behind a reverse proxy
+    # or tunnel legitimately receives its public hostname here; list every host
+    # you serve, e.g. CORTEX_DASHBOARD_ALLOWED_HOSTS="127.0.0.1,localhost,brain.example.com".
+    allowed_hosts = _normalize_allowed_hosts(os.environ.get("CORTEX_DASHBOARD_ALLOWED_HOSTS", ""))
     sleep_lock = threading.RLock()
     sleep_runtime: dict[str, object] = {
         "status": "idle",
@@ -364,130 +523,29 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             store.fail_evaluation_run(run_id, str(error))
 
 
-    def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
-        """Query the Cortex DB for auto-judge analytics and decision history."""
-        conn = store._conn
-        now = utc_now()
-        data: dict[str, object] = {
-            "config": {},
-            "summary": {},
-            "recent_decisions": [],
-            "proposals": {},
-            "orphan_linking": {},
-            "edges": {},
-        }
-        try:
-            # Config from env
-            data["config"] = {
-                "enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_ENABLED", "0") in ("1", "true", "True")),
-                "model": os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
-                "brain_mechanics_model": os.environ.get(
-                    "CORTEX_BRAIN_MECHANICS_MODEL",
-                    os.environ.get("CORTEX_AUTO_JUDGE_MODEL", "not set"),
-                ),
-                "brain_mechanics_timeout_seconds": os.environ.get(
-                    "CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS",
-                    os.environ.get("CORTEX_AUTO_JUDGE_TIMEOUT_SECONDS", "45"),
-                ),
-                "endpoint": os.environ.get("CORTEX_AUTO_JUDGE_ENDPOINT", "not set"),
-                "links_enabled": bool(os.environ.get("CORTEX_AUTO_JUDGE_LINKS_ENABLED", "0") in ("1", "true", "True")),
-                "consolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_CONSOLIDATE", "false"),
-                "pruning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_PRUNE", "false"),
-                "reconsolidation_enabled": os.environ.get("CORTEX_AUTO_JUDGE_RECONSOLIDATE", "false"),
-                "schemas_enabled": os.environ.get("CORTEX_AUTO_JUDGE_SCHEMAS", "false"),
-                "weight_tuning_enabled": os.environ.get("CORTEX_AUTO_JUDGE_TUNE_WEIGHTS", "false"),
-                "lability_minutes": os.environ.get("CORTEX_LABILITY_WINDOW_MINUTES", "30"),
-            }
-            # Summary stats
-            summary = dict(conn.execute("""
-                SELECT
-                    COUNT(CASE WHEN action='remember' THEN 1 END) AS remembered,
-                    COUNT(CASE WHEN action='reject' THEN 1 END) AS rejected,
-                    COUNT(CASE WHEN action='evidence_only' THEN 1 END) AS evidence_only,
-                    COUNT(*) AS total
-                FROM operator_review_decisions
-                WHERE actor LIKE 'cortex-auto-judge%'
-            """).fetchone())
-            summary["deferred"] = conn.execute("""
-                SELECT COUNT(*) FROM memory_creation_proposals
-                WHERE status='pending' OR status='needs_context'
-            """).fetchone()[0]
-            data["summary"] = dict(summary)
-
-            # Recent decisions
-            recent = conn.execute("""
-                SELECT review_id, item_type, action, decision_scope, created_at, reason_text
-                FROM operator_review_decisions
-                WHERE actor LIKE 'cortex-auto-judge%'
-                ORDER BY created_at DESC LIMIT 20
-            """).fetchall()
-            data["recent_decisions"] = [
-                {
-                    "review_id": r[0],
-                    "item_type": r[1],
-                    "action": r[2],
-                    "scope": r[3],
-                    "created_at": r[4],
-                    "reason": (r[5] or "")[:120],
-                }
-                for r in recent
-            ]
-
-            # Proposal pipeline funnel
-            funnel = dict(conn.execute("""
-                SELECT
-                    COUNT(*) AS total,
-                    COUNT(CASE WHEN status='pending' THEN 1 END) AS pending,
-                    COUNT(CASE WHEN status='needs_context' THEN 1 END) AS needs_context,
-                    COUNT(CASE WHEN status='remembered' THEN 1 END) AS remembered,
-                    COUNT(CASE WHEN status='rejected' THEN 1 END) AS rejected,
-                    COUNT(CASE WHEN status='evidence_only' THEN 1 END) AS evidence_only
-                FROM memory_creation_proposals
-            """).fetchone())
-            data["proposals"] = dict(funnel)
-
-            # Orphan linking stats
-            total_memories = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
-            total_edges = conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0]
-            orphans = conn.execute("""
-                SELECT COUNT(*) FROM memories m
-                WHERE m.id NOT IN (SELECT DISTINCT src_id FROM edges)
-                AND m.id NOT IN (SELECT DISTINCT dst_id FROM edges)
-            """).fetchone()[0]
-            data["orphan_linking"] = {
-                "total_memories": total_memories,
-                "total_edges": total_edges,
-                "orphan_memories": orphans,
-                "linked_percentage": round((total_memories - orphans) / max(total_memories, 1) * 100, 1),
-            }
-
-            # Edge type breakdown
-            edge_relations = conn.execute("""
-                SELECT relation, COUNT(*) AS cnt
-                FROM edges GROUP BY relation ORDER BY cnt DESC
-            """).fetchall()
-            data["edges"]["by_relation"] = {r[0]: r[1] for r in edge_relations}
-            data["edges"]["total"] = total_edges
-
-            # Daily decision counts (last 14 days)
-            daily = conn.execute("""
-                SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
-                FROM operator_review_decisions
-                WHERE actor LIKE 'cortex-auto-judge%'
-                  AND created_at >= DATE('now', '-14 days')
-                GROUP BY DATE(created_at), action
-                ORDER BY day
-            """).fetchall()
-            data["daily_decisions"] = daily
-
-        except Exception as exc:
-            data["_error"] = str(exc)
-        return data
-
-
     class Handler(BaseHTTPRequestHandler):
+        def _host_allowed(self) -> bool:
+            """True when the request's ``Host`` header is acceptable.
+
+            Rebinding defense (see ``allowed_hosts`` above): enforcement is
+            active only when the operator configured an allowlist.
+            """
+
+            if not allowed_hosts:
+                return True
+            header = (self.headers.get("Host") or "").strip()
+            host = (
+                header.split("]", 1)[0] + "]"
+                if header.startswith("[")
+                else header.split(":", 1)[0]
+            ).casefold()
+            return host in allowed_hosts
+
         def do_HEAD(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._headers_only(HTTPStatus.FORBIDDEN, "application/json; charset=utf-8", 0)
+                return
             if parsed.path == "/":
                 self._headers_only(HTTPStatus.OK, "text/html; charset=utf-8", len(html))
                 return
@@ -515,6 +573,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
         def do_GET(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._json(HTTPStatus.FORBIDDEN, {"error": "host not allowed"})
+                return
             if parsed.path == "/":
                 self._send(HTTPStatus.OK, "text/html; charset=utf-8", html)
                 return
@@ -545,13 +606,6 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 snapshot["sleep_runtime"] = sleep_status()
                 snapshot["sleep_schedule"] = sleep_schedule()
                 snapshot["auto_judge"] = _auto_judge_snapshot(store)
-                snapshot["semantic_consolidation"] = store.semantic_consolidation_snapshot()
-                snapshot["adaptive_pruning"] = store.adaptive_pruning_snapshot()
-                snapshot["scoring_weights"] = store.scoring_weight_snapshot()
-                snapshot["adaptive_reconsolidation"] = (
-                    store.adaptive_reconsolidation_snapshot()
-                )
-                snapshot["schema_formation"] = store.schema_formation_snapshot()
                 self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/sleep/status":
@@ -675,6 +729,9 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
 
         def do_POST(self) -> None:  # noqa: N802 - stdlib handler API
             parsed = urlparse(self.path)
+            if not self._host_allowed():
+                self._json(HTTPStatus.FORBIDDEN, {"error": "host not allowed"})
+                return
             allowed_paths = {
                 "/api/auth/login",
                 "/api/auth/change-password",
@@ -1516,20 +1573,6 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 recent.append(now)
                 failed_logins[client] = recent
                 return True
-
-        def _throttle_ok(self) -> bool:
-            """True if this client is under the failed-attempt limit (no record kept)."""
-            client = self._client_key()
-            now = time.monotonic()
-            with failed_logins_lock:
-                recent = [stamp for stamp in failed_logins.get(client, []) if now - stamp < 300]
-                failed_logins[client] = recent
-                return len(recent) < 8
-
-        def _throttle_record(self) -> None:
-            client = self._client_key()
-            with failed_logins_lock:
-                failed_logins.setdefault(client, []).append(time.monotonic())
 
         def _throttle_clear(self) -> None:
             with failed_logins_lock:

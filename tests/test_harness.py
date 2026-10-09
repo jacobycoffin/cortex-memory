@@ -3,11 +3,13 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 from tests._bootstrap import ROOT  # noqa: F401
 
 from cortex import CortexMemoryProvider
+from cortex.cognition import plan_recall
 from cortex.harness import (
     CORTEX_BOOTSTRAP_POINTER,
     CortexHarnessAdapter,
@@ -81,6 +83,54 @@ class CortexHarnessContractTests(unittest.TestCase):
                     force_recall=True,
                 )
                 self.assertIn(str(reviewed["memory_id"]), recalled.memory_ids)
+
+    def test_portable_adapter_executes_historical_and_deep_recall_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexHarnessAdapter(Path(tmp) / "cortex.db") as adapter:
+                old_id, _ = adapter.memory.store.add_memory(
+                    "The Example dashboard used port 8123 in 2024.",
+                    kind="operational",
+                    valid_from="2024-01-01T00:00:00+00:00",
+                    valid_to="2024-12-31T23:59:59+00:00",
+                )
+                current_id, _ = adapter.memory.store.add_memory(
+                    "The Example dashboard uses port 8456 now.",
+                    kind="operational",
+                    valid_from="2025-01-01T00:00:00+00:00",
+                    supersedes_id=old_id,
+                )
+                query = "Why did our Example dashboard port change during 2024?"
+                plan = plan_recall(query)
+                with patch.object(
+                    adapter.memory.retriever,
+                    "search_detailed",
+                    wraps=adapter.memory.retriever.search_detailed,
+                ) as search:
+                    historical = adapter.before_turn(query)
+                self.assertEqual(search.call_args.kwargs["temporal_mode"], "historical")
+                self.assertEqual(search.call_args.kwargs["as_of"], plan.as_of)
+                self.assertEqual(search.call_args.kwargs["graph_depth"], 2)
+                self.assertEqual(search.call_args.kwargs["threshold"], plan.threshold)
+                self.assertEqual(historical.memory_ids[0], old_id)
+                historical.finish([old_id])
+                current = adapter.before_turn("What is our current Example dashboard port?")
+                self.assertEqual(current.memory_ids[0], current_id)
+                current.finish([current_id])
+
+    def test_portable_adapter_uses_plan_threshold_for_lean_recall(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with CortexHarnessAdapter(Path(tmp) / "cortex.db") as adapter:
+                query = "release theme"
+                plan = plan_recall(query)
+                with patch.object(
+                    adapter.memory.retriever,
+                    "search_detailed",
+                    wraps=adapter.memory.retriever.search_detailed,
+                ) as search:
+                    turn = adapter.before_turn(query)
+                self.assertEqual(plan.mode, "lean")
+                self.assertEqual(search.call_args.kwargs["threshold"], plan.threshold)
+                turn.finish()
 
     def test_hermes_adapter_injects_the_same_primary_memory_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

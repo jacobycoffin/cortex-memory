@@ -44,7 +44,7 @@ Metrics:
 | p50/p95 query latency | Median and tail retrieval overhead, excluding indexing and model inference. |
 | Approximate context tokens | `ceil(characters / 4)` for portable comparison; not provider billing tokens. |
 
-The checked-in 0.2 result is saved as a [human-readable report](../benchmark-results/cortex-v020-retrieval.md) with its [raw JSON](../benchmark-results/cortex-v020-retrieval.json). The fixture deliberately gives each project eight competing attributes, so matching the project alone is insufficient and paraphrase cases are harder for FTS-only retrieval. Cortex achieved 99.0%, 98.5%, and 99.5% recall@6 as the corpus grew, with MRR between 0.947 and 0.985, 12.0–34.0 ms p95 retrieval, and roughly 173 median context tokens. The built-in 2,200-character snapshot held 18 synthetic facts and covered 18.0%, 3.0%, and 1.5% of the sampled questions. These results are a capacity/retrieval finding, not yet an inference-speed finding. An earlier [comparison run](../benchmark-results/cortex-compare-20260713T123444Z.md) is included as a cross-check.
+The checked-in 0.2 result is saved as a [human-readable report](../benchmark-results/cortex-v020-retrieval.md) with its [raw JSON](../benchmark-results/cortex-v020-retrieval.json). The fixture deliberately gives each project eight competing attributes, so matching the project alone is insufficient and paraphrase cases are harder for FTS-only retrieval. Cortex achieved 99.0%, 98.5%, and 99.5% recall@6 as the corpus grew, with MRR between 0.947 and 0.985, 12.0–34.0 ms p95 retrieval, and roughly 173 median context tokens. The September 2026 VPS rerun ([report](../benchmark-results/cortex-v030-retrieval.md), [raw JSON](../benchmark-results/cortex-v030-retrieval.json)) reproduced 100.0%, 98.5%, and 99.5% recall@6 with MRR 0.961–0.985 and the same ≈173-token median context; its p95 retrieval was 27.7–85.7 ms, with a visibly higher 2,000-memory tail than the July macOS run. The built-in 2,200-character snapshot held 18 synthetic facts and covered 18.0%, 3.0%, and 1.5% of the sampled questions. These results are a capacity/retrieval finding, not yet an inference-speed finding. An earlier [comparison run](../benchmark-results/cortex-compare-20260713T123444Z.md) is included as a cross-check.
 
 ### Dashboard standard suite
 
@@ -75,7 +75,7 @@ python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
 
 This compares fixed verbose context, fixed compact context, and adaptive compact context on the same database and mixed workload. It reports approximate memory-context tokens, zero-context rate, labeled answer availability, and local preparation latency. It does not call a model.
 
-The checked-in 0.2 run used 500 memories and 62 mixed queries. Adaptive compact recall used 21.7% fewer approximate memory-context tokens than fixed verbose recall while preserving the same labeled answer-context recall in that sample. This is a prompt-preparation result, not evidence of faster inference. See [the report](../benchmark-results/cortex-adaptive-v020.md) and [raw JSON](../benchmark-results/cortex-adaptive-v020.json).
+The checked-in 0.2 run (July 2026) used 500 memories and 62 mixed queries and measured 21.7% fewer approximate memory-context tokens than fixed verbose recall at the same labeled answer-context recall. The September 2026 VPS rerun ([report](../benchmark-results/cortex-v030-adaptive.md), [raw JSON](../benchmark-results/cortex-v030-adaptive.json)) measured **16.4% fewer tokens** (16,844 → 14,087) at unchanged 100% labeled answer-context recall on the same mixed workload. This is a prompt-preparation result, not evidence of faster inference.
 
 ## Test 3: paired end-to-end model latency
 
@@ -124,7 +124,18 @@ python3 scripts/benchmark_aggregate.py \
 
 The aggregate reports every run, pooled medians, and a hierarchical bootstrap interval that resamples both runs and paired questions.
 
-### July 13, 2026 VPS result
+### September 2026 VPS result (current)
+
+The September rerun used `deepseek-chat` through its direct API, a 500-memory synthetic corpus, `adaptive_compact` recall, `additive` mode, and 30 paired questions (60 model requests). See the [report](../benchmark-results/cortex-vs-builtin-e2e-20260910.md) and [raw JSON](../benchmark-results/cortex-vs-builtin-e2e-20260910.json).
+
+| Condition | Accuracy | Answer available | Median prompt tokens | p50 whole-agent TTFT | p95 whole-agent TTFT | p50 whole-agent total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hermes built-in bounded snapshot | 3.3% | 3.3% | 605 | 845.0 ms | 1,280.8 ms | 919.0 ms |
+| Built-in + Cortex | 90.0% | 96.7% | 908 | 841.3 ms | 1,007.4 ms | 935.1 ms |
+
+Cortex's own memory preparation took 23.9 ms at p50. The paired median Cortex-minus-default whole-agent TTFT was -42.1 ms (mean bootstrap 95% CI: -132.4 to +24.9 ms), and the paired median total-latency difference was -23.0 ms (CI: -131.9 to +33.3 ms). Both intervals cross zero, so this run supports **no clear latency difference**, not a raw-speed improvement. Cortex used 50.1% more median prompt tokens to make the needed memory available and produced an 86.7-percentage-point answer-accuracy gain.
+
+### July 13, 2026 VPS result (earlier run)
 
 The faithful additive test used `tencent/hy3:free` through OpenRouter, a 500-memory synthetic corpus, three independently seeded runs, and 30 paired questions per run (90 pairs / 180 model requests total). It retained Hermes's built-in memory in both conditions and changed only whether Cortex guidance and retrieved evidence were available.
 
@@ -187,6 +198,45 @@ Use a paired agent test with isolated profiles:
 
 Measure first-tool accuracy, attempts before success, tool-error rate, task completion rate, total latency, and tokens. Also include cross-category negative controls: web-search experience must not alter a filesystem recommendation. Human reviewers should score task completion while blinded to the condition.
 
+## Test 7: judge-engine A/B (Jev vs chat fallback)
+
+Swapping the decision engine must be measured on **identical inputs**. The
+reference method (2026-09-18) snapshots the live database, derives an identical
+engineered orphan set in two copies (both arms must print the same
+`target_hash`), and runs the same command against each:
+
+```bash
+# per copy: engineer the same orphans deterministically, then time the pass
+python3 make_orphans.py <abs/path/copy-a.db>   # prints target_hash
+CORTEX_DB=<abs/path/copy-a.db> python3 -m cortex.cli auto-judge --link-orphans
+
+# arm B: same orphans, previous engine
+python3 make_orphans.py <abs/path/copy-b.db>   # target_hash must match
+CORTEX_DB=<abs/path/copy-b.db> CORTEX_AUTO_JUDGE_LINK_ENGINE=chat \
+  python3 -m cortex.cli auto-judge --link-orphans
+```
+
+Measured on 30 identical orphans (VPS, 2026-09-18):
+
+| Metric | Jev engine | Chat fallback |
+|---|---|---|
+| Full pass, wall | **13.8 s** | 26.9 s |
+| Orphans linked | 28/30 | 27/30 |
+| Edges created | 38 | 49 |
+| Per-judgment p50 | 0.374 s | 0.772 s |
+| 8-judgment burst, wall | 0.52 s | 1.00 s |
+| ≈ cost per 1,000 judgments | $0.033 | $0.058 |
+
+Admission-side replays over the recorded September corpus: **96.3%** (Jev) vs
+93.6% (chat) binary agreement on the current-judge slice (93.4% vs 89.4% over
+all decisions). Link re-creation at the shipped gate of 0.65 (400-pair replay):
+operator edges 90.9%, auto-judge edges 84.0%, random-pair false links 3.3%.
+
+> Historical note: earlier "~7–8 minutes per orphan pass" figures described the
+> flash-free-model era (3 orphans per batch, 30–45 s per batch). The current
+> chat fallback measures ~27 s for the same pass — quote the A/B, not the
+> folklore.
+
 ## Claim checklist before posting
 
 - Name the baseline precisely: `Hermes built-in bounded snapshot`, not “no memory.”
@@ -198,4 +248,5 @@ Measure first-tool accuracy, attempts before success, tool-error rate, task comp
 - Say when tokens are approximate.
 - Publish the script and raw aggregate JSON.
 - Call synthetic evidence synthetic.
+- For engine comparisons, state both engines, their gates/thresholds, and that both arms saw identical inputs (matched `target_hash`).
 - Avoid “brain-like,” “self-healing,” or “faster inference” as a proven claim unless the corresponding test supports it.

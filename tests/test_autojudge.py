@@ -3,10 +3,10 @@ from __future__ import annotations
 import io
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
-import time
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
@@ -14,13 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.autojudge import (
     AutoJudge,
     AutoJudgeConfig,
     AutoJudgeError,
     _LINKS_EDGE_WEIGHT,
+    _SYSTEM_PROMPT,
     _apply_contradiction_edges,
     _apply_links,
     _parse_batch_links,
@@ -32,7 +33,6 @@ from cortex.cli import main as cli_main
 from cortex.store import (
     SCHEMA_VERSION,
     CortexStore,
-    StaleCreationProposalError,
     creation_proposal_revision,
 )
 
@@ -155,6 +155,74 @@ class AutoJudgeTests(unittest.TestCase):
                 {},
                 "https://other.example/target",
             )
+
+    def test_opencode_endpoints_get_a_stable_session_header(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with patch("cortex.autojudge.urllib.request.build_opener", return_value=opener):
+            _post_chat(
+                "https://opencode.ai/zen/go/v1/chat/completions",
+                "synthetic-key",
+                {"model": "deepseek-v4.1-flash"},
+                5.0,
+            )
+
+        request = opener.open.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertEqual(headers.get("x-opencode-session"), "cortex-auto-judge")
+
+    def test_other_endpoints_get_no_opencode_session_header(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with patch("cortex.autojudge.urllib.request.build_opener", return_value=opener):
+            _post_chat(
+                "https://provider.example/v1/chat/completions",
+                "synthetic-key",
+                {"model": "synthetic"},
+                5.0,
+            )
+
+        request = opener.open.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        self.assertNotIn("x-opencode-session", headers)
+
+    def test_opencode_reasoning_effort_env_applies_only_to_opencode(self) -> None:
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = json.dumps({"model": "synthetic"}).encode("utf-8")
+        opener = MagicMock()
+        opener.open.return_value = response
+
+        with (
+            patch.dict(os.environ, {"CORTEX_OPENCODE_REASONING_EFFORT": "low"}, clear=False),
+            patch("cortex.autojudge.urllib.request.build_opener", return_value=opener),
+        ):
+            _post_chat(
+                "https://opencode.ai/zen/go/v1/chat/completions",
+                "synthetic-key",
+                {"model": "deepseek-v4.1-flash"},
+                5.0,
+            )
+            body = json.loads(opener.open.call_args.args[0].data)
+            self.assertEqual(body.get("reasoning_effort"), "low")
+
+            opener.open.reset_mock()
+            _post_chat(
+                "https://api.example.com/v1/chat/completions",
+                "synthetic-key",
+                {"model": "synthetic"},
+                5.0,
+            )
+            body = json.loads(opener.open.call_args.args[0].data)
+            self.assertNotIn("reasoning_effort", body)
 
     def test_keep_creates_honestly_labeled_reversible_memory(self) -> None:
         proposal = self.store.propose_memory_creation(
@@ -1153,8 +1221,9 @@ class AutoJudgeTests(unittest.TestCase):
         """With links_enabled=True, the system prompt includes link instructions."""
         config = self.config(links_enabled=True)
         judge = AutoJudge(config)
-        # The prompt selection happens at runtime — verify config reads correctly
-        self.assertTrue(config.links_enabled)
+        prompt = judge.base_system_prompt()
+        self.assertIn("knowledge-graph linker", prompt)
+        self.assertLess(len(_SYSTEM_PROMPT), len(prompt))
 
     def test_apply_links_creates_edges(self) -> None:
         """_apply_links creates edges and edge_evidence for valid links."""
@@ -1562,6 +1631,131 @@ class AutoJudgeTests(unittest.TestCase):
             "SELECT * FROM edges WHERE relation='contradicts'"
         ).fetchone()
         self.assertIsNotNone(edge)
+
+
+    def test_unanswered_candidates_are_rotated_instead_of_re_billed(self) -> None:
+        """A provider that answers nothing must not be paid for the same batch twice.
+
+        Regression (2026-09-14): only explicitly deferred candidates advanced the
+        deferral rotation, so a valid-but-empty `decisions` array left every
+        candidate in place. Measured: three runs sent a byte-identical payload and
+        billed 905 tokens each, with zero applied and zero deferred — and the
+        auto-judge timer runs every 5 minutes, so that is the same call re-billed
+        all day. Candidates the provider accepted but never answered are now
+        rotated like explicit deferrals.
+        """
+        for index in range(3):
+            self.store.propose_memory_creation(
+                f"Project Acorn deployment checklist item {index} requires a verified backup.",
+                kind="procedure",
+                source_type="user_turn",
+                source_category="USER_STATED",
+                session_id=f"session-{index}",
+                confidence=0.88,
+                importance=0.86,
+            )
+        sends: list[list[str]] = []
+
+        def silent_provider(_endpoint, _key, payload, _timeout):
+            candidates = json.loads(payload["messages"][1]["content"])["candidates"]
+            sends.append(sorted(str(candidate["proposal_id"]) for candidate in candidates))
+            return {
+                "choices": [{"message": {"content": '{"decisions":[]}'}}],
+                "usage": {"prompt_tokens": 900, "completion_tokens": 5, "total_tokens": 905},
+            }
+
+        first = AutoJudge(self.config(), provider_call=silent_provider).run(self.store)
+        self.assertEqual(first.get("unanswered"), 3, "the report must show the unanswered batch")
+        self.assertEqual(first["applied"], 0)
+        self.assertEqual(len(sends), 1)
+
+        second = AutoJudge(self.config(), provider_call=silent_provider).run(self.store)
+        self.assertEqual(second["applied"], 0)
+        self.assertEqual(
+            len(sends),
+            1,
+            "the identical paid batch was offered again instead of being rotated",
+        )
+
+
+    def test_failed_chunk_rotates_the_batch_it_already_paid_for(self) -> None:
+        """An aborted run must not re-bill the chunks it already sent.
+
+        Regression (2026-09-14): a provider failure on chunk 2 raised before the
+        apply and rotation steps, so the next run re-sent chunk 1 — the one that
+        had already succeeded and been billed. Nothing is applied on a failed run
+        (that remains true); the batch is simply rotated so the next run offers
+        different candidates.
+        """
+        # Two chunks: the judge sends 10 candidates per call.
+        for index in range(12):
+            self.store.propose_memory_creation(
+                f"Project Acorn batch item {index} needs a verified backup checklist.",
+                kind="procedure",
+                source_type="user_turn",
+                source_category="USER_STATED",
+                session_id=f"session-{index}",
+                confidence=0.88,
+                importance=0.86,
+            )
+        sends: list[list[str]] = []
+
+        def flaky_provider(_endpoint, _key, payload, _timeout):
+            candidates = json.loads(payload["messages"][1]["content"])["candidates"]
+            ids = sorted(str(candidate["proposal_id"]) for candidate in candidates)
+            sends.append(ids)
+            # Deterministic per payload: the later chunk (items 10-11) always
+            # fails, so the "first call succeeds" assumption cannot leak from one
+            # run into the next.
+            later_chunk = any(
+                (match := re.search(r"batch item (\d+)", str(candidate.get("content", ""))))
+                and int(match.group(1)) >= 10
+                for candidate in candidates
+            )
+            if later_chunk:
+                raise RuntimeError("synthetic provider failure on chunk 2")
+            return {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "decisions": [
+                                        {
+                                            "proposal_id": proposal_id,
+                                            "action": "remember",
+                                            "confidence": 0.93,
+                                            "reason": "Stable reusable procedure.",
+                                        }
+                                        for proposal_id in ids
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ],
+                "usage": {"total_tokens": 500},
+            }
+
+        with self.assertRaises(AutoJudgeError):
+            AutoJudge(self.config(max_proposals=12), provider_call=flaky_provider).run(self.store)
+
+        first_chunk = list(sends[0])
+        self.assertEqual(len(first_chunk), 10, "the first chunk must be the paid one")
+        with self.store._lock:
+            remembered = self.store._conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_creation_proposals WHERE status='remembered'"
+            ).fetchone()["n"]
+        self.assertEqual(remembered, 0, "a failed run must not apply the paid chunk")
+
+        sends.clear()
+        AutoJudge(self.config(max_proposals=12), provider_call=flaky_provider).run(self.store)
+        resent = set(first_chunk) & {proposal_id for batch in sends for proposal_id in batch}
+        self.assertEqual(
+            resent,
+            set(),
+            "the already-paid chunk was offered again instead of being rotated",
+        )
 
 
 if __name__ == "__main__":

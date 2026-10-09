@@ -22,6 +22,7 @@ This phase makes Cortex easier to evaluate and teaches it to spend context accor
 
 | Workstream | Status | Acceptance evidence |
 | --- | --- | --- |
+| Recall efficiency and speculative preparation | Batched scoring/ledger work and schema-34 covering index implemented; bounded local warming remains opt-in. | Synthetic ranking parity, atomic logs, index upgrade, invalidation, and worker lifecycle tests; paired latency/quality reports. Prediction hit rate and model-facing task benefit still require representative evaluation. See [PERFORMANCE.md](PERFORMANCE.md). |
 | Outcome & Causality Lab | Implemented; operator labeling active | Used recall tasks accept one audited, reversible outcome; label coverage and observed helpfulness stay separate from causal claims. |
 | Structured memory tracing | Initial task ledger implemented; longitudinal review active | Every adapter recall or abstention records candidate components, reasons, influence, rating, storage action, and append-only JSONL events without hidden reasoning. |
 | Explicit applicability and storage preflight | Implemented; longitudinal false-positive review active | Project/scope/precondition/system mismatches hard-gate dependent memories; automatic writes record reuse, durability, duplicate, contradiction, and comprehensibility decisions. |
@@ -113,12 +114,12 @@ of done, not as a result.
 
 ## Dashboard feedback controls
 
-Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. The `testing` branch now includes a unified Review Inbox and guided Kaya Training path. It includes:
+Human feedback such as **helpful**, **wrong**, **outdated**, **important**, and **forget** is valuable, but it changes memory state. The `testing` branch now includes a unified Review Inbox and guided Cortex Training path. It includes:
 
 - authenticated signed sessions and same-origin request verification;
 - explicit confirmation before an archive, confirmation, supersession, or contextual relationship;
 - preserved versions, lifecycle events, provenance, and maintenance-log audit records;
-- per-review reach that separates one-off actions, eligible exact-duplicate cleanup, and explicit Teach Kaya policy evidence;
+- per-review reach that separates one-off actions, eligible exact-duplicate cleanup, and explicit Teach Cortex policy evidence;
 - request-size bounds and no hard-delete operation;
 - typed review evidence, explainable policy compilation, stored-evidence replay, shadow observation, explicit promotion, and active-version rollback;
 - `CORTEX_DASHBOARD_REVIEWS=1` as an explicit switch that leaves the dashboard read-only by default.

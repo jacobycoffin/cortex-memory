@@ -129,11 +129,20 @@ def run_due_brain_mechanics(
 
 
 def brain_mechanics_config(config: AutoJudgeConfig) -> AutoJudgeConfig:
-    """Apply optional provider overrides shared by every mechanics pass."""
+    """Apply optional provider overrides shared by every mechanics pass.
+
+    Supported env: CORTEX_BRAIN_MECHANICS_MODEL, CORTEX_BRAIN_MECHANICS_ENDPOINT,
+    CORTEX_BRAIN_MECHANICS_API_KEY_ENV, CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS.
+    The endpoint/key overrides let mechanics run on a different provider than
+    the admission judge (e.g. OpenCode Go serving deepseek-v4.1-flash) while
+    keeping every other pass untouched.
+    """
 
     model = os.environ.get("CORTEX_BRAIN_MECHANICS_MODEL", "").strip()
+    endpoint = os.environ.get("CORTEX_BRAIN_MECHANICS_ENDPOINT", "").strip()
+    api_key_env = os.environ.get("CORTEX_BRAIN_MECHANICS_API_KEY_ENV", "").strip()
     timeout_raw = os.environ.get("CORTEX_BRAIN_MECHANICS_TIMEOUT_SECONDS", "").strip()
-    if not model and not timeout_raw:
+    if not model and not timeout_raw and not endpoint and not api_key_env:
         return config
     timeout_seconds = config.timeout_seconds
     if timeout_raw:
@@ -146,6 +155,8 @@ def brain_mechanics_config(config: AutoJudgeConfig) -> AutoJudgeConfig:
     overridden = replace(
         config,
         model=model or config.model,
+        endpoint=endpoint or config.endpoint,
+        api_key_env=api_key_env or config.api_key_env,
         timeout_seconds=timeout_seconds,
     )
     overridden.validate()

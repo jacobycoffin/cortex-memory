@@ -3,12 +3,13 @@ from __future__ import annotations
 import sqlite3
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-from tests._bootstrap import ROOT
+from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex.retrieval import MemoryRetriever, RetrievalContext, _fts_relevance
 from cortex.security import sanitize_memory
@@ -480,6 +481,50 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(versions[-1]["state"], "active")
         self.assertIsNone(versions[-1]["system_to"])
         self.assertIsNotNone(next(row for row in versions if row["state"] == "tombstoned")["system_to"])
+
+    def test_archive_action_writes_the_archived_state(self) -> None:
+        """Review action "archive" must write the lifecycle state 'archived'.
+
+        Regression (2026-09-14): the action name was written verbatim as the
+        state, producing 'archive' rows — not one of the five lifecycle states.
+        Such rows skip the dependency dirty-marking and audit paths that
+        legitimately archived memories go through.
+        """
+        memory_id, _ = self.store.add_memory(
+            "Lifecycle archive mapping check for a transient episode record.",
+            kind="episode",
+        )
+        now = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO sleep_runs(run_id,mode,status,cutoff_at,started_at) VALUES(?,?,?,?,?)",
+                ("archive-map-run", "shadow", "completed", now, now),
+            )
+            conn.execute(
+                """INSERT INTO sleep_proposals(
+                   proposal_id,run_id,kind,src_id,status,score,evidence_count,
+                   rationale,details_json,created_at
+                   ) VALUES(?,?,?,?,'proposed',0.9,1,?,?,?)""",
+                (
+                    "archive-map",
+                    "archive-map-run",
+                    "lifecycle",
+                    memory_id,
+                    "Transient execution status has no durable retrieval value.",
+                    '{"next_state":"archived"}',
+                    now,
+                ),
+            )
+        decision = self.store.decide_review_proposal(
+            "archive-map", "archive", reason_code="cleanup", actor="test-operator"
+        )
+        self.assertEqual(decision["affected_memory_ids"], [memory_id])
+        self.assertEqual(self.store.get_memory(memory_id)["state"], "archived")
+        states = {
+            str(row["state"])
+            for row in self.store._conn.execute("SELECT DISTINCT state FROM memories").fetchall()
+        }
+        self.assertNotIn("archive", states, "the action name must never be written as a state")
 
     def test_review_can_apply_to_exact_duplicates_without_training_a_policy(self) -> None:
         content = "Repeated file archive record should exist only once."
@@ -1129,8 +1174,8 @@ class CortexStoreTests(unittest.TestCase):
         self.assertTrue(self.store.superseded_ids([first]))
 
     def test_guided_conflict_review_can_keep_both_contexts(self) -> None:
-        first, _ = self.store.add_memory("Kaya runs locally during development.")
-        second, _ = self.store.add_memory("Kaya runs on the VPS in production.")
+        first, _ = self.store.add_memory("Cortex runs locally during development.")
+        second, _ = self.store.add_memory("Cortex runs on the VPS in production.")
         self.store.add_edge(first, second, "contradicts", weight=0.8)
 
         self.assertTrue(self.store.resolve_contradiction(first, second, "both_valid"))
@@ -1296,10 +1341,10 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["benchmark_runs"], 1)
 
     def test_outcome_labels_are_audited_reversible_and_build_private_cases(self) -> None:
-        memory_id, _ = self.store.add_memory("Kaya deploys the service through the private blue gateway.")
+        memory_id, _ = self.store.add_memory("Cortex deploys the service through the private blue gateway.")
         task_id = self.store.create_usage_batch(
             [(memory_id, 0.9)],
-            query="Which private gateway deploys Kaya?",
+            query="Which private gateway deploys Cortex?",
             session_id="session-1",
             task_type="deployment",
             recall_mode="focused",
@@ -1466,7 +1511,7 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(self.store.tool_evaluation_snapshot()["follow_rate"], 0.5)
 
         evidence_id, _ = self.store.add_memory("The operator recorded blue as the active gateway.")
-        claim_id, _ = self.store.add_memory("Kaya uses the blue gateway.", kind="semantic")
+        claim_id, _ = self.store.add_memory("Cortex uses the blue gateway.", kind="semantic")
         self.assertTrue(self.store.add_dependency(claim_id, evidence_id))
         hierarchy = self.store.evidence_hierarchy_snapshot()
         self.assertEqual(hierarchy["dependency_count"], 1)
@@ -1825,6 +1870,86 @@ class CortexStoreTests(unittest.TestCase):
             )
         }
         self.assertEqual(features, {"stage1_spy"})
+
+    def test_trace_storage_keeps_detail_only_where_it_explains_a_decision(self) -> None:
+        """The 69 %-of-payload scoring dump is stored for the candidates that matter.
+
+        Measured 2026-09-15: `components` was ~125 KB of a ~181 KB candidate
+        payload per recall, written on the turn hot path. It is kept for the
+        selected candidates plus the top-N by score, dropped elsewhere with a
+        marker, and every other field of every candidate survives.
+        """
+        import json as _json
+
+        from cortex.store import TRACE_COMPONENT_DETAIL_TOP_N
+
+        used_id, _ = self.store.add_memory("Gateway selection uses the verified Cortex endpoint.")
+        candidates = [
+            {
+                "memory_id": used_id,
+                "kind": "semantic",
+                # deliberately ranked LAST so selection, not score, is what keeps it
+                "score": 0.11,
+                "rank": 40,
+                "selected": True,
+                "components": {f"component-{i}": 0.5 for i in range(40)},
+                "reason": "selected",
+            }
+        ]
+        for index in range(40):
+            candidates.append(
+                {
+                    "memory_id": f"candidate-{index:03d}",
+                    "kind": "semantic",
+                    "score": 0.9 - index / 1000.0,
+                    "rank": index,
+                    "selected": False,
+                    "components": {f"component-{i}": 0.5 for i in range(40)},
+                    "reason": "below threshold",
+                }
+            )
+
+        task_id = str(uuid.uuid4())
+        self.store.record_memory_trace_decision(
+            task_id=task_id,
+            session_id="trace-detail",
+            goal="Which Cortex gateway is verified?",
+            context_summary="active_project=Cortex",
+            task_type="deployment",
+            recall_mode="focused",
+            retrieval_used=True,
+            retrieval_reason="selected for trace-detail test",
+            queries=["Which Cortex gateway is verified?"],
+            candidate_memories=candidates,
+        )
+
+        with self.store._lock:
+            row = self.store._conn.execute(
+                "SELECT candidate_memories_json FROM memory_traces WHERE task_id=?",
+                (task_id,),
+            ).fetchone()
+        stored = _json.loads(row["candidate_memories_json"])
+        self.assertEqual(len(stored), len(candidates))
+
+        by_id = {entry["memory_id"]: entry for entry in stored}
+        # the selected candidate keeps its dump even though it scored last
+        self.assertIn("components", by_id[used_id])
+        # the top-N by score keep theirs
+        for entry in stored:
+            if entry["memory_id"].startswith("candidate-00"):
+                self.assertIn("components", entry)
+        # everything else keeps every other field but loses the dump, with a marker
+        omitted = [e for e in stored if "components" not in e]
+        self.assertTrue(omitted)
+        for entry in omitted:
+            self.assertTrue(entry.get("components_omitted"))
+            self.assertIn("score", entry)
+            self.assertIn("rank", entry)
+            self.assertIn("reason", entry)
+            self.assertIn("content_preview", entry)
+        kept = len(stored) - len(omitted)
+        self.assertEqual(kept, TRACE_COMPONENT_DETAIL_TOP_N + 1)
+        self.assertLess(len(omitted), len(stored))
 
 
 if __name__ == "__main__":

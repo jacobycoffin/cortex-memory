@@ -6,11 +6,12 @@ import json
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Iterable
 
+from .preload import RecallCache
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
 
@@ -184,6 +185,43 @@ class RetrievalDiagnostics:
     # provider-measured prepare_ms for the same turn and let operators see
     # which stage dominates tail latency on their own host and corpus.
     stage_ms: dict[str, float] = field(default_factory=dict)
+    cache_hit: bool = False
+    preloaded: bool = False
+
+
+@dataclass(frozen=True)
+class _QuerySignals:
+    tokens: frozenset[str]
+    folded: str
+    active_scope: dict[str, str]
+    available_state: dict[str, str]
+    entities: frozenset[str]
+    systems: frozenset[str]
+    versions: frozenset[str]
+    specificity: float
+
+    @classmethod
+    def prepare(cls, query: str, context: RetrievalContext) -> "_QuerySignals":
+        scope = _clean_context_map(context.scope)
+        if context.active_project:
+            scope["project"] = context.active_project
+        entities = {item.casefold() for item in context.entities}
+        if context.active_project:
+            entities.add(context.active_project.casefold())
+        entities.update(str(value).casefold() for value in scope.values())
+        return cls(
+            frozenset(query_tokens(query)),
+            " ".join((query or "").casefold().split()),
+            scope,
+            {**scope, **_clean_context_map(context.system_state)},
+            frozenset(entities),
+            frozenset(item.casefold() for item in context.applicable_systems),
+            frozenset(item.casefold() for item in context.applicable_versions),
+            float(bool(re.search(
+                r"\b(?:specific|specifics|example|examples|episode|episodes|"
+                r"exact|detail|details|instance|instances|when exactly)\b", query, re.I
+            ))),
+        )
 
 
 class MemoryRetriever:
@@ -197,6 +235,7 @@ class MemoryRetriever:
         semantic_weight: float = 0.0,
         semantic_pool: int = 20,
         semantic_model_id: str | None = None,
+        semantic_floor: float = 0.0,
     ):
         self.store = store
         self.threshold = threshold
@@ -205,6 +244,37 @@ class MemoryRetriever:
         self.semantic_weight = max(0.0, float(semantic_weight))
         self.semantic_pool = max(1, int(semantic_pool))
         self.semantic_model_id = semantic_model_id
+        # RRF rank is useful only after the embedding says the candidate is
+        # directionally related. A zero floor excludes anti-correlated and
+        # orthogonal vectors; deployments may raise it for stricter precision.
+        self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
+        self.recall_cache = RecallCache()
+
+    def search_cached(
+        self, query: str, *, speculative: bool = False, **options: Any
+    ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
+        """Reuse exact recall only while both context and store revision match."""
+
+        settings = (self.threshold, self.semantic_weight, self.semantic_pool,
+                    self.semantic_model_id, self.semantic_floor)
+        key = self.recall_cache.key(query, options, settings)
+        started = time.perf_counter()
+        computed = False
+        def compute():
+            nonlocal computed
+            computed = True
+            results, diagnostics = self.search_detailed(query, **options)
+            return results, replace(diagnostics, preloaded=speculative)
+        results, diagnostics = self.recall_cache.search(
+            key, self.store.retrieval_revision, compute, speculative=speculative,
+        )
+        if not computed:
+            diagnostics = replace(
+                diagnostics, cache_hit=True,
+                stage_ms={**dict.fromkeys(diagnostics.stage_ms, 0.0),
+                          "cache_lookup": (time.perf_counter() - started) * 1000},
+            )
+        return results, diagnostics
 
     def search(
         self,
@@ -249,6 +319,16 @@ class MemoryRetriever:
         evidence_lookup: bool = False,
     ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
         if not query or limit <= 0 or token_budget <= 0:
+            return [], RetrievalDiagnostics(0, 0, 0, True)
+        # A query with no usable tokens — blank, punctuation-only, stopword-only
+        # or a single character — carries no retrieval signal. Without this guard
+        # the store's no-token FTS fallback answers it with the newest memories,
+        # which then clear the score threshold and reach the model as confident
+        # context (measured 2026-09-14: `"   "`, `"?!..."`, `",,,"`, `"a"` and
+        # `"the and of to"` each selected 3 unrelated memories at ~0.29 with
+        # `abstained=False`). Non-Latin scripts are unaffected: CJK tokenizes into
+        # a single token, so `日本語のテキスト` still recalls.
+        if not query_tokens(query):
             return [], RetrievalDiagnostics(0, 0, 0, True)
         expanded_query = _expand_query(query)
         retrieval_context = _normalize_retrieval_context(context, goal=query)
@@ -340,6 +420,8 @@ class MemoryRetriever:
         contradicted = self.store.contradicted_ids(list(candidates_by_id))
         stage_ms["prospective_merge"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
+        prepared = _QuerySignals.prepare(expanded_query, retrieval_context)
+        feedback = self.store.context_feedback_many(list(candidates_by_id), retrieval_context.as_record())
         scored: dict[str, RetrievalResult] = {}
         for candidate in candidates:
             result = self._score(
@@ -351,6 +433,8 @@ class MemoryRetriever:
                 contradicted=candidate["id"] in contradicted,
                 context=retrieval_context,
                 scoring_weights=scoring_profile["weights"],
+                prepared=prepared,
+                context_feedback=feedback[str(candidate["id"])],
             )
             scored[candidate["id"]] = result
 
@@ -365,6 +449,10 @@ class MemoryRetriever:
                 self.store.superseded_ids(list(graph_scores)) if temporal_mode == "current" else set()
             )
             graph_contradicted = self.store.contradicted_ids(list(graph_scores))
+            new_neighbors = [memory_id for memory_id in graph_scores if memory_id not in scored]
+            graph_feedback = self.store.context_feedback_many(new_neighbors, retrieval_context.as_record())
+            neighbor_memories = {str(memory["id"]): memory for memory in self.store.get_memories(new_neighbors)}
+            graph_eligible = self.store.recall_eligible_ids(new_neighbors, include_archived=include_archived)
             for neighbor_id, graph_boost in graph_scores.items():
                 if neighbor_id in scored:
                     old = scored[neighbor_id]
@@ -380,19 +468,15 @@ class MemoryRetriever:
                     components["shadow_score_delta"] = shadow_score - score
                     scored[neighbor_id] = RetrievalResult(old.memory, score, components, old.estimated_tokens)
                     continue
-                memory = self.store.get_memory(neighbor_id)
+                memory = neighbor_memories.get(neighbor_id)
                 if not memory or memory["state"] not in (
                     {"active", "cold", "archived"} if include_archived else {"active", "cold"}
                 ):
                     continue
-                if not self.store.is_memory_recall_eligible(
-                    neighbor_id,
-                    evidence_lookup=False,
-                    include_archived=include_archived,
-                ):
+                if neighbor_id not in graph_eligible:
                     continue
                 result = self._score(
-                    query,
+                    expanded_query,
                     memory,
                     graph=graph_boost,
                     temporal_mode=temporal_mode,
@@ -401,6 +485,8 @@ class MemoryRetriever:
                     contradicted=neighbor_id in graph_contradicted,
                     context=retrieval_context,
                     scoring_weights=scoring_profile["weights"],
+                    prepared=prepared,
+                    context_feedback=graph_feedback[neighbor_id],
                 )
                 scored[neighbor_id] = result
 
@@ -411,9 +497,8 @@ class MemoryRetriever:
         # merely re-ranking it: the measured gain comes from embeddings finding
         # memories the lexical signals never surfaced, which re-ranking alone
         # cannot do. Inert (empty dict) unless semantic_weight > 0.
-        semantic_rank: dict[str, int] = {}
         if self.semantic_weight > 0.0:
-            semantic_rank = self._inject_semantic_candidates(
+            self._inject_semantic_candidates(
                 query,
                 scored,
                 limit=limit,
@@ -427,30 +512,67 @@ class MemoryRetriever:
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
 
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
+        eligible_ids = self.store.recall_eligible_ids(
+            [str(result.memory["id"]) for result in ranked],
+            evidence_lookup=evidence_lookup, include_archived=include_archived,
+        )
         selected: list[RetrievalResult] = []
         rejection_reasons: dict[str, str] = {}
         consumed = 0
         remaining = list(ranked)
+        # `_memory_similarity` is a pure function of the two memory bodies, and a
+        # candidate's diversified value depends only on the SELECTED set. Instead
+        # of re-scoring every remaining candidate against every selected memory on
+        # every pick (quadratic work: 47 candidates used to cost ~1,200 set
+        # intersections), track each remaining candidate's maximum similarity to
+        # the selected set and refresh it only when a memory is actually picked.
+        # The computed values are identical to the re-computation; only the
+        # repeated pair work is removed.
+        max_similarity_to_selected: dict[str, float] = {}
+        selected_kinds: set[str] = set()
         while remaining and len(selected) < limit:
 
             def diversified_value(result: RetrievalResult) -> float:
-                similarity = max((_memory_similarity(result, prior) for prior in selected), default=0.0)
+                similarity = max_similarity_to_selected.get(str(result.memory["id"]), 0.0)
+                # A result whose kind is not yet represented earns the diversity
+                # bonus; the bonus can only disappear once a same-kind memory is
+                # selected, so tracking selected kinds matches the scan it
+                # replaces.
                 type_bonus = (
                     0.035
-                    if selected and all(prior.memory["kind"] != result.memory["kind"] for prior in selected)
+                    if selected and result.memory["kind"] not in selected_kinds
                     else 0.0
                 )
                 # The semantic contribution is already folded into result.score
                 # by _inject_semantic_candidates; do not count it twice here.
                 return result.score + type_bonus - 0.16 * similarity
 
-            result = max(remaining, key=diversified_value)
-            remaining.remove(result)
-            if not self.store.is_memory_recall_eligible(
-                str(result.memory["id"]),
-                evidence_lookup=evidence_lookup,
-                include_archived=include_archived,
-            ):
+            if selected:
+                best_index = 0
+                best_value = diversified_value(remaining[0])
+                for index in range(1, len(remaining)):
+                    # `remaining` stays in descending score order and the kind
+                    # bonus is bounded by 0.035, so once even the best achievable
+                    # value cannot beat the incumbent, every later candidate is
+                    # out of contention. The scan is otherwise exact: the first
+                    # maximum wins, exactly as `max(..., key=...)` chose it.
+                    occurrence = remaining[index]
+                    if occurrence.score + 0.035 <= best_value:
+                        break
+                    value = diversified_value(occurrence)
+                    if value > best_value:
+                        best_index, best_value = index, value
+                result = remaining.pop(best_index)
+            else:
+                # Nothing selected yet, so every candidate's diversified value is
+                # exactly its score (no kind bonus, no similarity penalty) and
+                # `remaining` is in descending score order: the maximum is the
+                # first element. Rescanning the whole pool on every rejection made
+                # this quadratic — a 320-candidate pool whose results all failed
+                # the eligibility or score gates cost 51,360 comparisons to
+                # decide the same thing.
+                result = remaining.pop(0)
+            if str(result.memory["id"]) not in eligible_ids:
                 rejection_reasons[str(result.memory["id"])] = "outside the active recall set"
                 continue
             effective_threshold = self.threshold if threshold is None else float(threshold)
@@ -478,7 +600,7 @@ class MemoryRetriever:
             if result.score < effective_threshold and not result.memory["pinned"]:
                 rejection_reasons[str(result.memory["id"])] = "score below the active retrieval threshold"
                 continue
-            if any(_memory_similarity(result, prior) >= 0.86 for prior in selected):
+            if max_similarity_to_selected.get(str(result.memory["id"]), 0.0) >= 0.86:
                 rejection_reasons[str(result.memory["id"])] = "near-duplicate of a stronger selected memory"
                 continue
             family_count = sum(
@@ -497,6 +619,15 @@ class MemoryRetriever:
                 continue
             selected.append(result)
             consumed += result.estimated_tokens
+            selected_kinds.add(result.memory["kind"])
+            if len(selected) < limit:
+                # Refresh the running similarity maxima for the next picks; this
+                # is the only place similarity is computed during selection.
+                for other in remaining:
+                    other_key = str(other.memory["id"])
+                    similarity = _memory_similarity(other, result)
+                    if similarity > max_similarity_to_selected.get(other_key, 0.0):
+                        max_similarity_to_selected[other_key] = similarity
         stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
@@ -729,11 +860,19 @@ class MemoryRetriever:
         if not hits:
             return {}
 
+        # Keep the raw query for embedding; use the same expanded lexical query
+        # as the main candidate pool when scoring the semantic-only candidate.
+        expanded_query = _expand_query(query)
         allowed_states = (
             {"active", "cold", "archived"} if include_archived else {"active", "cold"}
         )
         semantic_rank: dict[str, int] = {}
-        for rank, (memory_id, _similarity) in enumerate(hits):
+        for rank, (memory_id, similarity) in enumerate(hits):
+            # Rank fusion orders semantically related candidates; it must not
+            # turn orthogonal/anti-correlated vectors into evidence merely
+            # because the pool is sparse. Keep the configured boundary strict.
+            if float(similarity) <= self.semantic_floor:
+                continue
             # The fusion contribution must land in the SCORE, not only in the
             # selector's ordering value: the threshold and relevance gates below
             # read `result.score`, so a boost applied later is invisible to them
@@ -768,7 +907,7 @@ class MemoryRetriever:
             ):
                 continue
             result = self._score(
-                query,
+                expanded_query,
                 memory,
                 graph=0.0,
                 temporal_mode=temporal_mode,
@@ -799,9 +938,12 @@ class MemoryRetriever:
         contradicted: bool = False,
         context: RetrievalContext | None = None,
         scoring_weights: dict[str, float] | None = None,
+        prepared: _QuerySignals | None = None,
+        context_feedback: dict[str, Any] | None = None,
     ) -> RetrievalResult:
-        q_tokens = set(query_tokens(query))
-        m_tokens = set(query_tokens(memory["content"]))
+        prepared = prepared or _QuerySignals.prepare(query, context or RetrievalContext(goal=query))
+        q_tokens = prepared.tokens
+        m_tokens = set(_content_token_set(memory["content"]))
         intersection = len(q_tokens & m_tokens)
         union = max(1, len(q_tokens | m_tokens))
         overlap = intersection / union
@@ -843,8 +985,8 @@ class MemoryRetriever:
         # same item again must not dilute its observed error rate.
         judged = int(memory.get("used_count", 0)) + harmful
         wrong_rate = harmful / max(1, judged)
-        context_components = _context_components(memory, context or RetrievalContext(goal=query), query)
-        context_feedback = self.store.context_feedback(
+        context_components = _context_components(memory, context or RetrievalContext(goal=query), query, prepared=prepared)
+        context_feedback = context_feedback if context_feedback is not None else self.store.context_feedback(
             str(memory["id"]),
             (context or RetrievalContext()).as_record(),
         )
@@ -909,16 +1051,7 @@ class MemoryRetriever:
             "archived": float(memory["state"] == "archived"),
             "stranded": float(bool(memory.get("stranded"))),
             "schema_example": float(bool(memory.get("schema_example"))),
-            "specificity_request": float(
-                bool(
-                    re.search(
-                        r"\b(?:specific|specifics|example|examples|episode|episodes|"
-                        r"exact|detail|details|instance|instances|when exactly)\b",
-                        query,
-                        re.I,
-                    )
-                )
-            ),
+            "specificity_request": prepared.specificity,
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "context_gate": float(context_components["context_gate"]),
         }
@@ -1112,6 +1245,7 @@ def _context_components(
     memory: dict[str, Any],
     context: RetrievalContext,
     query: str,
+    *, prepared: _QuerySignals | None = None,
 ) -> dict[str, float]:
     mode = str(memory.get("context_mode") or "standalone").casefold()
     scope = _memory_context_map(memory, "scope", "scope_json")
@@ -1120,17 +1254,13 @@ def _context_components(
     systems = _memory_context_list(memory, "applicable_systems", "applicable_systems_json")
     versions = _memory_context_list(memory, "applicable_versions", "applicable_versions_json")
 
-    active_scope = _clean_context_map(context.scope)
-    if context.active_project:
-        active_scope["project"] = context.active_project
-    available_state = {**active_scope, **_clean_context_map(context.system_state)}
-    query_folded = " ".join((query or "").casefold().split())
-    context_entities = {item.casefold() for item in context.entities}
-    if context.active_project:
-        context_entities.add(context.active_project.casefold())
-    context_entities.update(str(value).casefold() for value in active_scope.values())
-    context_systems = {item.casefold() for item in context.applicable_systems}
-    context_versions = {item.casefold() for item in context.applicable_versions}
+    prepared = prepared or _QuerySignals.prepare(query, context)
+    active_scope = prepared.active_scope
+    available_state = prepared.available_state
+    query_folded = prepared.folded
+    context_entities = prepared.entities
+    context_systems = prepared.systems
+    context_versions = prepared.versions
 
     scope_results: list[float] = []
     scope_gate_results: list[bool] = []
@@ -1155,7 +1285,7 @@ def _context_components(
         feature_similarity(scope["goal"], context.goal or "") if scope.get("goal") else 1.0
     )
 
-    query_token_set = set(query_tokens(query))
+    query_token_set = prepared.tokens
 
     def _query_mentions(value: str) -> bool:
         """True when the query carries the value as whole words."""
@@ -1404,7 +1534,7 @@ def _content_token_set(content: str) -> frozenset[str]:
     call re-ran the tokenizer ~27,000 times for a single recall and dominated
     live prepare latency (profiled 2026-09-10: 95% of the select stage, ~3.9M
     ``casefold`` calls). The token set for a given body is immutable, so cache
-    it. Returns a ``frozenset`` for hashing; intersection/union semantics are
-    identical to the previous inline ``set(...)``.
+    it. Returns a ``frozenset`` for hashing; memory-body similarity deliberately
+    uses the full distinct-token set rather than the query-side cap.
     """
-    return frozenset(query_tokens(content))
+    return frozenset(query_tokens(content, limit=None))

@@ -115,6 +115,92 @@ class SemanticConsolidationAtomicityTests(unittest.TestCase):
         ).fetchone()["status"]
         self.assertEqual(status, "applied")
 
+    def test_edge_writer_failure_rolls_back_the_finalize(self) -> None:
+        """A crash while writing the consolidates lineage must not leave an applied merge.
+
+        Regression (2026-09-14): the lineage edges were written AFTER the
+        finalize transaction committed, so a failure there left the decision
+        'applied' with no lineage and no retry path (apply refuses non-proposed
+        rows). The edges now commit together with the ledger.
+        """
+        decision_id = self._seed_and_judge()
+        with patch.object(self.store, "add_edge", side_effect=RuntimeError("synthetic edge failure")):
+            with self.assertRaises(RuntimeError):
+                self.store.apply_semantic_consolidation(decision_id)
+
+        status = self.store._conn.execute(
+            "SELECT status FROM semantic_consolidation_decisions WHERE decision_id=?",
+            (decision_id,),
+        ).fetchone()["status"]
+        self.assertEqual(
+            status,
+            "proposed",
+            "the decision must stay retryable when the lineage write fails",
+        )
+        edges = self.store._conn.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE relation='consolidates'"
+        ).fetchone()["n"]
+        self.assertEqual(edges, 0)
+
+        # The retry applies cleanly and writes the lineage with the ledger.
+        report = self.store.apply_semantic_consolidation(decision_id)
+        self.assertEqual(report["status"], "applied")
+        edges = self.store._conn.execute(
+            "SELECT COUNT(*) AS n FROM edges WHERE relation='consolidates'"
+        ).fetchone()["n"]
+        self.assertEqual(edges, 2, "both consolidates edges must exist after a clean apply")
+
+
+    def test_second_applier_does_not_overwrite_a_finalized_decision(self) -> None:
+        """A late second applier must not turn an applied merge into 'skipped'.
+
+        The ledger status is read outside the apply transaction, so another
+        process on the same database can finalize the same decision in between.
+        The loser then saw already-archived sources, took the staleness branch,
+        and rewrote the row as 'skipped' while archiving the merged memory the
+        winner had just promoted — an applied merge recorded as skipped, its
+        result hidden from recall, its 'consolidates' edges left pointing at an
+        archived row, and `audit()` still clean (measured 2026-09-14).
+        """
+        decision_id = self._seed_and_judge()
+        second = CortexStore(Path(self.tmp.name) / "cortex.db")
+        original_transaction = self.store.transaction
+        interleaved: list[dict] = []
+
+        def transaction_with_interleave():
+            if not interleaved:
+                interleaved.append(second.apply_semantic_consolidation(decision_id))
+            return original_transaction()
+
+        self.store.transaction = transaction_with_interleave
+        try:
+            loser = self.store.apply_semantic_consolidation(decision_id)
+        finally:
+            self.store.transaction = original_transaction
+
+        self.assertEqual(len(interleaved), 1, "the competing applier must have run")
+        self.assertEqual(interleaved[0]["status"], "applied")
+        with self.store._lock:
+            ledger = dict(
+                self.store._conn.execute(
+                    "SELECT status FROM semantic_consolidation_decisions WHERE decision_id=?",
+                    (decision_id,),
+                ).fetchone()
+            )
+            edges = self.store._conn.execute(
+                "SELECT COUNT(*) AS n FROM edges WHERE relation='consolidates'"
+            ).fetchone()["n"]
+        self.assertEqual(ledger["status"], "applied", "the winner's finalize must survive")
+        self.assertEqual(loser["status"], "applied")
+        results = self._result_rows()
+        self.assertEqual(
+            [row["state"] for row in results],
+            ["active"],
+            "the merged memory must stay live after the loser returns",
+        )
+        self.assertEqual(edges, 2, "the lineage edges must survive the loser")
+        second.close()
+
 
 if __name__ == "__main__":
     unittest.main()

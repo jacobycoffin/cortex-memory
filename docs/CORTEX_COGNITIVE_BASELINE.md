@@ -1,6 +1,6 @@
 # Cortex cognitive baseline
 
-This document is the operating plan for Cortex as Kaya's primary long-term memory. It explains the human-memory ideas Cortex borrows, the engineering mechanism behind each idea, how an agent should use Cortex, and how operator training becomes a safe system-level change.
+This document is the operating plan for Cortex as the agent's primary long-term memory. It explains the human-memory ideas Cortex borrows, the engineering mechanism behind each idea, how an agent should use Cortex, and how operator training becomes a safe system-level change.
 
 Cortex does **not** simulate a biological brain. It uses a small set of useful cognitive principles—selective encoding, limited working access, cue-dependent recall, source monitoring, spaced reinforcement, associative organization, prospective remembering, reconsolidation tracking, and adaptive forgetting—to make agent memory more useful and less wasteful.
 
@@ -180,7 +180,7 @@ Every review has an explicit reach:
 
 - **This item only** changes the one memory, connection, or task.
 - **Exact duplicates** applies the same decision only to byte-equivalent duplicate records.
-- **Teach Kaya** adds one labeled example to a policy pattern. It does not immediately change the core.
+- **Teach Cortex** adds one labeled example to a policy pattern. It does not immediately change the core.
 
 A broader standard follows five gates:
 
@@ -230,13 +230,13 @@ The dashboard is the operator console, not a decorative graph. It should make th
 - Where did it originate, and was it independently verified?
 - Why would it live in these neighborhoods?
 - Why are two memories connected, and in which direction can activation travel?
-- Why did Kaya recall or reject this candidate for a task?
+- Why was this candidate recalled or rejected for a task?
 - Did my choice affect one item, exact duplicates, or policy evidence?
 - What policy is proposed, what gates remain, and what will activation change?
 - What did Cortex do, who did it, and can it be undone?
 - How many privacy-safe learning experiences exist, and which outcomes are missing?
 
-The Train Kaya view, memory drawer, Outcome Lab, memory map, and unified Decision Log are the canonical surfaces for those answers.
+The Train Cortex view, memory drawer, Outcome Lab, memory map, and unified Decision Log are the canonical surfaces for those answers.
 
 ## Baseline boundaries and next experiments
 

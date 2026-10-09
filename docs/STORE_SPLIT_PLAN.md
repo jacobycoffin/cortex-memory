@@ -28,6 +28,12 @@ and is the recommended stage 0.
 
 ## Stage order (one commit each, smallest dependency-free first)
 
+Completed extractions: serializers (`serializers.py`), schema/migrations
+(`cortex_schema.py`), and stage 2 records/version history (`cortex_records.py`).
+The record functions receive the existing store owner and retain its original
+transaction/savepoint and lock boundaries. Public method signatures remain on
+`CortexStore`; no schema or retrieval-scoring change accompanies this extraction.
+
 - Stage 0: `cortex_serializers.py` — pure helpers only. Zero behavior change;
   `store.py` re-imports them.
 - Stage 1: `cortex_schema.py` — table defs + migrations. Prove with the

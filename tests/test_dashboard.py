@@ -334,7 +334,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Same durable subject", html)
         self.assertIn("Memory A supports B", html)
         self.assertIn("Teach this connection pattern", html)
-        self.assertIn("Explain it naturally. Kaya will translate.", html)
+        self.assertIn("Explain it naturally. The copilot will translate.", html)
         self.assertIn("function renderReviewCopilot", html)
         self.assertIn("function matchingCopilotInterpretation", html)
         self.assertIn("Use this recommendation", html)
@@ -349,7 +349,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("Where should this apply?", html)
         self.assertIn("Only this memory", html)
         self.assertIn("exact_duplicates", html)
-        self.assertIn("Teach Kaya from this", html)
+        self.assertIn("Teach Cortex from this", html)
         self.assertIn("Want to say why?", html)
         self.assertIn("Optional. If none fit, leave this blank.", html)
         self.assertIn('reasonText?"own_words":"operator_choice"', html)
@@ -412,7 +412,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("All records", html)
         self.assertIn("View raw evidence", html)
         self.assertIn('raw.className="raw-evidence"', html)
-        self.assertIn("What Kaya remembers", html)
+        self.assertIn("What the agent remembers", html)
         self.assertIn("When this applies", html)
         self.assertIn("Why it is retained", html)
         self.assertIn("Source and evidence", html)
@@ -495,6 +495,7 @@ class DashboardInterfaceTests(unittest.TestCase):
         server = (ROOT / "dashboard.py").read_text()
         html = (ROOT / "dashboard.html").read_text()
         readme = (ROOT / "README.md").read_text()
+        self.assertIn("Review Copilot", readme)
         self.assertIn('"/api/review/copilot"', server)
         self.assertIn("ReviewCopilotConfig.from_env()", server)
         self.assertIn('snapshot["review_copilot"] = review_copilot.status()', server)
@@ -502,6 +503,19 @@ class DashboardInterfaceTests(unittest.TestCase):
         self.assertIn("copilot_interpretation_id", server)
         self.assertIn("Provider: ${config.provider} · Model: ${config.model}", html)
         self.assertIn("You still confirm the final action below.", html)
+
+
+    def test_dashboard_polls_only_while_the_tab_is_visible(self) -> None:
+        """A background tab must not fetch a full snapshot every minute forever."""
+        html = (ROOT / "dashboard.html").read_text()
+        self.assertNotIn("setInterval(()=>load(true),60000)", html)
+        self.assertIn("function pollIfVisible()", html)
+        self.assertIn('if (document.visibilityState !== "visible") return;', html)
+        self.assertIn("setInterval(pollIfVisible, 60000)", html)
+        self.assertIn('document.addEventListener("visibilitychange", pollIfVisible)', html)
+        # Coming back to the tab refreshes immediately rather than waiting out an
+        # interval, and the in-flight guard stops overlapping snapshots.
+        self.assertIn('if (document.getElementById("refresh").classList.contains("refreshing")) return;', html)
 
 
 if __name__ == "__main__":
