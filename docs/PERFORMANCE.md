@@ -132,6 +132,11 @@ a broad production claim. Never commit private labels, queries, or databases.
 
 ## Validate a live brain on its own host
 
+For the operator-run CT117 procedure, including a separate Hermes preload trial
+with useful hits, added process CPU, and p95, use
+[cortex-ct117-validation.md](../cortex-ct117-validation.md). The development agent
+does not connect to CT117; only the aggregate handoff report returns.
+
 When the labels of record are active `evaluation_cases` rows, regenerate JSONL
 on the brain host. Keep the database snapshot and labels outside every checkout,
 with owner-only permissions. Do not copy either to a development machine or

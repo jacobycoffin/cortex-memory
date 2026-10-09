@@ -28,15 +28,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT.parent))
 
 try:
-    from Brain.benchmarks.core import approximate_tokens, summarize_latencies
-    from Brain.cognition import plan_recall
-    from Brain.retrieval import MemoryRetriever
-    from Brain.store import CortexStore
-except ModuleNotFoundError:
     from cortex.benchmarks.core import approximate_tokens, summarize_latencies
     from cortex.cognition import plan_recall
     from cortex.retrieval import MemoryRetriever
     from cortex.store import CortexStore
+except ModuleNotFoundError:
+    # Retain the legacy checkout name only when Cortex is unavailable. Paired
+    # operator runs explicitly select cortex via isolated PYTHONPATH aliases;
+    # an unrelated installed Brain package must not shadow that selection.
+    from Brain.benchmarks.core import approximate_tokens, summarize_latencies
+    from Brain.cognition import plan_recall
+    from Brain.retrieval import MemoryRetriever
+    from Brain.store import CortexStore
 
 
 REPORT_SCHEMA_VERSION = 1

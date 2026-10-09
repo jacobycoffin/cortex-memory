@@ -391,6 +391,7 @@ Keep mutation modes and metacognition in `shadow` until you have reviewed your o
 - [Harness integration](docs/INTEGRATION.md) — the portable API and event contract for any agent runtime.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.
 - [0.3 evaluation guide](docs/EVALUATION.md) — private real-history labels and paired tool-calling measurement.
+- [CT117 validation procedure](cortex-ct117-validation.md) — operator-run retrieval and preload trials; only sanitized aggregates leave the brain host.
 - [Cortex Sleep](docs/SLEEP.md) — offline replay, optional reflection budgets, safety model, and primary-source research mapping.
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
 - [Development roadmap](docs/ROADMAP.md) — phased work, safety rules, and promotion gates.

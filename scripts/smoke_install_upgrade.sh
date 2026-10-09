@@ -68,6 +68,9 @@ for relative_path in \
   scripts/cortex-auto-judge.timer \
   scripts/install_dashboard_service.sh \
   scripts/download_embedding_model.py \
+  scripts/evaluate_real_history.py \
+  scripts/evaluate_preload.py \
+  cortex-ct117-validation.md \
   scripts/install_sleep_timer.sh \
   scripts/install_auto_judge_timer.sh \
   scripts/install_vault_timer.sh \
