@@ -125,3 +125,22 @@ class PreloadEvaluationTests(unittest.TestCase):
             cwd=ROOT, env={**os.environ, 'PYTHONPATH': str(self.root)},
             capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_broken_selected_package_fails_instead_of_using_legacy_code(self):
+        selected = self.root / 'cortex'
+        selected.mkdir()
+        (selected / '__init__.py').write_text('')
+        legacy = self.root / 'Brain'
+        legacy.mkdir()
+        (legacy / '__init__.py').write_text("raise AssertionError('legacy fallback was selected')\n")
+        script = self.root / 'runner/scripts/evaluate_real_history.py'
+        script.parent.mkdir(parents=True)
+        script.write_text((ROOT/'scripts/evaluate_real_history.py').read_text())
+        command = 'import runpy; runpy.run_path(' + repr(str(script)) + ')'
+        # Disable site import hooks so an editable install cannot fill in the
+        # deliberately missing modules of this selected package.
+        result = subprocess.run([sys.executable, '-S', '-c', command], cwd=self.root,
+            env={**os.environ, 'PYTHONPATH': str(self.root)}, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('ModuleNotFoundError', result.stderr)
+        self.assertNotIn('legacy fallback was selected', result.stderr)

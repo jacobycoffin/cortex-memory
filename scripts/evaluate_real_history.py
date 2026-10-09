@@ -32,7 +32,9 @@ try:
     from cortex.cognition import plan_recall
     from cortex.retrieval import MemoryRetriever
     from cortex.store import CortexStore
-except ModuleNotFoundError:
+except ModuleNotFoundError as error:
+    if error.name != 'cortex':
+        raise  # A broken selected package must fail, not switch implementations.
     # Retain the legacy checkout name only when Cortex is unavailable. Paired
     # operator runs explicitly select cortex via isolated PYTHONPATH aliases;
     # an unrelated installed Brain package must not shadow that selection.
