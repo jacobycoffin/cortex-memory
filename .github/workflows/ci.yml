@@ -68,7 +68,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install optional embedding dependencies
-        run: python -m pip install '.[embeddings]'
+        # Repository tests import local benchmark scripts as cortex.scripts;
+        # the distribution wheel intentionally includes runtime packages only.
+        run: python -m pip install -e '.[embeddings]'
 
       - name: Download verified embedding artifacts
         env:
