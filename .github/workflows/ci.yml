@@ -52,6 +52,47 @@ jobs:
           PYTHON_BIN: python
         run: bash scripts/smoke_install_upgrade.sh
 
+  embeddings:
+    name: Local embeddings (Python 3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      HERMES_HOME: ${{ runner.temp }}/cortex-embedding-tests
+      CORTEX_REQUIRE_EMBEDDINGS: "1"
+    steps:
+      - name: Check out Cortex
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install optional embedding dependencies
+        run: python -m pip install '.[embeddings]'
+
+      - name: Download verified embedding artifacts
+        run: python scripts/download_embedding_model.py --output "$HERMES_HOME/models/bge-small-en-v1.5"
+
+      - name: Run full suite with embeddings required
+        run: python -m unittest discover -s tests -v
+
+  recall-performance:
+    name: Recall correctness and performance report
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out Cortex
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Measure synthetic recall and explicit-hint warming
+        run: python scripts/benchmark_recall.py --size 200 --repetitions 20 --output "${RUNNER_TEMP}/cortex-recall-performance.json"
+
   release-checks:
     name: Release checks
     runs-on: ubuntu-latest

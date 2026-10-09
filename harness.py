@@ -197,6 +197,10 @@ class CortexHarnessAdapter:
             task_type=task_type,
             limit=max(1, min(self.top_k, plan.limit or self.top_k)),
             token_budget=max(120, min(self.token_budget, plan.token_budget or self.token_budget)),
+            temporal_mode=plan.temporal_mode,
+            as_of=plan.as_of,
+            graph_depth=plan.graph_depth,
+            threshold=plan.threshold,
             active_project=active_project,
             entities=entities,
             scope=scope,
@@ -205,6 +209,24 @@ class CortexHarnessAdapter:
             applicable_versions=applicable_versions,
         )
         return HarnessTurn(query=query, context=batch.context(), reason=plan.reason, batch=batch)
+
+    def preload(
+        self, query: str, *, force_recall: bool = False, **context: Any,
+    ) -> bool:
+        """Warm an upcoming task using the same plan as before_turn().
+
+        The hint may arrive while the harness prepares tools or reads project
+        state. It creates no HarnessTurn and gives no memory usage credit.
+        """
+        plan = plan_recall(query, max_limit=self.top_k, max_token_budget=self.token_budget)
+        if not force_recall and not plan.needs_memory:
+            return False
+        return self.memory.preload(
+            query, limit=max(1, min(self.top_k, plan.limit or self.top_k)),
+            token_budget=max(120, min(self.token_budget, plan.token_budget or self.token_budget)),
+            temporal_mode=plan.temporal_mode, as_of=plan.as_of,
+            graph_depth=plan.graph_depth, threshold=plan.threshold, **context,
+        )
 
     def remember(self, content: str, **metadata: Any) -> tuple[str, bool]:
         """Commit trusted information after operator approval or controlled import.

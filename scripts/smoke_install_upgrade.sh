@@ -38,12 +38,18 @@ for relative_path in \
   cli.py \
   client.py \
   cortex_schema.py \
+  cortex_records.py \
   dashboard.py \
   dashboard_auth.py \
   dashboard.html \
   favicon.svg \
   favicon.ico \
   harness.py \
+  hermes_config.py \
+  hermes_hooks.py \
+  hermes_provider.py \
+  preload.py \
+  hermes_receipts.py \
   apple-touch-icon.png \
   metacognition.py \
   plugin.yaml \
@@ -61,6 +67,7 @@ for relative_path in \
   scripts/cortex-auto-judge.service.in \
   scripts/cortex-auto-judge.timer \
   scripts/install_dashboard_service.sh \
+  scripts/download_embedding_model.py \
   scripts/install_sleep_timer.sh \
   scripts/install_auto_judge_timer.sh \
   scripts/install_vault_timer.sh \

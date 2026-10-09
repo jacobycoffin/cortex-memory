@@ -2,9 +2,10 @@
 Local, offline text embeddings for Cortex.
 
 Runs a small ONNX sentence-embedding model (BAAI/bge-small-en-v1.5, 384-dim)
-using ONLY libraries already present in the Hermes venv — `onnxruntime`,
-`tokenizers` and `numpy`. There is deliberately **no new dependency**, no
-network access at query time, and no data leaving the machine.
+using optional `onnxruntime`, `tokenizers`, and `numpy` dependencies. Install
+them with `pip install '.[embeddings]'` or use an existing harness environment.
+The core stays dependency-free; there is no network access at query time and
+no data leaving the machine. Model setup is a separate explicit operation.
 
 Verified 2026-09-10: with CLS pooling + L2 normalisation this reproduces
 `fastembed`'s output for the same model at cosine 1.0000, so the embeddings

@@ -79,6 +79,17 @@ def assign_recall_condition(
 ) -> dict[str, Any] | None:
     """Assign one task using a balanced randomized block inside its task type."""
 
+    # Most deployments do not run a controlled experiment. A read-only probe
+    # avoids acquiring SQLite's writer lock and committing an empty transaction
+    # on every foreground recall. Recheck inside the transaction when active.
+    with store._lock:
+        active = store._conn.execute(
+            "SELECT 1 FROM controlled_experiments WHERE experiment_key=? AND status='active' LIMIT 1",
+            (RECALL_EXPERIMENT_KEY,),
+        ).fetchone()
+    if not active:
+        return None
+
     with store.transaction() as conn:
         experiment = conn.execute(
             """SELECT * FROM controlled_experiments

@@ -6,11 +6,12 @@ import json
 import math
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Iterable
 
+from .preload import RecallCache
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
 
@@ -184,6 +185,43 @@ class RetrievalDiagnostics:
     # provider-measured prepare_ms for the same turn and let operators see
     # which stage dominates tail latency on their own host and corpus.
     stage_ms: dict[str, float] = field(default_factory=dict)
+    cache_hit: bool = False
+    preloaded: bool = False
+
+
+@dataclass(frozen=True)
+class _QuerySignals:
+    tokens: frozenset[str]
+    folded: str
+    active_scope: dict[str, str]
+    available_state: dict[str, str]
+    entities: frozenset[str]
+    systems: frozenset[str]
+    versions: frozenset[str]
+    specificity: float
+
+    @classmethod
+    def prepare(cls, query: str, context: RetrievalContext) -> "_QuerySignals":
+        scope = _clean_context_map(context.scope)
+        if context.active_project:
+            scope["project"] = context.active_project
+        entities = {item.casefold() for item in context.entities}
+        if context.active_project:
+            entities.add(context.active_project.casefold())
+        entities.update(str(value).casefold() for value in scope.values())
+        return cls(
+            frozenset(query_tokens(query)),
+            " ".join((query or "").casefold().split()),
+            scope,
+            {**scope, **_clean_context_map(context.system_state)},
+            frozenset(entities),
+            frozenset(item.casefold() for item in context.applicable_systems),
+            frozenset(item.casefold() for item in context.applicable_versions),
+            float(bool(re.search(
+                r"\b(?:specific|specifics|example|examples|episode|episodes|"
+                r"exact|detail|details|instance|instances|when exactly)\b", query, re.I
+            ))),
+        )
 
 
 class MemoryRetriever:
@@ -210,6 +248,33 @@ class MemoryRetriever:
         # directionally related. A zero floor excludes anti-correlated and
         # orthogonal vectors; deployments may raise it for stricter precision.
         self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
+        self.recall_cache = RecallCache()
+
+    def search_cached(
+        self, query: str, *, speculative: bool = False, **options: Any
+    ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
+        """Reuse exact recall only while both context and store revision match."""
+
+        settings = (self.threshold, self.semantic_weight, self.semantic_pool,
+                    self.semantic_model_id, self.semantic_floor)
+        key = self.recall_cache.key(query, options, settings)
+        started = time.perf_counter()
+        computed = False
+        def compute():
+            nonlocal computed
+            computed = True
+            results, diagnostics = self.search_detailed(query, **options)
+            return results, replace(diagnostics, preloaded=speculative)
+        results, diagnostics = self.recall_cache.search(
+            key, self.store.retrieval_revision, compute, speculative=speculative,
+        )
+        if not computed:
+            diagnostics = replace(
+                diagnostics, cache_hit=True,
+                stage_ms={**dict.fromkeys(diagnostics.stage_ms, 0.0),
+                          "cache_lookup": (time.perf_counter() - started) * 1000},
+            )
+        return results, diagnostics
 
     def search(
         self,
@@ -355,6 +420,8 @@ class MemoryRetriever:
         contradicted = self.store.contradicted_ids(list(candidates_by_id))
         stage_ms["prospective_merge"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
+        prepared = _QuerySignals.prepare(expanded_query, retrieval_context)
+        feedback = self.store.context_feedback_many(list(candidates_by_id), retrieval_context.as_record())
         scored: dict[str, RetrievalResult] = {}
         for candidate in candidates:
             result = self._score(
@@ -366,6 +433,8 @@ class MemoryRetriever:
                 contradicted=candidate["id"] in contradicted,
                 context=retrieval_context,
                 scoring_weights=scoring_profile["weights"],
+                prepared=prepared,
+                context_feedback=feedback[str(candidate["id"])],
             )
             scored[candidate["id"]] = result
 
@@ -380,6 +449,10 @@ class MemoryRetriever:
                 self.store.superseded_ids(list(graph_scores)) if temporal_mode == "current" else set()
             )
             graph_contradicted = self.store.contradicted_ids(list(graph_scores))
+            new_neighbors = [memory_id for memory_id in graph_scores if memory_id not in scored]
+            graph_feedback = self.store.context_feedback_many(new_neighbors, retrieval_context.as_record())
+            neighbor_memories = {str(memory["id"]): memory for memory in self.store.get_memories(new_neighbors)}
+            graph_eligible = self.store.recall_eligible_ids(new_neighbors, include_archived=include_archived)
             for neighbor_id, graph_boost in graph_scores.items():
                 if neighbor_id in scored:
                     old = scored[neighbor_id]
@@ -395,16 +468,12 @@ class MemoryRetriever:
                     components["shadow_score_delta"] = shadow_score - score
                     scored[neighbor_id] = RetrievalResult(old.memory, score, components, old.estimated_tokens)
                     continue
-                memory = self.store.get_memory(neighbor_id)
+                memory = neighbor_memories.get(neighbor_id)
                 if not memory or memory["state"] not in (
                     {"active", "cold", "archived"} if include_archived else {"active", "cold"}
                 ):
                     continue
-                if not self.store.is_memory_recall_eligible(
-                    neighbor_id,
-                    evidence_lookup=False,
-                    include_archived=include_archived,
-                ):
+                if neighbor_id not in graph_eligible:
                     continue
                 result = self._score(
                     expanded_query,
@@ -416,6 +485,8 @@ class MemoryRetriever:
                     contradicted=neighbor_id in graph_contradicted,
                     context=retrieval_context,
                     scoring_weights=scoring_profile["weights"],
+                    prepared=prepared,
+                    context_feedback=graph_feedback[neighbor_id],
                 )
                 scored[neighbor_id] = result
 
@@ -441,6 +512,10 @@ class MemoryRetriever:
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
 
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
+        eligible_ids = self.store.recall_eligible_ids(
+            [str(result.memory["id"]) for result in ranked],
+            evidence_lookup=evidence_lookup, include_archived=include_archived,
+        )
         selected: list[RetrievalResult] = []
         rejection_reasons: dict[str, str] = {}
         consumed = 0
@@ -497,11 +572,7 @@ class MemoryRetriever:
                 # the eligibility or score gates cost 51,360 comparisons to
                 # decide the same thing.
                 result = remaining.pop(0)
-            if not self.store.is_memory_recall_eligible(
-                str(result.memory["id"]),
-                evidence_lookup=evidence_lookup,
-                include_archived=include_archived,
-            ):
+            if str(result.memory["id"]) not in eligible_ids:
                 rejection_reasons[str(result.memory["id"])] = "outside the active recall set"
                 continue
             effective_threshold = self.threshold if threshold is None else float(threshold)
@@ -867,8 +938,11 @@ class MemoryRetriever:
         contradicted: bool = False,
         context: RetrievalContext | None = None,
         scoring_weights: dict[str, float] | None = None,
+        prepared: _QuerySignals | None = None,
+        context_feedback: dict[str, Any] | None = None,
     ) -> RetrievalResult:
-        q_tokens = set(query_tokens(query))
+        prepared = prepared or _QuerySignals.prepare(query, context or RetrievalContext(goal=query))
+        q_tokens = prepared.tokens
         m_tokens = set(_content_token_set(memory["content"]))
         intersection = len(q_tokens & m_tokens)
         union = max(1, len(q_tokens | m_tokens))
@@ -911,8 +985,8 @@ class MemoryRetriever:
         # same item again must not dilute its observed error rate.
         judged = int(memory.get("used_count", 0)) + harmful
         wrong_rate = harmful / max(1, judged)
-        context_components = _context_components(memory, context or RetrievalContext(goal=query), query)
-        context_feedback = self.store.context_feedback(
+        context_components = _context_components(memory, context or RetrievalContext(goal=query), query, prepared=prepared)
+        context_feedback = context_feedback if context_feedback is not None else self.store.context_feedback(
             str(memory["id"]),
             (context or RetrievalContext()).as_record(),
         )
@@ -977,16 +1051,7 @@ class MemoryRetriever:
             "archived": float(memory["state"] == "archived"),
             "stranded": float(bool(memory.get("stranded"))),
             "schema_example": float(bool(memory.get("schema_example"))),
-            "specificity_request": float(
-                bool(
-                    re.search(
-                        r"\b(?:specific|specifics|example|examples|episode|episodes|"
-                        r"exact|detail|details|instance|instances|when exactly)\b",
-                        query,
-                        re.I,
-                    )
-                )
-            ),
+            "specificity_request": prepared.specificity,
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "context_gate": float(context_components["context_gate"]),
         }
@@ -1180,6 +1245,7 @@ def _context_components(
     memory: dict[str, Any],
     context: RetrievalContext,
     query: str,
+    *, prepared: _QuerySignals | None = None,
 ) -> dict[str, float]:
     mode = str(memory.get("context_mode") or "standalone").casefold()
     scope = _memory_context_map(memory, "scope", "scope_json")
@@ -1188,17 +1254,13 @@ def _context_components(
     systems = _memory_context_list(memory, "applicable_systems", "applicable_systems_json")
     versions = _memory_context_list(memory, "applicable_versions", "applicable_versions_json")
 
-    active_scope = _clean_context_map(context.scope)
-    if context.active_project:
-        active_scope["project"] = context.active_project
-    available_state = {**active_scope, **_clean_context_map(context.system_state)}
-    query_folded = " ".join((query or "").casefold().split())
-    context_entities = {item.casefold() for item in context.entities}
-    if context.active_project:
-        context_entities.add(context.active_project.casefold())
-    context_entities.update(str(value).casefold() for value in active_scope.values())
-    context_systems = {item.casefold() for item in context.applicable_systems}
-    context_versions = {item.casefold() for item in context.applicable_versions}
+    prepared = prepared or _QuerySignals.prepare(query, context)
+    active_scope = prepared.active_scope
+    available_state = prepared.available_state
+    query_folded = prepared.folded
+    context_entities = prepared.entities
+    context_systems = prepared.systems
+    context_versions = prepared.versions
 
     scope_results: list[float] = []
     scope_gate_results: list[bool] = []
@@ -1223,7 +1285,7 @@ def _context_components(
         feature_similarity(scope["goal"], context.goal or "") if scope.get("goal") else 1.0
     )
 
-    query_token_set = set(query_tokens(query))
+    query_token_set = prepared.tokens
 
     def _query_mentions(value: str) -> bool:
         """True when the query carries the value as whole words."""
