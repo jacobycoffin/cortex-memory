@@ -858,6 +858,7 @@ def _find_related_memories(
     content: str,
     *,
     top_k: int = 5,
+    exclude_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find top-K existing memories semantically related to *content*.
 
@@ -877,6 +878,11 @@ def _find_related_memories(
     seen_ids: set[str] = set()
     for r in results:
         mem_id = str(r.memory.get("id", ""))
+        if exclude_id and mem_id == str(exclude_id):
+            # The memory being judged is itself the top semantic hit for its own
+            # content; judging it against itself burns a prompt slot and would
+            # violate the edges CHECK (src_id <> dst_id) if ever acted on.
+            continue
         if mem_id in seen_ids:
             continue
         seen_ids.add(mem_id)
@@ -1757,7 +1763,7 @@ def link_orphan_memories(
             if not content.strip():
                 continue
             related = _find_related_memories(
-                store, retriever, content, top_k=link_top_k,
+                store, retriever, content, top_k=link_top_k, exclude_id=mem_id,
             )
             if not related:
                 continue
@@ -1802,7 +1808,7 @@ def link_orphan_memories(
             if not content.strip():
                 continue
             related = _find_related_memories(
-                store, retriever, content, top_k=link_top_k,
+                store, retriever, content, top_k=link_top_k, exclude_id=mem_id,
             )
             record: dict[str, Any] = {
                 "memory_id": mem_id,
