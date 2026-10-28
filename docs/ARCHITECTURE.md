@@ -1,6 +1,6 @@
 # Cortex architecture
 
-Cortex Memory is a local evidence system around agent inference. Its architecture favors bounded work, inspectability, and reversible adaptation over an opaque "remember everything" pipeline. The core modules are harness-neutral; `__init__.py` also contains the included Hermes MemoryProvider adapter.
+Cortex Memory is a local evidence system around agent inference. Its architecture favors bounded work, inspectability, and reversible adaptation over an opaque "remember everything" pipeline. The core modules are harness-neutral; `hermes_provider.py` contains the included Hermes MemoryProvider adapter, re-exported through `__init__.py` for plugin compatibility. `CortexStore` remains the persistence facade; record and version-history operations delegate to `cortex_records.py` using the same store connection, locks, and transactions.
 
 ## Invariants
 

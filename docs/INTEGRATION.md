@@ -75,6 +75,12 @@ with CortexHarnessAdapter("./state/cortex.db") as cortex:
 
 The wrapper adaptively skips greetings and self-contained tasks, so “primary” does not mean blindly injecting memory into every turn. `force_recall=True` is available when a harness already knows the task must use durable history.
 
+The wrapper forwards the recall plan's threshold, graph depth, temporal mode,
+and as-of date as well as its count and token budget. Direct `CortexMemory.recall`
+callers can set `threshold`, `graph_depth`, `temporal_mode`, and `as_of` explicitly;
+omitting them preserves current-time, depth-one retrieval with the retriever's
+default threshold.
+
 Hermes currently keeps its built-in memory surface available alongside an external provider. The included adapter therefore injects an explicit `cortex_memory`-first rule and intercepts a successful legacy built-in write as a Cortex creation proposal. Recall itself is still enforced by Hermes's before-turn provider hook; it does not depend on the model choosing to search. Set Hermes's `memory.nudge_interval` to `0` in a Cortex-primary deployment so the periodic legacy background reviewer does not keep filling `MEMORY.md`; Cortex's provider `sync_turn` remains responsible for bounded automatic proposals and episode recording. Neither automatic turn extraction nor a model-issued memory tool call becomes recallable until an audited operator decision—or the separately enabled, delayed automatic judge—admits the unchanged staged candidate.
 
 The harness decides how it detects durable facts, which evidence the answer used, and when an outcome is known. Cortex deliberately does not infer success merely because a memory was retrieved.
@@ -186,3 +192,12 @@ Start with deterministic shadow mode. It records replay evidence and maintenance
 - `audit()` returns `ok: true` after normal use.
 
 Hermes-specific installation and lifecycle hooks remain in the included reference adapter. A new harness should depend on the public client/store interfaces, not copy Hermes internals.
+
+## Background preparation
+
+`CortexMemory.preload()` and `CortexHarnessAdapter.preload()` accept a likely
+upcoming task hint without selecting, injecting, or crediting memories. Core
+caching is bounded and revision-aware; the worker starts only when asked.
+Hermes can try the opt-in `background_preload` setting. See
+[PERFORMANCE.md](PERFORMANCE.md) for examples, lifecycle, limits, timing, and
+prediction claim boundaries.

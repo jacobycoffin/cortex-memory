@@ -6,11 +6,13 @@ import logging
 import math
 import sqlite3
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
 from .metacognition import assess_retrieval
+from .preload import BackgroundPreloader
 from .retrieval import MemoryRetriever, RetrievalContext
 from .security import neutralize_role_tags, sanitize_memory
 from .sleep import SleepConfig, run_sleep
@@ -370,9 +372,14 @@ class RecallBatch:
 class CortexMemory:
     """Framework-independent facade over Cortex storage, recall, and Sleep."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, cache_ttl_seconds: float = 45):
         self.store = CortexStore(db_path)
+        self._last_recall_ms = 0.0
         self.retriever = MemoryRetriever(self.store)
+        self.retriever.recall_cache.ttl_seconds = max(0.0, min(300.0, float(cache_ttl_seconds)))
+        self._preloader = BackgroundPreloader(
+            lambda query, options: self.retriever.search_cached(query, speculative=True, **options)
+        )
 
     def remember(
         self,
@@ -474,6 +481,10 @@ class CortexMemory:
         limit: int = 6,
         token_budget: int = 700,
         include_archived: bool = False,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        graph_depth: int = 1,
+        threshold: float | None = None,
         active_project: str | None = None,
         entities: Sequence[str] = (),
         scope: dict[str, str] | None = None,
@@ -483,6 +494,7 @@ class CortexMemory:
     ) -> RecallBatch:
         """Retrieve bounded evidence and open an outcome-tracking batch."""
 
+        prepare_start = time.perf_counter()
         retrieval_scope = dict(scope or {})
         retrieval_scope.setdefault("task_type", task_type)
         retrieval_context = RetrievalContext(
@@ -494,11 +506,15 @@ class CortexMemory:
             applicable_systems=tuple(str(item) for item in applicable_systems),
             applicable_versions=tuple(str(item) for item in applicable_versions),
         )
-        results, diagnostics = self.retriever.search_detailed(
+        results, diagnostics = self.retriever.search_cached(
             query,
             limit=limit,
             token_budget=token_budget,
             include_archived=include_archived,
+            temporal_mode=temporal_mode,
+            as_of=as_of,
+            graph_depth=graph_depth,
+            threshold=threshold,
             context=retrieval_context,
         )
         assessments = []
@@ -511,79 +527,83 @@ class CortexMemory:
             )
             assessments.append(assess_retrieval(result, calibration=learned))
         items = [(str(result.memory["id"]), float(result.score)) for result in results]
-        task_id = self.store.create_usage_batch(
-            items,
-            query=query,
-            session_id=session_id,
-            task_type=task_type,
-            recall_mode="external_adapter",
-            requested_budget=token_budget,
-            estimated_tokens=sum(int(result.estimated_tokens) for result in results),
-            metacognitive_assessments=[assessment.as_record() for assessment in assessments],
-            metacognition_mode="shadow",
-        )
-        memories = [result.as_dict() for result in results]
-        assessment_by_id = {assessment.memory_id: assessment for assessment in assessments}
-        trace_candidates: list[dict[str, Any]] = []
-        for raw in diagnostics.candidate_decisions:
-            candidate = dict(raw)
-            assessment = assessment_by_id.get(str(candidate.get("memory_id") or ""))
-            if assessment:
-                candidate["metacognition"] = {
-                    "decision": assessment.decision,
-                    "calibrated_probability": assessment.calibrated_probability,
-                    "reason": assessment.reason,
-                    "applied": False,
-                }
-            trace_candidates.append(candidate)
-        for memory in memories:
-            assessment = assessment_by_id.get(str(memory["id"]))
-            if assessment:
-                memory["metacognition"] = assessment.as_record()
-            self.store.log_access(
-                str(memory["id"]),
-                "selected",
+        with self.store.transaction():
+            task_id = self.store.create_usage_batch(
+                items,
                 query=query,
                 session_id=session_id,
-                score=float(memory["score"]),
+                task_type=task_type,
+                recall_mode="external_adapter",
+                requested_budget=token_budget,
+                estimated_tokens=sum(int(result.estimated_tokens) for result in results),
+                metacognitive_assessments=[assessment.as_record() for assessment in assessments],
+                metacognition_mode="shadow",
             )
-        estimated_tokens = sum(int(result.estimated_tokens) for result in results)
-        self.store.record_recall_run(
-            session_id=session_id,
-            query=query,
-            mode="external_adapter",
-            reason="adapter requested bounded memory retrieval",
-            requested_limit=limit,
-            token_budget=token_budget,
-            candidate_count=diagnostics.candidate_count,
-            selected_count=len(results),
-            estimated_tokens=estimated_tokens,
-            prepare_ms=0.0,
-            abstained=not results,
-            task_id=task_id,
-            stage_ms=dict(diagnostics.stage_ms),
-        )
-        self.store.record_memory_trace_decision(
-            task_id=task_id,
-            session_id=session_id,
-            goal=query,
-            context_summary=(
-                f"task_type={task_type}; session_scope={session_id or 'unspecified'}; "
-                f"active_project={active_project or 'unavailable'}; adapter=framework_neutral; "
-                f"requested_limit={limit}; token_budget={token_budget}"
-            ),
-            task_type=task_type,
-            recall_mode="external_adapter",
-            retrieval_used=bool(results),
-            retrieval_reason=(
-                "adapter requested bounded memory retrieval; candidates selected"
-                if results
-                else "adapter requested bounded memory retrieval; Cortex abstained"
-            ),
-            queries=[query],
-            candidate_memories=trace_candidates,
-            retrieval_context=retrieval_context.as_record(),
-        )
+            memories = [result.as_dict() for result in results]
+            assessment_by_id = {assessment.memory_id: assessment for assessment in assessments}
+            trace_candidates: list[dict[str, Any]] = []
+            for raw in diagnostics.candidate_decisions:
+                candidate = dict(raw)
+                assessment = assessment_by_id.get(str(candidate.get("memory_id") or ""))
+                if assessment:
+                    candidate["metacognition"] = {
+                        "decision": assessment.decision,
+                        "calibrated_probability": assessment.calibrated_probability,
+                        "reason": assessment.reason,
+                        "applied": False,
+                    }
+                trace_candidates.append(candidate)
+            for memory in memories:
+                assessment = assessment_by_id.get(str(memory["id"]))
+                if assessment:
+                    memory["metacognition"] = assessment.as_record()
+                self.store.log_access(
+                    str(memory["id"]),
+                    "selected",
+                    query=query,
+                    session_id=session_id,
+                    score=float(memory["score"]),
+                )
+            estimated_tokens = sum(int(result.estimated_tokens) for result in results)
+            self.store.record_recall_run(
+                session_id=session_id,
+                query=query,
+                mode="external_adapter",
+                reason="adapter requested bounded memory retrieval",
+                requested_limit=limit,
+                token_budget=token_budget,
+                candidate_count=diagnostics.candidate_count,
+                selected_count=len(results),
+                estimated_tokens=estimated_tokens,
+                prepare_ms=(time.perf_counter() - prepare_start) * 1000,
+                abstained=not results,
+                task_id=task_id,
+                stage_ms=dict(diagnostics.stage_ms),
+            )
+            self.store.record_memory_trace_decision(
+                task_id=task_id,
+                session_id=session_id,
+                goal=query,
+                context_summary=(
+                    f"task_type={task_type}; session_scope={session_id or 'unspecified'}; "
+                    f"active_project={active_project or 'unavailable'}; adapter=framework_neutral; "
+                    f"requested_limit={limit}; token_budget={token_budget}; "
+                    f"temporal_mode={temporal_mode}; as_of={as_of or 'unspecified'}; "
+                    f"graph_depth={graph_depth}; threshold={threshold}"
+                ),
+                task_type=task_type,
+                recall_mode="external_adapter",
+                retrieval_used=bool(results),
+                retrieval_reason=(
+                    "adapter requested bounded memory retrieval; candidates selected"
+                    if results
+                    else "adapter requested bounded memory retrieval; Cortex abstained"
+                ),
+                queries=[query],
+                candidate_memories=trace_candidates,
+                retrieval_context=retrieval_context.as_record(),
+            )
+        self._last_recall_ms = (time.perf_counter() - prepare_start) * 1000
         return RecallBatch(
             task_id=task_id,
             query=query,
@@ -591,6 +611,38 @@ class CortexMemory:
             _store=self.store,
             token_budget=token_budget,
         )
+
+    def preload(self, query: str, *, task_type: str = "general", **options: Any) -> bool:
+        """Warm a likely next recall in the background, without usage credit.
+
+        Use the same options as recall(). Explicit task hints are more useful
+        than guessing a future query; a context or database change forces fresh
+        retrieval. No worker starts until this method is called.
+        """
+
+        if self.retriever.recall_cache.ttl_seconds <= 0:
+            return False
+        context = RetrievalContext(
+            active_project=options.pop("active_project", None), goal=query,
+            entities=tuple(options.pop("entities", ())),
+            scope={"task_type": task_type, **dict(options.pop("scope", None) or {})},
+            system_state=dict(options.pop("system_state", None) or {}),
+            applicable_systems=tuple(options.pop("applicable_systems", ())),
+            applicable_versions=tuple(options.pop("applicable_versions", ())),
+        )
+        options.pop("session_id", None)
+        defaults = dict(limit=6, token_budget=700, include_archived=False,
+                        temporal_mode="current", as_of=None, graph_depth=1, threshold=None)
+        unknown = set(options) - defaults.keys()
+        if unknown:
+            raise TypeError(f"unknown preload options: {', '.join(sorted(unknown))}")
+        defaults.update(options)
+        return self._preloader.submit(query, {**defaults, "context": context})
+
+    def preload_stats(self) -> dict[str, Any]:
+        """Aggregate counters only; no memory content, queries, or IDs."""
+        return {"worker": self._preloader.stats(), "cache": self.retriever.recall_cache.stats(),
+                "foreground_last_ms": round(self._last_recall_ms, 3)}
 
     def record_episode(
         self,
@@ -617,6 +669,8 @@ class CortexMemory:
         return self.store.audit()
 
     def close(self) -> None:
+        self._preloader.close()
+        self.retriever.recall_cache.clear()
         self.store.close()
 
     def __enter__(self) -> CortexMemory:

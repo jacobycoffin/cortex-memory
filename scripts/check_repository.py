@@ -32,6 +32,16 @@ CONTENT_RULES = {
     "JWT bearer token": re.compile(rb"\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
 }
 
+# Secret scanners cannot determine whether prose came from a private corpus.
+# Reject explicit history-derived fixture provenance as an additional gate;
+# synthetic replacements still require human review before publication.
+FIXTURE_HISTORY_SOURCE = re.compile(
+    rb"\b(?:trimmed|copied|taken|extracted|captured|sourced|derived)\s+from\s+"
+    rb"(?:the\s+)?(?:real|live|private)\s+"
+    rb"(?:(?:operator|user|agent)\s+)?(?:memories|memory|corpus|history|conversations?|sessions?)\b",
+    re.I,
+)
+
 
 def tracked_files() -> list[Path]:
     result = subprocess.run(
@@ -56,6 +66,11 @@ def check_public_files(paths: list[Path]) -> list[str]:
         for label, pattern in CONTENT_RULES.items():
             if pattern.search(data):
                 failures.append(f"{label} found in tracked file: {relative}")
+        if (
+            any(part in {"tests", "benchmarks", "fixtures"} for part in Path(relative).parts)
+            and FIXTURE_HISTORY_SOURCE.search(data)
+        ):
+            failures.append(f"history-derived fixture found in tracked file: {relative}")
     return failures
 
 

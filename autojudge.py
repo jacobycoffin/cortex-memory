@@ -89,6 +89,37 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         raise AutoJudgeError("auto-judge provider redirects are not allowed")
 
 
+def jev_switch() -> bool | None:
+    """The single Jev opt-in switch, ``CORTEX_JEV_ENABLED``.
+
+    Returns True/False when the operator set it, None when unset. Jev (the paid,
+    remote TypeSafe System One engine) is strictly opt-in: it is never turned on
+    because a credential such as ``TYPESAFE_API_KEY`` happens to be present.
+    """
+
+    raw = os.environ.get("CORTEX_JEV_ENABLED", "").strip().casefold()
+    if not raw:
+        return None
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _resolve_engine(env_name: str) -> str:
+    """Pick chat or jev for one engine slot.
+
+    * ``CORTEX_JEV_ENABLED=1`` selects jev unless that slot explicitly says chat.
+    * ``CORTEX_JEV_ENABLED=0`` forces chat even if an older config says jev.
+    * Unset: an explicit ``<slot>=jev`` (legacy opt-in) is honored; otherwise chat.
+    """
+
+    explicit = os.environ.get(env_name, "").strip().lower()
+    switch = jev_switch()
+    if switch is False:
+        return "chat" if explicit in {"", "jev"} else explicit
+    if switch is True:
+        return explicit or "jev"
+    return explicit or "chat"
+
+
 @dataclass(frozen=True)
 class AutoJudgeConfig:
     enabled: bool = False
@@ -148,10 +179,8 @@ class AutoJudgeConfig:
             ),
             links_enabled=_env_bool("CORTEX_AUTO_JUDGE_LINKS_ENABLED", False),
             links_top_k=_env_int("CORTEX_AUTO_JUDGE_LINKS_TOP_K", _LINKS_TOP_K_DEFAULT),
-            engine=(os.environ.get("CORTEX_AUTO_JUDGE_ENGINE", "chat").strip().lower() or "chat"),
-            link_engine=(
-                os.environ.get("CORTEX_AUTO_JUDGE_LINK_ENGINE", "chat").strip().lower() or "chat"
-            ),
+            engine=_resolve_engine("CORTEX_AUTO_JUDGE_ENGINE"),
+            link_engine=_resolve_engine("CORTEX_AUTO_JUDGE_LINK_ENGINE"),
             jev_links=_env_bool("CORTEX_AUTO_JUDGE_JEV_LINKS", True),
             jev_fallback=_env_bool("CORTEX_AUTO_JUDGE_JEV_FALLBACK", True),
         )
@@ -858,6 +887,7 @@ def _find_related_memories(
     content: str,
     *,
     top_k: int = 5,
+    exclude_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Find top-K existing memories semantically related to *content*.
 
@@ -877,6 +907,11 @@ def _find_related_memories(
     seen_ids: set[str] = set()
     for r in results:
         mem_id = str(r.memory.get("id", ""))
+        if exclude_id and mem_id == str(exclude_id):
+            # The memory being judged is itself the top semantic hit for its own
+            # content; judging it against itself burns a prompt slot and would
+            # violate the edges CHECK (src_id <> dst_id) if ever acted on.
+            continue
         if mem_id in seen_ids:
             continue
         seen_ids.add(mem_id)
@@ -1757,7 +1792,7 @@ def link_orphan_memories(
             if not content.strip():
                 continue
             related = _find_related_memories(
-                store, retriever, content, top_k=link_top_k,
+                store, retriever, content, top_k=link_top_k, exclude_id=mem_id,
             )
             if not related:
                 continue
@@ -1802,7 +1837,7 @@ def link_orphan_memories(
             if not content.strip():
                 continue
             related = _find_related_memories(
-                store, retriever, content, top_k=link_top_k,
+                store, retriever, content, top_k=link_top_k, exclude_id=mem_id,
             )
             record: dict[str, Any] = {
                 "memory_id": mem_id,

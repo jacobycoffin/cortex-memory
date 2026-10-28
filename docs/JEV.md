@@ -6,6 +6,15 @@ System One) — a fast model that answers *typed questions* (`noul` / `choice` /
 Every threshold, permission, and side effect stays in code; the model only
 supplies calibrated semantic judgments.
 
+> **Off by default, always.** Jev is a paid remote API (TypeSafe System One,
+> key `TYPESAFE_API_KEY`). Cortex never turns it on because a key is present.
+> It runs only when you opt in: `bash scripts/install.sh --enable-jev` during
+> setup, or `CORTEX_JEV_ENABLED=1` in `$HERMES_HOME/cortex/auto-judge.env`
+> afterwards. `CORTEX_JEV_ENABLED=0` (or `--no-jev`) forces the chat engine even
+> if `CORTEX_AUTO_JUDGE_ENGINE=jev` is set. When `CORTEX_JEV_ENABLED` is unset, the
+> engine is `CORTEX_AUTO_JUDGE_ENGINE` (default `chat`). The "live" dates below
+> describe the author's own deployment, not a default.
+
 Two uses are shipped today:
 
 | Use | Env switch | Status |

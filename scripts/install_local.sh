@@ -14,7 +14,7 @@ if [[ -d "$TARGET" ]]; then
 fi
 
 mkdir -p "$TARGET"
-for file in __init__.py __main__.py adaptive_reconsolidation.py adaptive_weights.py attribution.py autojudge.py benchmarking.py brain_mechanics.py client.py cli.py cognition.py cortex_schema.py dashboard.py dashboard_auth.py dashboard.html embeddings.py evaluation.py favicon.svg favicon.ico apple-touch-icon.png extraction.py fusion.py harness.py jev.py metacognition.py refinery.py relevance_pruning.py research.py retrieval.py review_copilot.py schema_formation.py security.py semantic_consolidation.py semantics.py serializers.py sleep.py store.py temporal.py tooling.py vault.py plugin.yaml README.md AGENTS.md LICENSE CHANGELOG.md; do
+for file in __init__.py __main__.py adaptive_reconsolidation.py adaptive_weights.py attribution.py autojudge.py benchmarking.py brain_mechanics.py client.py cli.py cognition.py cortex_schema.py cortex_records.py dashboard.py dashboard_auth.py dashboard.html embeddings.py evaluation.py favicon.svg favicon.ico apple-touch-icon.png extraction.py fusion.py harness.py hermes_config.py hermes_hooks.py hermes_provider.py mcp_server.py runtime_path.py preload.py hermes_receipts.py jev.py metacognition.py refinery.py relevance_pruning.py research.py retrieval.py review_copilot.py schema_formation.py security.py semantic_consolidation.py semantics.py serializers.py sleep.py store.py temporal.py tooling.py vault.py plugin.yaml README.md AGENTS.md LICENSE CHANGELOG.md; do
   cp "$SOURCE_DIR/$file" "$TARGET/$file"
 done
 mkdir -p "$TARGET/scripts"
@@ -30,12 +30,20 @@ cp "$SOURCE_DIR/scripts/cortex-auto-judge.service.in" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/cortex-auto-judge.timer" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/install_auto_judge_timer.sh" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/uninstall_local.sh" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/hermes_python.sh" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark.py" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark_compare.py" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark_e2e.py" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark_aggregate.py" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark_social_card.py" "$TARGET/scripts/"
 cp "$SOURCE_DIR/scripts/benchmark_adaptive.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/benchmark_recall.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/evaluate_real_history.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/evaluate_preload.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/compare_retrieval_reports.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/download_embedding_model.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/backfill_embeddings.py" "$TARGET/scripts/"
+cp "$SOURCE_DIR/scripts/verify_hermes_install.py" "$TARGET/scripts/"
 mkdir -p "$TARGET/benchmarks"
 cp "$SOURCE_DIR/benchmarks/__init__.py" "$TARGET/benchmarks/"
 cp "$SOURCE_DIR/benchmarks/core.py" "$TARGET/benchmarks/"

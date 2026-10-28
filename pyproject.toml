@@ -9,8 +9,12 @@ description = "Psychology-inspired adaptive memory, offline consolidation, and o
 requires-python = ">=3.10"
 dependencies = []
 
+[project.optional-dependencies]
+embeddings = ["numpy>=1.24", "onnxruntime>=1.17", "tokenizers>=0.15"]
+
 [project.scripts]
 cortex-memory = "cortex.cli:main"
+cortex-mcp = "cortex.mcp_server:main"
 
 [project.urls]
 Homepage = "https://github.com/jacobycoffin/cortex-memory"

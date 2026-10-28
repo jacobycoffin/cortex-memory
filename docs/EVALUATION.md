@@ -232,3 +232,18 @@ For a result that can support a public model comparison:
 8. Publish the sanitized JSON, protocol, model, date, and sample count. Keep private labels and raw traces local.
 
 An offline retrieval improvement is evidence that Cortex found labeled information. A live tool-selection improvement is evidence about the tested model and scenarios. Neither alone proves that autonomous pruning, workflow learning, or the entire production agent improved.
+
+## Compare retrieval quality with speed
+
+[PERFORMANCE.md](PERFORMANCE.md) documents the synthetic preparation runner and
+`scripts/compare_retrieval_reports.py`. The comparator also accepts two sanitized
+private real-history reports from this guide, checking recall, precision, MRR,
+and latency together. Use the same local labels and database snapshot in both
+checkouts. Aggregate comparison alone does not establish answer accuracy or
+activate a policy.
+
+An operator-run validation keeps the brain and labels on their host. It first compares retrieval with preloading
+off, then uses `scripts/evaluate_preload.py` for a separate offline Hermes replay
+with useful warm hits, signed added process CPU, and foreground p95. Only the
+aggregate handoff returns; label replay does not establish live prediction hit
+rate.

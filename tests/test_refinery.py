@@ -29,7 +29,7 @@ TABLE_CONTENT = (
     "| prometheus | 9090 | mon-01 |\n| loki | 3100 | mon-02 |"
 )
 CONFIG_CONTENT = (
-    "server_host = 10.0.0.12\nserver_port = 8443\ntls_enabled = true\nretry_limit = 4\n"
+    "server_host = 192.0.2.12\nserver_port = 8443\ntls_enabled = true\nretry_limit = 4\n"
     "queue_backend = redis"
 )
 DIAGRAM_CONTENT = (
@@ -63,7 +63,7 @@ class RefineryClassifierTests(unittest.TestCase):
     def test_explicit_user_statements_stay_canonical(self) -> None:
         result = classify_record_role(
             {
-                "content": "Jacoby prefers dashboards rendered in dark mode with dense tables.",
+                "content": "Alex prefers dashboards rendered in dark mode with dense tables.",
                 "kind": "preference",
                 "source_category": "USER_EXPLICIT",
             }
@@ -155,7 +155,7 @@ class RefineryStoreTests(unittest.TestCase):
 
     def test_new_writes_are_classified_and_presented(self) -> None:
         preference_id, _ = self.store.add_memory(
-            "Jacoby prefers concise commit messages under seventy characters.",
+            "Alex prefers concise commit messages under seventy characters.",
             kind="preference",
             source_category="USER_EXPLICIT",
         )
@@ -428,7 +428,7 @@ class RefineryStoreTests(unittest.TestCase):
     def test_backfill_assigns_roles_without_touching_records(self) -> None:
         code_id, _ = self.store.add_memory(CODE_CONTENT, kind="procedure")
         preference_id, _ = self.store.add_memory(
-            "Jacoby prefers signal-dense weekly summaries.",
+            "Alex prefers signal-dense weekly summaries.",
             kind="preference",
             source_category="USER_EXPLICIT",
         )
@@ -497,7 +497,7 @@ class RefineryMigrationTests(unittest.TestCase):
             )
             now = datetime.now(timezone.utc).isoformat()
             rows = [
-                ("legacy-pref", "preference", "Jacoby prefers dense dashboards.", "hash-pref"),
+                ("legacy-pref", "preference", "Alex prefers dense dashboards.", "hash-pref"),
                 ("legacy-code", "procedure", CODE_CONTENT, "hash-code"),
             ]
             for memory_id, kind, content, digest in rows:
@@ -516,7 +516,7 @@ class RefineryMigrationTests(unittest.TestCase):
             try:
                 preference = store.get_memory("legacy-pref")
                 code = store.get_memory("legacy-code")
-                self.assertEqual(preference["content"], "Jacoby prefers dense dashboards.")
+                self.assertEqual(preference["content"], "Alex prefers dense dashboards.")
                 self.assertEqual(preference["state"], "active")
                 # Legacy rows migrate with the AGENT_INFERENCE default source
                 # category and no dependencies, so they classify as claims —
@@ -600,7 +600,7 @@ class RefineryRetrievalSafetyTests(unittest.TestCase):
             "prowlarr_get_indexers usage",
         )
         self.store.add_memory(
-            "Jacoby prefers concise commit messages under seventy characters.",
+            "Alex prefers concise commit messages under seventy characters.",
             kind="preference",
             source_category="USER_EXPLICIT",
         )

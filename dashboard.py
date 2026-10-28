@@ -12,6 +12,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -136,8 +137,12 @@ def _basic_credentials(header: str | None) -> tuple[str, str] | None:
         return None
 
 
-def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
+def _auto_judge_snapshot(
+    store: CortexStore, *, now: datetime | None = None
+) -> dict[str, object]:
     """Query the Cortex DB for auto-judge analytics and decision history."""
+    current = now or datetime.now(timezone.utc)
+    cutoff = (current.astimezone(timezone.utc).date() - timedelta(days=14)).isoformat()
     conn = store._conn
     data: dict[str, object] = {
         "config": {},
@@ -246,10 +251,10 @@ def _auto_judge_snapshot(store: CortexStore) -> dict[str, object]:
             SELECT DATE(created_at) AS day, action, COUNT(*) AS cnt
             FROM operator_review_decisions
             WHERE actor LIKE 'cortex-auto-judge%'
-              AND created_at >= DATE('now', '-14 days')
+              AND created_at >= ?
             GROUP BY DATE(created_at), action
             ORDER BY day
-        """).fetchall()
+        """, (cutoff,)).fetchall()
         # Array triples [day, action, count]: the dashboard chart reads
         # positions, and raw sqlite Rows are not JSON-serializable --
         # json.dumps(default=str) would degrade them to opaque reprs.
@@ -601,13 +606,6 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 snapshot["sleep_runtime"] = sleep_status()
                 snapshot["sleep_schedule"] = sleep_schedule()
                 snapshot["auto_judge"] = _auto_judge_snapshot(store)
-                snapshot["semantic_consolidation"] = store.semantic_consolidation_snapshot()
-                snapshot["adaptive_pruning"] = store.adaptive_pruning_snapshot()
-                snapshot["scoring_weights"] = store.scoring_weight_snapshot()
-                snapshot["adaptive_reconsolidation"] = (
-                    store.adaptive_reconsolidation_snapshot()
-                )
-                snapshot["schema_formation"] = store.schema_formation_snapshot()
                 self._json(HTTPStatus.OK, snapshot)
                 return
             if parsed.path == "/api/sleep/status":

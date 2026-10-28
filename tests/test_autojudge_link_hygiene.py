@@ -147,3 +147,56 @@ class LinkHygieneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class OrphanSelfExclusionTests(unittest.TestCase):
+    """The memory under judgement must not be offered to the linker as its own
+    candidate. Semantic search ranks the memory itself first for its own
+    content, which burned a prompt slot and produced a self-link suggestion that
+    ``_apply_links`` silently dropped on the ``src_id <> dst_id`` CHECK — the
+    orphan pass reported ``links_created: 0`` while appearing to succeed.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _fake_retriever(self, ids: list[str]):
+        class _Result:
+            def __init__(self, mem_id: str) -> None:
+                self.memory = {"id": mem_id, "content": f"content {mem_id}", "kind": "semantic"}
+                self.score = 0.9
+
+        class _Retriever:
+            def search(self, *args, **kwargs):
+                return [_Result(mid) for mid in ids]
+
+        return _Retriever()
+
+    def test_self_is_excluded_from_related_candidates(self) -> None:
+        from cortex.autojudge import _find_related_memories
+
+        orphan = "11111111-1111-1111-1111-111111111111"
+        other = "22222222-2222-2222-2222-222222222222"
+        retriever = self._fake_retriever([orphan, other])
+
+        related = _find_related_memories(
+            self.store, retriever, "content", top_k=5, exclude_id=orphan
+        )
+
+        self.assertEqual([r["memory_id"] for r in related], [other])
+
+    def test_without_exclude_id_self_is_still_returned(self) -> None:
+        # Admission-time callers judge a candidate that is not yet a memory row,
+        # so the default must stay permissive.
+        from cortex.autojudge import _find_related_memories
+
+        orphan = "11111111-1111-1111-1111-111111111111"
+        retriever = self._fake_retriever([orphan])
+
+        related = _find_related_memories(self.store, retriever, "content", top_k=5)
+
+        self.assertEqual([r["memory_id"] for r in related], [orphan])

@@ -167,7 +167,7 @@ must not regress.
 **Speed 2 — offline, nightly, batched (Local Sleep)**
 
 - re-observe the world where a claim is mechanically checkable
-  (e.g. *"Plex is on 32400"* → probe the port; *"CT100 runs X"* → query Proxmox)
+  (e.g. *"Plex is on 32400"* → probe the port; *"VM 100 runs X"* → query the hypervisor)
 - resolve contradictions that survived extraction
 - run provider-backed judgement only on what the cheap tier could not settle
 - sweep memories that **no recall has ever touched** (§2.4)

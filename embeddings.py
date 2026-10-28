@@ -2,9 +2,10 @@
 Local, offline text embeddings for Cortex.
 
 Runs a small ONNX sentence-embedding model (BAAI/bge-small-en-v1.5, 384-dim)
-using ONLY libraries already present in the Hermes venv — `onnxruntime`,
-`tokenizers` and `numpy`. There is deliberately **no new dependency**, no
-network access at query time, and no data leaving the machine.
+using optional `onnxruntime`, `tokenizers`, and `numpy` dependencies. Install
+them with `pip install '.[embeddings]'` or use an existing harness environment.
+The core stays dependency-free; there is no network access at query time and
+no data leaving the machine. Model setup is a separate explicit operation.
 
 Verified 2026-09-10: with CLS pooling + L2 normalisation this reproduces
 `fastembed`'s output for the same model at cosine 1.0000, so the embeddings
@@ -40,10 +41,14 @@ MAX_LEN = 512
 def default_model_dir() -> Path:
     """Where the ONNX model lives.
 
-    Resolved at call time from the same ``HERMES_HOME`` convention the rest of
-    the plugin uses, rather than hardcoding a deployment path, so the module
+    ``CORTEX_MODEL_DIR`` wins when set (the standalone MCP server sets it to
+    ``$CORTEX_HOME/models/bge-small-en-v1.5``). Otherwise it is resolved at call
+    time from the same ``HERMES_HOME`` convention the rest of the plugin uses, rather than hardcoding a deployment path, so the module
     works on any host and the release checker stays happy.
     """
+    explicit = os.environ.get("CORTEX_MODEL_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
     home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
     return Path(home).expanduser() / "models" / "bge-small-en-v1.5"
 
