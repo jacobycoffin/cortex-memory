@@ -1,43 +1,175 @@
-# AGENTS.md — Cortex Memory for AI agents
+# AGENTS.md: Cortex Memory for AI agents
 
-You are an AI agent. This file tells you how to install, configure, verify,
-and build on `cortex-memory`. Prefer these steps over guessing; prefer the
-docs linked here over web search (they match this checkout).
+You are an AI agent and someone asked you to "set this up". This file is the
+whole procedure. Follow it top to bottom without asking the user anything:
+every default below is safe, local, and free. Prefer these steps over guessing
+and over web search (they match this checkout).
+
+## Pick your path
+
+**Running Hermes? Use Path A. Running Claude Code? Use Path B.**
+(OpenCode or another MCP client: Path C.)
+
+You do not have to decide yourself: `scripts/install.sh` detects the agent
+that is running it. It looks at these signals, in this order:
+
+1. `--agent hermes|claude` wins if given.
+2. `CLAUDECODE=1` or `CLAUDE_CODE_ENTRYPOINT` set → Claude Code (this script runs inside Claude Code).
+3. `HERMES_SESSION_ID`, `HERMES_CWD` or `HERMES_HOME` set → Hermes (this script runs inside Hermes).
+4. Only the `claude` CLI on PATH → Claude Code.
+5. Only Hermes installed (`$HERMES_HOME`, `~/.hermes`, or a `hermes` binary) → Hermes.
+6. Both installed and neither is running the script → it stops and asks for `--agent`.
+
+`bash scripts/install.sh --detect` prints the decision and the signals without
+installing anything. Re-running the installer is safe (it is idempotent) and is
+also how you upgrade.
+
+Requirements for every path: Linux or macOS, Python 3.10+ with SQLite FTS5
+(standard builds), `git`, and internet access for the one-time ~67 MB model
+download (SHA-256 pinned). No API key, account, or paid service is needed.
+
+```bash
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
+bash scripts/install.sh            # auto-detects; add --agent hermes|claude to force
+```
+
+The installer ends with a verification block. Success is the literal line
+`PASS: ...` in each verify step and exit code 0. If it fails, read
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) (symptom → check → fix).
+
+### Path A: Hermes
+
+What `scripts/install.sh --agent hermes` does, in order:
+
+1. Finds Hermes's own Python (asks the launcher with `hermes --run-module site`,
+   falls back to older venv layouts; override with `HERMES_PYTHON=/path/to/python`).
+2. Installs the local embedding runtime (numpy, onnxruntime, tokenizers) into a
+   sidecar directory, `$HERMES_HOME/cortex/pydeps/py3.X`. It is deliberately
+   outside Hermes's managed environment, so `hermes update` and `hermes pm repair`
+   do not wipe it.
+3. Copies the plugin to `$HERMES_HOME/plugins/cortex` (`scripts/install_local.sh`,
+   which backs up any previous plugin and never restarts Hermes).
+4. Downloads and verifies `bge-small-en-v1.5` (ONNX, quantized) into
+   `$HERMES_HOME/models/bge-small-en-v1.5`.
+5. Backs up `config.yaml` and then sets `memory.provider: cortex` plus
+   `plugins.cortex.background_preload: true`, `query_cache_ttl_seconds: 45` and
+   `semantic_fusion_weight: 10`. Comments are preserved, and keys you already set are never overwritten.
+6. Runs `hermes plugins enable cortex` (Hermes lists newly found plugins as disabled).
+7. Embeds any existing memories, then runs `scripts/verify_hermes_install.py --write-test`
+   through Hermes's own plugin loader. That checks the config, the loader, semantic fusion (384-dim vectors),
+   the background preloader, non-blocking `queue_prefetch`, the prefetch latency
+   budget, and a real capture → review → recall round trip (then archives the test memory).
+
+Then restart Hermes (new session, or `hermes gateway restart` if you run the gateway).
+
+**How Hermes memory admission works (important):** in Hermes, Cortex captures
+memory candidates from conversation automatically. It *stages* them as review
+proposals instead of trusting them blindly. Staged proposals are not recalled
+until they are approved. With the default (no remote services), approve them locally:
+
+```bash
+PYTHONPATH="$HERMES_HOME/plugins" python3 -m cortex review list          # pending proposals
+PYTHONPATH="$HERMES_HOME/plugins" python3 -m cortex review approve <id>  # or: reject <id>, approve-all
+```
+
+(Use Hermes's Python if `python3` lacks PyYAML; the installer prints it.) The
+local dashboard (`scripts/install_dashboard_service.sh`) offers the same queue
+in a browser. Automatic review is the optional remote auto-judge, which is off by default (see
+"Optional paid component" below).
+
+### Path B: Claude Code
+
+What `scripts/install.sh --agent claude` does, in order:
+
+1. Creates a private venv at `$CORTEX_HOME/venv` (`CORTEX_HOME` defaults to
+   `~/.cortex`, mode 700) and runs `pip install '.[embeddings]'` there.
+2. Downloads and verifies the embedding model into `$CORTEX_HOME/models/bge-small-en-v1.5`.
+3. Registers the stdio MCP server for all projects:
+   `claude mcp add -s user cortex -e CORTEX_HOME=$CORTEX_HOME -- $CORTEX_HOME/venv/bin/python -m cortex.mcp_server`.
+   Tools: `memory_search`, `context_brief`, `remember`, `forget` (reversible archive), `stats`.
+4. Merges three hooks into `~/.claude/settings.json` (after a backup; skip them with `--no-hooks`):
+   `SessionStart` injects a short brief; `UserPromptSubmit` injects memories relevant to the prompt;
+   `Stop` logs an episode (set `CORTEX_RECORD_EPISODES=0` to turn that off).
+5. Adds the memory-usage block from [docs/claude-memory-block.md](docs/claude-memory-block.md)
+   to `~/.claude/CLAUDE.md` between `<!-- cortex:begin -->` markers (replaced on re-run; skip with `--no-claude-md`).
+6. Verifies: `scripts/mcp_smoke_test.py` drives every tool over JSON-RPC against a
+   temporary database, then `python -m cortex.mcp_server doctor` checks the real store, then `claude mcp get cortex` must show `✔ Connected`.
+
+Then start a new Claude Code session (or run `/mcp`).
+
+In Claude Code, `remember` writes active memories directly (the agent is acting on
+your instructions in that session); `forget` archives reversibly. Data lives in
+`$CORTEX_HOME/cortex.db`. Back it up with `$CORTEX_HOME/venv/bin/python -m cortex.mcp_server backup`.
+
+Manual equivalent, if you cannot run the script:
+
+```bash
+python3 -m venv ~/.cortex/venv
+~/.cortex/venv/bin/pip install '.[embeddings]'
+~/.cortex/venv/bin/python scripts/download_embedding_model.py --output ~/.cortex/models/bge-small-en-v1.5
+claude mcp add -s user cortex -e CORTEX_HOME="$HOME/.cortex" -- ~/.cortex/venv/bin/python -m cortex.mcp_server
+~/.cortex/venv/bin/python scripts/mcp_smoke_test.py      # must print PASS
+```
+
+### Path C: OpenCode or any other MCP client
+
+Run Path B steps 1–2 (`bash scripts/install.sh --agent claude --no-hooks --no-claude-md`
+does them; it skips registration if `claude` is absent and writes `~/.claude.json` instead,
+which other clients ignore), then register this stdio server in your client.
+For OpenCode, `opencode.json`:
+
+```json
+{ "mcp": { "cortex": { "type": "local", "enabled": true,
+  "command": ["/home/YOU/.cortex/venv/bin/python", "-m", "cortex.mcp_server"],
+  "environment": { "CORTEX_HOME": "/home/YOU/.cortex" } } } }
+```
+
+Paste [docs/claude-memory-block.md](docs/claude-memory-block.md) into your client's instructions file (`AGENTS.md`).
+
+## Optional paid component: auto-judge and Jev (OFF by default, always)
+
+Everything above works with no remote service. Two optional pieces call one:
+
+- **Auto-judge** (Hermes only): a five-minute timer that sends staged proposals to an
+  LLM (OpenRouter by default) to approve or reject them automatically. Needs an API key and sends memory text off the machine.
+- **Jev**: TypeSafe's paid "System One" judgment API. It is an alternative engine for the auto-judge and needs a `TYPESAFE_API_KEY`.
+
+Both stay off even when credentials exist on the machine. They turn on only when you explicitly ask:
+
+| When | Turn on | Turn off |
+|---|---|---|
+| During setup | `bash scripts/install.sh --enable-jev` (implies the auto-judge) or `--enable-auto-judge` | `--no-jev` / `--no-auto-judge` |
+| After setup | `CORTEX_JEV_ENABLED=1` / `CORTEX_AUTO_JUDGE_ENABLED=1` in `$HERMES_HOME/cortex/auto-judge.env` | set them to `0` |
+
+`CORTEX_JEV_ENABLED=0` forces the chat engine even if `CORTEX_AUTO_JUDGE_ENGINE=jev`
+is set. Details and rollback: [docs/AUTO_JUDGE.md](docs/AUTO_JUDGE.md) and [docs/JEV.md](docs/JEV.md).
+
+## Maintenance and upgrades
+
+- **Upgrade Cortex:** `git pull && bash scripts/install.sh` (same flags as before). It is idempotent and keeps your data and settings.
+- **After `hermes update` / `hermes pm repair`:** nothing is required (the embedding runtime lives in the sidecar).
+  If Hermes moved to a new Python minor version, re-run `bash scripts/install.sh`. If you installed systemd timers, re-run their installers, because they embed Hermes's Python path.
+- **Backups:** Claude Code: `~/.cortex/venv/bin/python -m cortex.mcp_server backup [PATH]`
+  (to `~/.cortex/backups/` by default). Hermes: copy `$HERMES_HOME/cortex/cortex.db` while Hermes is stopped,
+  or `python3 -c "import sqlite3;s=sqlite3.connect('$HERMES_HOME/cortex/cortex.db');s.backup(sqlite3.connect('cortex-backup.db'))"`.
+  Restore steps: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md#restore-from-a-backup).
+- **Health:** `python -m cortex.mcp_server doctor` (Claude Code) or
+  `PYTHONPATH="$HERMES_HOME/plugins" <hermes-python> scripts/verify_hermes_install.py` (Hermes).
+- **Uninstall:** Claude Code: `claude mcp remove -s user cortex`, delete the `cortex` hook entries and the
+  `cortex:begin/end` block, then remove `~/.cortex` (that deletes your memories). Hermes: `scripts/uninstall_local.sh`.
 
 ## What this is
 
 Local-first durable memory for agent harnesses: bounded recall, outcome
 learning, reversible consolidation, offline Sleep, and a Brain dashboard.
-Hermes is the included reference adapter, not a requirement — the core
-(`CortexMemory`, `RecallBatch`) is harness-neutral. Psychology inspires
-hypotheses; benchmarks decide.
+The core (`CortexMemory`, `RecallBatch`) is harness-neutral; Hermes and the MCP server are adapters.
+Psychology inspires hypotheses; benchmarks decide.
 
-## Install
+## Reference: advanced Hermes configuration
 
-Requirements: Python 3.10+, SQLite with FTS5 (standard Python builds).
+The installer already covers a standard setup. The rest of this file is for operators.
 
-Agent-neutral core (any harness):
-
-```bash
-git clone https://github.com/jacobycoffin/cortex-memory.git
-cd cortex-memory
-python3 -m pip install .
-```
-
-Hermes adapter (Hermes hosts only):
-
-```bash
-git clone https://github.com/jacobycoffin/cortex-memory.git
-cd cortex-memory
-HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
-hermes memory setup   # choose `cortex`, then restart Hermes yourself
-```
-
-The installer backs up any previous plugin, never restarts Hermes, and never
-enables the automatic-judge timer without explicit egress consent (below).
-Full migration/backup/rollback: [docs/QUICKSTART.md](docs/QUICKSTART.md).
-
-## Configure (Hermes host)
 
 1. Cortex-primary deployment: set `memory.nudge_interval: 0` in Hermes config
    so the legacy background writer stops; Cortex `sync_turn` owns proposals.
@@ -60,8 +192,7 @@ HERMES_HOME="$HOME/.hermes" ./scripts/install_sleep_timer.sh
    [docs/JEV.md](docs/JEV.md) for the Jev decision engine and its rollback):
 
 ```bash
-CORTEX_INSTALL_AUTO_JUDGE_TIMER=1 CORTEX_AUTO_JUDGE_DATA_EGRESS_CONSENT=1 \
-  HERMES_HOME="$HOME/.hermes" ./scripts/install_local.sh
+bash scripts/install.sh --agent hermes --enable-auto-judge     # or --enable-jev
 ```
 
 5. Dashboard (localhost only; put Caddy/Nginx/Cloudflare Tunnel in front):

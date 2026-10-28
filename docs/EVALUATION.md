@@ -242,8 +242,7 @@ and latency together. Use the same local labels and database snapshot in both
 checkouts. Aggregate comparison alone does not establish answer accuracy or
 activate a policy.
 
-The checked-in [CT117 operator procedure](../cortex-ct117-validation.md) keeps
-the brain and labels on their host. It first compares retrieval with preloading
+An operator-run validation keeps the brain and labels on their host. It first compares retrieval with preloading
 off, then uses `scripts/evaluate_preload.py` for a separate offline Hermes replay
 with useful warm hits, signed added process CPU, and foreground p95. Only the
 aggregate handoff returns; label replay does not establish live prediction hit

@@ -75,6 +75,24 @@ Cortex 0.3 begins the measurement-and-efficiency cycle. The current testing buil
 
 This is development evidence, not a new public performance claim. Stable installs should continue to use `main`; the [roadmap](docs/ROADMAP.md) states what is implemented, still being measured, and intentionally deferred.
 
+## Set it up for your agent (Hermes or Claude Code)
+
+Give your agent this repository's link and say "set this up". It will follow
+[AGENTS.md](AGENTS.md) (or [CLAUDE.md](CLAUDE.md) for Claude Code), which comes down to:
+
+```bash
+git clone https://github.com/jacobycoffin/cortex-memory.git
+cd cortex-memory
+bash scripts/install.sh      # detects Hermes or Claude Code; --agent hermes|claude to force
+```
+
+Everything runs locally: SQLite, a pinned ~67 MB local embedding model, no API
+keys. Hermes gets Cortex as its memory provider with background preload on.
+Claude Code gets an MCP server (`memory_search`, `context_brief`, `remember`,
+`forget`, `stats`) plus optional hooks. The optional paid auto-judge / Jev
+stays off unless you pass `--enable-auto-judge` / `--enable-jev`. Problems:
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## Install the agent-neutral core
 
 > Agents: start with [AGENTS.md](AGENTS.md) — install, configure, verify, and
@@ -391,8 +409,8 @@ Keep mutation modes and metacognition in `shadow` until you have reviewed your o
 - [Harness integration](docs/INTEGRATION.md) — the portable API and event contract for any agent runtime.
 - [Benchmarking](docs/BENCHMARKING.md) — fair baselines, paired live-model testing, uncertainty, and claim rules.
 - [0.3 evaluation guide](docs/EVALUATION.md) — private real-history labels and paired tool-calling measurement.
-- [CT117 validation procedure](cortex-ct117-validation.md) — operator-run retrieval and preload trials; only sanitized aggregates leave the brain host.
 - [Cortex Sleep](docs/SLEEP.md) — offline replay, optional reflection budgets, safety model, and primary-source research mapping.
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — symptom → check → fix, including restore from backup.
 - [Testing](docs/TESTING.md) — automated and manual acceptance paths.
 - [Development roadmap](docs/ROADMAP.md) — phased work, safety rules, and promotion gates.
 

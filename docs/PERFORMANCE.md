@@ -132,10 +132,11 @@ a broad production claim. Never commit private labels, queries, or databases.
 
 ## Validate a live brain on its own host
 
-For the operator-run CT117 procedure, including a separate Hermes preload trial
-with useful hits, added process CPU, and p95, use
-[cortex-ct117-validation.md](../cortex-ct117-validation.md). The development agent
-does not connect to CT117; only the aggregate handoff report returns.
+Run the validation on the host that owns the brain, never by copying the
+database elsewhere: compare retrieval with preloading off, then run
+`scripts/evaluate_preload.py` for a separate offline Hermes replay that reports
+useful hits, added process CPU, and p95. Only the aggregate report should leave
+that host.
 
 When the labels of record are active `evaluation_cases` rows, regenerate JSONL
 on the brain host. Keep the database snapshot and labels outside every checkout,
