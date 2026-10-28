@@ -82,6 +82,7 @@ from .hermes_config import (
     _json_ok,
     _read_config,
     _string_tuple,
+    write_cortex_config,
 )
 
 logger = logging.getLogger(__package__)
@@ -1560,13 +1561,7 @@ class CortexMemoryProvider(MemoryProvider):
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         path = Path(hermes_home).expanduser() / "config.yaml"
         try:
-            import yaml
-
-            existing = yaml.safe_load(path.read_text(encoding="utf-8-sig")) if path.exists() else {}
-            existing = existing or {}
-            existing.setdefault("plugins", {})["cortex"] = values
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(yaml.safe_dump(existing, sort_keys=False), encoding="utf-8")
+            write_cortex_config(path, dict(values))
         except Exception as exc:
             raise RuntimeError(f"could not save Cortex config: {exc}") from exc
 

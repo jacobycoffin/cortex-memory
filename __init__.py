@@ -15,6 +15,7 @@ import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from . import runtime_path as _runtime_path  # noqa: F401  (sidecar embedding runtime)
 from .attribution import (
     attribution_score,
     format_recall_trace_receipt,

@@ -45,12 +45,79 @@ def _read_config(hermes_home: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        import yaml
-
-        root = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
+        root = _load_yaml(path.read_text(encoding="utf-8-sig")) or {}
         return dict((root.get("plugins") or {}).get("cortex") or {})
     except Exception:
         return {}
+
+
+def _load_yaml(text: str) -> Any:
+    """Parse YAML with PyYAML, or ruamel.yaml when PyYAML is absent.
+
+    Current Hermes environments ship ruamel.yaml but not PyYAML; without this
+    fallback every ``plugins.cortex`` setting was silently ignored there.
+    """
+
+    try:
+        import yaml
+
+        return yaml.safe_load(text)
+    except ImportError:
+        from ruamel.yaml import YAML
+
+        return YAML(typ="safe", pure=True).load(text)
+
+
+def write_cortex_config(path: Path, values: dict[str, Any], *, provider: str | None = None,
+                        only_missing: bool = False) -> dict[str, Any]:
+    """Write ``plugins.cortex`` (and optionally ``memory.provider``) to config.yaml.
+
+    Uses ruamel.yaml round-trip mode when available so Hermes's comments and key
+    order survive; falls back to PyYAML. With ``only_missing`` existing operator
+    choices are never overwritten. Returns the resulting ``plugins.cortex`` map.
+    """
+
+    text = path.read_text(encoding="utf-8-sig") if path.exists() else ""
+    try:
+        from ruamel.yaml import YAML
+
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        root = yaml_rt.load(text) if text.strip() else None
+        dump = yaml_rt.dump
+    except ImportError:
+        import yaml
+
+        root = yaml.safe_load(text) if text.strip() else None
+
+        def dump(data: Any, stream: Any) -> None:
+            stream.write(yaml.safe_dump(data, sort_keys=False))
+    if root is None:
+        root = {}
+    if provider is not None:
+        if root.get("memory") is None:
+            root["memory"] = {}
+        root["memory"]["provider"] = provider
+    if root.get("plugins") is None:
+        root["plugins"] = {}
+    if root["plugins"].get("cortex") is None:
+        root["plugins"]["cortex"] = {}
+    section = root["plugins"]["cortex"]
+    if not only_missing:
+        for key in list(section.keys()):
+            if key not in values:
+                del section[key]
+    for key, value in values.items():
+        if only_missing and key in section:
+            continue
+        section[key] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    import io
+
+    buffer = io.StringIO()
+    dump(root, buffer)
+    path.write_text(buffer.getvalue(), encoding="utf-8")
+    return dict(section)
 
 
 def _as_bool(value: Any) -> bool:
