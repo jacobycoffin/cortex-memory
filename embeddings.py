@@ -41,10 +41,14 @@ MAX_LEN = 512
 def default_model_dir() -> Path:
     """Where the ONNX model lives.
 
-    Resolved at call time from the same ``HERMES_HOME`` convention the rest of
-    the plugin uses, rather than hardcoding a deployment path, so the module
+    ``CORTEX_MODEL_DIR`` wins when set (the standalone MCP server sets it to
+    ``$CORTEX_HOME/models/bge-small-en-v1.5``). Otherwise it is resolved at call
+    time from the same ``HERMES_HOME`` convention the rest of the plugin uses, rather than hardcoding a deployment path, so the module
     works on any host and the release checker stays happy.
     """
+    explicit = os.environ.get("CORTEX_MODEL_DIR", "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
     home = os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
     return Path(home).expanduser() / "models" / "bge-small-en-v1.5"
 
