@@ -159,7 +159,7 @@ class VaultIndexerTests(unittest.TestCase):
         tech = self.vault / "Tech.md"
         tech.write_text(
             "# Tech\n\n## MCP Tools\n\n`prowlarr_get_indexers`, `prowlarr_test_indexer`\n\n"
-            "## Live URL\n\nhttps://brain.jacobycoffin.com\n\n"
+            "## Live URL\n\nhttps://brain.example.com\n\n"
             "## Related\n\n[[Home]], [[Operations]]\n"
             "Mission Control triage notes track active zombie sweeps every day.\n",
             encoding="utf-8",
@@ -172,7 +172,7 @@ class VaultIndexerTests(unittest.TestCase):
         ]
         self.assertEqual(len(tech_memories), 3)
         self.assertTrue(any("prowlarr_get_indexers" in content for content in tech_memories))
-        self.assertTrue(any("https://brain.jacobycoffin.com" in content for content in tech_memories))
+        self.assertTrue(any("https://brain.example.com" in content for content in tech_memories))
         self.assertTrue(any("zombie sweeps" in content for content in tech_memories))
 
     def test_build_stamp_notes_are_skipped_and_counted(self) -> None:

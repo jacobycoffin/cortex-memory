@@ -107,7 +107,7 @@ class CredentialSectionSkipUnitTests(unittest.TestCase):
             "Passwords (legacy)",
             "Secrets/vault",
             "API Keys (prod)",
-            "Login - r630",
+            "Login - hv01",
             "Tokens: live",
             "Homelab › Credentials › Passwords (legacy)",
         ):

@@ -205,7 +205,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
         self.memory_id, _ = self.store.add_memory(
-            "Plex deploys to the Proxmox server.", kind="procedure"
+            "Plex deploys to the Nomad server.", kind="procedure"
         )
 
     def tearDown(self) -> None:
@@ -221,7 +221,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
     ) -> str:
         task_id = self.store.create_usage_batch(
             [(self.memory_id, 0.8)],
-            query="Deploy Plex to Proxmox",
+            query="Deploy Plex to Nomad",
             session_id="attention-test",
             task_type="tool_execution",
             recall_mode=mode,
@@ -231,7 +231,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
         decision = self.store.record_attention_observation(
             task_id,
             task_type="tool_execution",
-            topics=("plex", "proxmox"),
+            topics=("plex", "nomad"),
             live_mode=mode,
             live_budget=600,
             max_budget=700,
@@ -273,7 +273,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
 
         recommendation = self.store.attention_recommendation(
             "tool_execution",
-            ("proxmox",),
+            ("nomad",),
             "deep",
             600,
             max_budget=700,
@@ -351,7 +351,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
         """
         withheld_task = self.store.create_usage_batch(
             [(self.memory_id, 0.8)],
-            query="Deploy Plex to Proxmox",
+            query="Deploy Plex to Nomad",
             session_id="attention-test",
             task_type="tool_execution",
             recall_mode="focused",
@@ -380,7 +380,7 @@ class OutcomeDrivenAttentionLearningTests(unittest.TestCase):
 
         ignored_task = self.store.create_usage_batch(
             [(self.memory_id, 0.8)],
-            query="Deploy Plex to Proxmox",
+            query="Deploy Plex to Nomad",
             session_id="attention-test",
             task_type="tool_execution",
             recall_mode="focused",

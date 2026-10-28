@@ -172,7 +172,7 @@ def select_batch(
 def _ensure_cortex_importable() -> Path:
     """Make THIS checkout importable as the ``cortex`` package.
 
-    The checkout directory is ``hermes-cortex-memory`` (hyphenated), so a plain
+    The checkout directory is ``cortex-memory`` (hyphenated), so a plain
     ``import cortex`` cannot find it. We load ``<repo>/__init__.py`` under the
     package name ``cortex`` with submodule search rooted at the checkout — the
     same trick ``tests/_bootstrap.py`` uses. This deliberately prefers the code

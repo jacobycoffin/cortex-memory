@@ -45,7 +45,7 @@ _CREDENTIAL_HEADING = re.compile(
     re.I,
 )
 # Trailing qualifiers dropped before the credential match, so `Credentials (Plex)`
-# and `Login - r630` are skipped while `Token budget tuning` stays indexed.
+# and `Login - hv01` are skipped while `Token budget tuning` stays indexed.
 _TRAILING_PARENTHETICAL = re.compile(r"\s*\([^()]*\)\s*$")
 _TRAILING_QUALIFIER = re.compile(r"\s*[-–—/:]\s*[^-–—/:]*$")
 _PLACEHOLDER_BODY = re.compile(

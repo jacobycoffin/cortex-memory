@@ -41,7 +41,7 @@ class CortexHarnessContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with CortexHarnessAdapter(Path(tmp) / "cortex.db") as adapter:
                 memory_id, created = adapter.remember(
-                    "Jacoby prefers concise deployment summaries.",
+                    "Alex prefers concise deployment summaries.",
                     kind="preference",
                     source_category="USER_EXPLICIT",
                     confidence=0.95,
@@ -50,7 +50,7 @@ class CortexHarnessContractTests(unittest.TestCase):
                 greeting = adapter.before_turn("Hello!", session_id="session")
                 self.assertEqual(greeting.context, "")
                 turn = adapter.before_turn(
-                    "How should I summarize deployments for Jacoby?",
+                    "How should I summarize deployments for Alex?",
                     session_id="session",
                     task_type="communication",
                 )
@@ -64,7 +64,7 @@ class CortexHarnessContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with CortexHarnessAdapter(Path(tmp) / "cortex.db") as adapter:
                 proposal = adapter.propose(
-                    "Jacoby may prefer deployment summaries with a compact lead.",
+                    "Alex may prefer deployment summaries with a compact lead.",
                     kind="preference",
                     source_context="agent summary of a user turn",
                 )

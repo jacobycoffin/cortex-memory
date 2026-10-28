@@ -158,7 +158,7 @@ class DegenerateQueryAbstentionTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
         self.store.add_memory("The homelab router hands out leases on 10.20.0.0/24.", kind="semantic")
-        self.store.add_memory("Plex runs on the r630 host behind the proxy.", kind="semantic")
+        self.store.add_memory("Plex runs on the hv01 host behind the proxy.", kind="semantic")
         self.store.add_memory("Deployments require a verified backup before release.", kind="procedure")
         self.store.add_memory("日本語のメモ は ここ に あります。", kind="semantic")
 
@@ -181,7 +181,7 @@ class DegenerateQueryAbstentionTests(unittest.TestCase):
         retriever = MemoryRetriever(self.store, threshold=0.0)
         for query, expected in (
             ("homelab router leases", "10.20.0.0/24"),
-            ("plex r630", "r630"),
+            ("plex hv01", "hv01"),
             ("verified backup", "backup"),
             ("日本語のメモ", "日本語"),
         ):
