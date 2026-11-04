@@ -11,29 +11,23 @@ the tests would silently exercise different code.
 
 from __future__ import annotations
 
-import importlib.util
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
+# Importing the tests package runs _bootstrap, which loads *this checkout* as
+# ``cortex``. Without it the installed Hermes plugin copy wins the import and
+# these tests would exercise the wrong code.
+from tests import _bootstrap  # noqa: E402,F401
+import cortex  # noqa: E402
 
-def _force_local_cortex() -> None:
-    for name in [m for m in list(sys.modules) if m == "cortex" or m.startswith("cortex.")]:
-        del sys.modules[name]
-    spec = importlib.util.spec_from_file_location(
-        "cortex", ROOT / "__init__.py", submodule_search_locations=[str(ROOT)]
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load the checkout's cortex package")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["cortex"] = module
-    spec.loader.exec_module(module)
-
-
-_force_local_cortex()
+if Path(cortex.__file__).resolve().parent != ROOT:
+    raise RuntimeError(f"tests are exercising {cortex.__file__}, not {ROOT}")
 
 from cortex import fleet  # noqa: E402
 from cortex.fleet import (  # noqa: E402
