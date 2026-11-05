@@ -308,6 +308,38 @@ class PromotionGateTests(FleetTestBase):
             self.assertNotIn("192.168.1.50", shared_text)
             self.assertNotIn("ops@example.com", shared_text)
 
+    def test_redacted_promotion_does_not_duplicate_in_recall(self) -> None:
+        """A bot must not meet its own promoted fact again as foreign knowledge.
+
+        Redaction rewrites the shared copy (an IP becomes a placeholder), so the
+        content fingerprint differs and fingerprint dedupe misses it. Recall has
+        to fall back on the recorded provenance id, or the private fact and its
+        sanitised twin both appear in one prompt.
+        """
+
+        with FleetMemory(self.config()) as memory:
+            memory_id = self.add(
+                memory, "Publish the dev preview from 192.168.1.50 and notify ops@example.com."
+            )
+            receipt = memory.promote(
+                memory_id, approval=Approval(actor="jacoby", reason="homelab runbook")
+            )
+            self.assertEqual(receipt.status, "promoted")
+            self.assertCountEqual(receipt.redactions, ["local_ip", "email"])
+
+            hits = memory.search("dev preview publish notify", limit=8)
+            copies = [
+                hit for hit in hits
+                if "dev preview" in str(hit.memory.get("content") or "").lower()
+            ]
+            self.assertEqual(len(copies), 1, [hit.layer for hit in copies])
+            self.assertEqual(copies[0].layer, LOCAL_LAYER)
+            self.assertEqual(
+                [hit for hit in hits if hit.layer == SHARED_LAYER],
+                [],
+                "own promoted fact came back from the shared layer",
+            )
+
     def test_dry_run_reports_without_writing(self) -> None:
         with FleetMemory(self.config()) as memory:
             memory_id = self.add(memory, "Temple uses Xcode Cloud with a dev workflow.")

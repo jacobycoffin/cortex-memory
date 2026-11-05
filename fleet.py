@@ -136,6 +136,29 @@ def _origin_tenant(memory: dict[str, Any]) -> str:
     return ""
 
 
+def _shared_origin_memory_id(memory: dict[str, Any]) -> str:
+    """The memory this shared row was promoted from, if it is recorded.
+
+    Redaction rewrites the text on the way into the shared layer, so the content
+    fingerprint changes and a bot can no longer recognise its own promoted fact
+    by text alone. The provenance id survives that rewrite.
+    """
+
+    raw = memory.get("scope")
+    if raw is None:
+        raw = memory.get("scope_json")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "{}")
+        except ValueError:
+            raw = {}
+    if isinstance(raw, dict):
+        origin = str(raw.get("origin_memory_id") or "").strip()
+        if origin:
+            return origin
+    return str(memory.get("source_ref") or "").strip()
+
+
 @dataclass(frozen=True)
 class PromotionVerdict:
     """Outcome of inspecting one candidate for the shared layer."""
@@ -739,6 +762,21 @@ class FleetMemory:
                     continue
                 if content_fingerprint(text) in local_fingerprints:
                     continue
+                # This tenant's own fact, already held privately. Redaction can
+                # change the shared text (an address, an email), so the content
+                # fingerprint no longer matches — match the provenance instead,
+                # otherwise the bot sees its own fact twice, once labelled
+                # foreign.
+                origin_memory_id = _shared_origin_memory_id(result.memory)
+                if origin_memory_id and origin_memory_id in local_ids:
+                    continue
+                if origin_memory_id:
+                    try:
+                        owns_it = self._local.get_memory(origin_memory_id) is not None
+                    except (sqlite3.Error, ValueError):
+                        owns_it = False
+                    if owns_it:
+                        continue
                 if self.policy.denied_for_read(text, origin_tenant=origin):
                     continue
                 hits.append(
