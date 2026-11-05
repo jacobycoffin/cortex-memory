@@ -399,6 +399,49 @@ class FleetConfig:
         }
 
 
+def _annotate_result(result: RetrievalResult, *, layer: str, origin_tenant: str) -> RetrievalResult:
+    """Tag a retrieval hit with the layer that answered.
+
+    Newer builds declare ``layer``/``origin_tenant`` on the dataclass; older ones
+    do not, and a deployment running the older retrieval module must still be
+    able to say where a hit came from. Setting the attributes afterwards keeps
+    both generations working, and every reader uses ``getattr`` with a default.
+    """
+
+    try:
+        result.layer = layer
+        result.origin_tenant = origin_tenant
+    except (AttributeError, TypeError):
+        # Some builds ship a frozen dataclass; object.__setattr__ still works and
+        # the tag is what keeps a shared id out of the FK-bound local tables.
+        try:
+            object.__setattr__(result, "layer", layer)
+            object.__setattr__(result, "origin_tenant", origin_tenant)
+        except (AttributeError, TypeError):  # pragma: no cover - slotted class
+            pass
+    return result
+
+
+def open_read_only_store(path: Path) -> CortexStore:
+    """Open a store read-only, with a fallback for stores that predate the kwarg.
+
+    ``CortexStore(read_only=...)`` only exists in newer builds; deployments that
+    still ship the older store must not fail to start the shared layer. Those
+    get a normal store with SQLite's query_only pragma set, which refuses writes
+    from this connection just the same.
+    """
+
+    try:
+        return CortexStore(path, read_only=True)
+    except TypeError:
+        store = CortexStore(path, initialize_schema=False)
+        try:
+            store._conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
+        return store
+
+
 def tenant_from_home(hermes_home: str | Path) -> str:
     """``~/.hermes/profiles/teknium`` -> ``teknium``; the shared home -> ``default``."""
 
@@ -558,7 +601,7 @@ class FleetMemory:
             except (sqlite3.Error, OSError):
                 pass
         try:
-            return CortexStore(path, read_only=True)
+            return open_read_only_store(path)
         except (sqlite3.Error, OSError):
             return None
 
@@ -651,11 +694,13 @@ class FleetMemory:
             query, limit=limit, token_budget=token_budget, **options
         )
         results = [
-            RetrievalResult(
-                memory=hit.memory,
-                score=hit.score,
-                components=hit.components,
-                estimated_tokens=hit.estimated_tokens,
+            _annotate_result(
+                RetrievalResult(
+                    memory=hit.memory,
+                    score=hit.score,
+                    components=hit.components,
+                    estimated_tokens=hit.estimated_tokens,
+                ),
                 layer=hit.layer,
                 origin_tenant=hit.origin_tenant,
             )
