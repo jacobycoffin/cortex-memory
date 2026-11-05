@@ -230,11 +230,24 @@ class StaleCreationProposalError(ValueError):
 class CortexStore:
     """Thread-safe, auditable SQLite store with explicit lifecycle states."""
 
-    def __init__(self, db_path: str | Path):
+    def __init__(self, db_path: str | Path, *, read_only: bool = False):
         self.path = Path(db_path).expanduser()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        if read_only:
+            # A shared layer is read-only for every tenant: recall may open it,
+            # nothing in a bot's process may write it. ``query_only`` makes that
+            # a property of the connection instead of a promise.
+            if not self.path.exists():
+                raise FileNotFoundError(f"Cortex database does not exist: {self.path}")
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
+        self._conn = (
+            sqlite3.connect(
+                f"{self.path.as_uri()}?mode=ro", uri=True, check_same_thread=False, timeout=5.0
+            )
+            if read_only
+            else sqlite3.connect(str(self.path), check_same_thread=False, timeout=5.0)
+        )
         self._conn.row_factory = sqlite3.Row
         self._local_retrieval_revision = 0
         self._last_external_data_version: int | None = None
@@ -242,11 +255,15 @@ class CortexStore:
         self._active_policy_cache_revision = -1
         self._conn.create_function("cortex_bump_revision", 0, self._bump_local_retrieval_revision)
         with self._lock:
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA foreign_keys=ON")
-            self._conn.execute("PRAGMA busy_timeout=5000")
-            self._create_schema()
-            self._create_connection_revision_triggers()
+            if read_only:
+                self._conn.execute("PRAGMA busy_timeout=5000")
+                self._conn.execute("PRAGMA query_only=ON")
+            else:
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._conn.execute("PRAGMA busy_timeout=5000")
+                self._create_schema()
+                self._create_connection_revision_triggers()
 
     def _create_schema(self) -> None:
         _create_schema(self._conn)

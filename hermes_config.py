@@ -9,6 +9,15 @@ from typing import Any
 
 DEFAULTS: dict[str, Any] = {
     "db_path": "$HERMES_HOME/cortex/cortex.db",
+    # --- multi-tenant fleet layer -------------------------------------------
+    # Unset shared_db_path = fleet disabled: one store, today's behaviour.
+    "shared_db_path": "",
+    "shared_weight": 0.85,
+    "shared_pool": 4,
+    "shared_max_share": 0.5,
+    "shared_min_score": 0.0,
+    "shared_promotion_enabled": False,
+    "fleet_tenant": "",
     "auto_capture": True,
     "primary_memory": True,
     "top_k": 6,
@@ -48,7 +57,12 @@ def _read_config(hermes_home: Path) -> dict[str, Any]:
         import yaml
 
         root = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-        return dict((root.get("plugins") or {}).get("cortex") or {})
+        plugins = root.get("plugins") or {}
+        # Live layout is ``plugins.cortex``; ``plugins.entries.cortex`` is the
+        # nested style some Hermes builds write. Accept both, nested first.
+        block = dict(((plugins.get("entries") or {}).get("cortex")) or {})
+        block.update(dict(plugins.get("cortex") or {}))
+        return block
     except Exception:
         return {}
 
