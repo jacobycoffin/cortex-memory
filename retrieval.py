@@ -135,6 +135,11 @@ class RetrievalResult:
     score: float
     components: dict[str, float]
     estimated_tokens: int
+    #: Which store answered: ``local`` (this bot's private store) or ``shared``
+    #: (the fleet general-knowledge layer). Single-store recall is always
+    #: ``local``, so downstream code that ignores these fields is unchanged.
+    layer: str = "local"
+    origin_tenant: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         source_category = str(self.memory.get("source_category") or "AGENT_INFERENCE")
@@ -167,6 +172,12 @@ class RetrievalResult:
             "components": {k: round(v, 5) for k, v in self.components.items()},
             "estimated_tokens": self.estimated_tokens,
         }
+        if self.layer != "local":
+            # Provenance is only rendered when it is meaningful: a single-store
+            # recall keeps producing exactly the record it produced before.
+            record["layer"] = self.layer
+            if self.origin_tenant:
+                record["origin_tenant"] = self.origin_tenant
         if self.memory.get("approval_state") is not None:
             record["approval_state"] = str(self.memory["approval_state"])
         return record
