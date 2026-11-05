@@ -222,8 +222,11 @@ class PromotionPolicyTests(FleetTestBase):
         self.assertIn("source_type:transaction", verdict.reasons)
 
     def test_secret_material_denied(self) -> None:
+        # Built at runtime: the release check greps tracked files for
+        # token-shaped literals, and a full fake token trips it.
+        token = "ghp_" + "0" * 24
         verdict = self.policy().inspect(
-            {"content": "The deploy token is ghp_abcdefghijklmnopqrstuvwxyz0123.", "source_type": "conversation"}
+            {"content": f"The deploy token is {token}.", "source_type": "conversation"}
         )
         self.assertFalse(verdict.allowed)
         self.assertIn("hard_deny:secret_token", verdict.reasons)
@@ -333,6 +336,95 @@ class AuditTests(FleetTestBase):
             self.assertTrue(report["denied"])
             self.assertTrue(any(reason.startswith("hard_deny:") for reason in report["denied"]))
             self.assertEqual(self.count(memory._shared), 0)
+
+
+class ConfigFallbackTests(FleetTestBase):
+    """The operator CLI must read a profile config on hosts without PyYAML.
+
+    CI installs the package with no dependencies, so ``import yaml`` fails there
+    while every real Hermes profile has it. Before the fallback parser existed,
+    ``_read_config`` returned ``{}`` and a configured shared layer looked
+    "not configured" — the failure mode that made the CLI silently disable itself.
+    """
+
+    def write_config(self, text: str) -> Path:
+        home = self.tmp / "profile"
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "config.yaml").write_text(text, encoding="utf-8")
+        return home
+
+    def test_fallback_parser_handles_both_layouts(self) -> None:
+        from cortex import hermes_config
+
+        nested = hermes_config._parse_plugins_fallback(
+            "plugins:\n"
+            "  entries:\n"
+            "    cortex:\n"
+            "      db_path: /tmp/local.db\n"
+            "      shared_db_path: /tmp/shared.db\n"
+            "      shared_promotion_enabled: true\n"
+        )
+        flat = hermes_config._parse_plugins_fallback(
+            "plugins:\n"
+            "  cortex:\n"
+            "    shared_db_path: /tmp/shared.db\n"
+            "    shared_weight: 0.5\n"
+        )
+        self.assertEqual(
+            hermes_config._cortex_block(nested)["shared_db_path"], "/tmp/shared.db"
+        )
+        self.assertIs(hermes_config._cortex_block(nested)["shared_promotion_enabled"], True)
+        block = hermes_config._cortex_block(flat)
+        self.assertEqual(block["shared_db_path"], "/tmp/shared.db")
+        self.assertAlmostEqual(block["shared_weight"], 0.5)
+
+    def test_fallback_parser_refuses_what_it_cannot_understand(self) -> None:
+        from cortex import hermes_config
+
+        self.assertEqual(hermes_config._parse_plugins_fallback("plugins:\n  cortex: [a, b]\n"), {})
+        self.assertEqual(hermes_config._parse_plugins_fallback("plugins:\n\t- item\n"), {})
+        self.assertEqual(hermes_config._parse_plugins_fallback("plugins:\n  - item\n"), {})
+
+    def test_read_config_without_pyyaml(self) -> None:
+        import builtins
+        from unittest import mock
+
+        from cortex import hermes_config
+
+        shared = str(self.tmp / "shared.db")
+        home = self.write_config(
+            "plugins:\n"
+            "  cortex:\n"
+            "    db_path: /tmp/local.db\n"
+            f"    shared_db_path: {shared}\n"
+            "    shared_promotion_enabled: true\n"
+        )
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "yaml":
+                raise ModuleNotFoundError("No module named 'yaml'")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=fake_import):
+            block = hermes_config._read_config(home)
+        self.assertEqual(block["shared_db_path"], shared)
+        self.assertIs(block["shared_promotion_enabled"], True)
+
+    def test_read_config_with_pyyaml_matches_the_fallback(self) -> None:
+        from cortex import hermes_config
+
+        shared = str(self.tmp / "shared.db")
+        home = self.write_config(
+            "plugins:\n"
+            "  cortex:\n"
+            f"    shared_db_path: {shared}\n"
+        )
+        try:
+            import yaml  # noqa: F401
+        except ModuleNotFoundError:
+            self.skipTest("pyyaml not installed; fallback covered separately")
+        self.assertEqual(hermes_config._read_config(home)["shared_db_path"], shared)
 
 
 if __name__ == "__main__":

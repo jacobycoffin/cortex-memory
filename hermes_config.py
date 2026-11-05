@@ -49,22 +49,118 @@ DEFAULTS: dict[str, Any] = {
 }
 
 
+def _coerce_scalar(value: str) -> Any:
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    lowered = text.casefold()
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if lowered in {"null", "none", "~"}:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        return text
+
+
+def _parse_plugins_fallback(text: str) -> dict[str, Any]:
+    """Minimal nested-mapping reader used when PyYAML is absent.
+
+    Only the shape a Cortex config block needs is understood: nested mappings of
+    scalars with space indentation. Lists, anchors, tab indentation and anything
+    else make it give up and return ``{}`` — a half-understood config block is
+    worse than none, because fleet settings would silently be ignored.
+
+    The repository ships no runtime dependencies, but Hermes profiles always have
+    PyYAML, so this path exists for CI and bare checkouts. Without it
+    ``_read_config`` returned ``{}`` and a configured shared layer looked
+    "not configured" to the operator CLI.
+    """
+
+    root: dict[str, Any] = {}
+    stack: list[tuple[int, dict[str, Any]]] = [(-1, root)]
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if "\t" in raw[: indent + 1]:
+            return {}
+        if stripped.startswith("-") or ":" not in stripped:
+            return {}
+        key, _, value = stripped.partition(":")
+        key = key.strip()
+        if not key or any(ch in key for ch in "[]{}"):
+            return {}
+        while stack and indent <= stack[-1][0]:
+            stack.pop()
+        if not stack:
+            return {}
+        parent = stack[-1][1]
+        if value.strip():
+            scalar = value.strip()
+            if " #" in scalar:
+                scalar = scalar.split(" #", 1)[0].strip()
+            # Flow collections, anchors, tags and block scalars are outside what
+            # this parser understands; refuse rather than import a wrong value.
+            if not scalar or scalar[0] in "[{&*|>!@`":
+                return {}
+            parent[key] = _coerce_scalar(scalar)
+        else:
+            child: dict[str, Any] = {}
+            parent[key] = child
+            stack.append((indent, child))
+    return root
+
+
+def _cortex_block(root: dict[str, Any]) -> dict[str, Any]:
+    """Extract the cortex plugin block from a parsed config tree.
+
+    Live layout is ``plugins.cortex``; ``plugins.entries.cortex`` is the nested
+    style some Hermes builds write. Accept both, nested first.
+    """
+
+    plugins = root.get("plugins")
+    if not isinstance(plugins, dict):
+        return {}
+    block: dict[str, Any] = {}
+    entries = plugins.get("entries")
+    if isinstance(entries, dict):
+        cortex = entries.get("cortex")
+        if isinstance(cortex, dict):
+            block.update(cortex)
+    cortex = plugins.get("cortex")
+    if isinstance(cortex, dict):
+        block.update(cortex)
+    return block
+
+
 def _read_config(hermes_home: Path) -> dict[str, Any]:
     path = hermes_home / "config.yaml"
     if not path.exists():
         return {}
     try:
+        text = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return {}
+    try:
         import yaml
-
-        root = yaml.safe_load(path.read_text(encoding="utf-8-sig")) or {}
-        plugins = root.get("plugins") or {}
-        # Live layout is ``plugins.cortex``; ``plugins.entries.cortex`` is the
-        # nested style some Hermes builds write. Accept both, nested first.
-        block = dict(((plugins.get("entries") or {}).get("cortex")) or {})
-        block.update(dict(plugins.get("cortex") or {}))
-        return block
+    except ModuleNotFoundError:
+        return _cortex_block(_parse_plugins_fallback(text))
+    try:
+        root = yaml.safe_load(text) or {}
     except Exception:
         return {}
+    if not isinstance(root, dict):
+        return {}
+    return _cortex_block(root)
 
 
 def _as_bool(value: Any) -> bool:
