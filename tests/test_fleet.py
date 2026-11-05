@@ -370,6 +370,31 @@ class AuditTests(FleetTestBase):
             self.assertEqual(self.count(memory._shared), 0)
 
 
+class FrozenResultCompatTests(unittest.TestCase):
+    """A frozen RetrievalResult must still be taggable with its layer.
+
+    The deployed plugin can ship a frozen dataclass while a newer checkout adds
+    ``layer``/``origin_tenant`` as real fields. Untagged, a shared hit looks
+    local and its id is written to FK-bound tables, which fails loudly.
+    """
+
+    def test_annotation_survives_a_frozen_dataclass(self) -> None:
+        import dataclasses
+
+        @dataclasses.dataclass(frozen=True)
+        class Frozen:
+            memory: dict
+            score: float
+
+        tagged = fleet._annotate_result(
+            Frozen(memory={"id": "abc"}, score=0.5),
+            layer=fleet.SHARED_LAYER,
+            origin_tenant="ledger",
+        )
+        self.assertEqual(tagged.layer, fleet.SHARED_LAYER)
+        self.assertEqual(tagged.origin_tenant, "ledger")
+
+
 class ConfigFallbackTests(FleetTestBase):
     """The operator CLI must read a profile config on hosts without PyYAML.
 
