@@ -289,3 +289,36 @@ For a result that can support a public model comparison:
 8. Publish the sanitized JSON, protocol, model, date, and sample count. Keep private labels and raw traces local.
 
 An offline retrieval improvement is evidence that Cortex found labeled information. A live tool-selection improvement is evidence about the tested model and scenarios. Neither alone proves that autonomous pruning, workflow learning, or the entire production agent improved.
+
+## The frozen retrieval gate
+
+`scripts/frozen_evalset.py` reruns a frozen set of real queries against a Cortex database and
+compares the result to a pinned baseline. It exists so that "retrieval got better" is a number
+rather than an opinion, and so a change that quietly costs recall cannot reach a release.
+
+    python3 scripts/frozen_evalset.py run --db ~/.hermes/cortex/cortex.db
+
+Exit codes: `0` within tolerance (or a baseline was just pinned), `1` regression beyond tolerance,
+`2` the set is unusable (hash mismatch, missing files, too few surviving cases).
+
+### Why this gate runs locally, not in CI
+
+The frozen cases are real private queries with real memory ids attached. They cannot live in the
+repository, in a CI job, or in a CI log. The gate therefore runs where the data already is — on the
+machine that owns the database — and it runs at the last moment before a branch leaves:
+
+    ./scripts/install_git_hooks.sh     # sets core.hooksPath -> .githooks
+
+`.githooks/pre-push` runs the gate and refuses the push on exit 1 or 2. It skips cleanly when the
+set or database is absent, so a fresh clone can still push unrelated work. `SKIP_FROZEN_GATE=1`
+bypasses it for a single push, deliberately and visibly.
+
+### What the labels are, and what they are not
+
+Cases are built from `access_log.event = 'used'` — memories the agent actually acted on for that
+query — capped per case and ordered most-recent-first. That makes the set faithful to real usage and
+it makes it **self-referential**: it measures whether retrieval still agrees with what retrieval used
+to pick, not whether those picks were correct. Treat a hit@k drop as a regression signal, not as
+proof of a quality loss, and treat an improvement as worth confirming elsewhere. The builder records
+this in `label_provenance` on purpose. A human-labelled and an adversarially-labelled slice are the
+next step, and they belong in the same gate.

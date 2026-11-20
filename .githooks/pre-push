@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Pre-push gate: refuse to push a change that regresses frozen-set retrieval.
+#
+# The set is private, so it cannot run in CI. It runs here, against the local
+# database, before the branch leaves the machine. Exit codes from the runner:
+#   0 within tolerance (or baseline just pinned)  -> allow
+#   1 regression beyond tolerance                 -> block
+#   2 set unusable (hash mismatch / too few)      -> block
+#
+# Skips cleanly when the set or the database is absent, so a fresh clone is not
+# blocked from pushing unrelated work.
+set -uo pipefail
+
+SET_DIR="${CORTEX_FROZEN_DIR:-$HOME/cortex-evaluations/frozen}"
+DB="${CORTEX_DB:-$HOME/.hermes/cortex/cortex.db}"
+
+if [ "${SKIP_FROZEN_GATE:-0}" = "1" ]; then
+  echo "pre-push: frozen gate skipped by SKIP_FROZEN_GATE=1"
+  exit 0
+fi
+
+if [ ! -f "$SET_DIR/frozen-v1.jsonl" ] || [ ! -f "$DB" ]; then
+  echo "pre-push: no frozen set or database on this machine — gate skipped"
+  exit 0
+fi
+
+if [ ! -f scripts/frozen_evalset.py ]; then
+  echo "pre-push: scripts/frozen_evalset.py missing — gate skipped"
+  exit 0
+fi
+
+python3 scripts/frozen_evalset.py run --db "$DB" --set-dir "$SET_DIR"
+status=$?
+
+case "$status" in
+  0) echo "pre-push: frozen gate passed" ;;
+  1) echo "pre-push: BLOCKED — retrieval regressed beyond tolerance."
+     echo "          If the regression is intended, re-pin deliberately:"
+     echo "          rm $SET_DIR/frozen-v1.baseline.json and rerun once."
+     exit 1 ;;
+  2) echo "pre-push: BLOCKED — the frozen set is unusable (see the message above)."
+     exit 1 ;;
+  *) echo "pre-push: BLOCKED — gate exited $status"; exit 1 ;;
+esac
