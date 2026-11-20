@@ -123,6 +123,63 @@ The output contains only aggregate metrics and numbered case outcomes. It omits 
 
 By default, group names are also omitted. `--include-group-summary` is available for private diagnosis, but it marks the report as requiring additional review because operator-authored group names may reveal metadata.
 
+### Frozen real-usage set: the regression baseline
+
+Hand-labeled cases answer "did we find what I expected?". A frozen set answers
+"did retrieval get worse than last week?" without asking a human to label
+anything, so it can run unattended.
+
+`scripts/build_frozen_evalset.py` builds one from evidence already in the
+database: each case is a query Cortex was really asked, and its expected
+memories are the memories the agent actually marked `used` on that query
+(`access_log.event = 'used'` joined to `state = 'active'` memories). No new
+judgment is introduced — the set replays real traffic with real outcomes.
+
+```bash
+python3 scripts/build_frozen_evalset.py \
+  --db "$HOME/.hermes/cortex/cortex.db" \
+  --out "$HOME/cortex-evaluations/frozen/frozen-v1.jsonl" \
+  --set-id frozen-v1 --min-cases 200 --limit 240
+```
+
+The builder refuses to write inside the repository (those queries are private),
+refuses to freeze fewer than `--min-cases`, and sorts deterministically, so the
+same database snapshot always produces the same bytes. Alongside the labels it
+writes `<set-id>.manifest.json`: the labels' SHA-256, the case count, the
+selection parameters, and a fingerprint of the source database.
+
+Rerunning is one command, and it gates:
+
+```bash
+python3 scripts/frozen_evalset.py run \
+  --db "$HOME/.hermes/cortex/cortex.db" \
+  --set-dir "$HOME/cortex-evaluations/frozen"
+```
+
+- Exit `0`: within tolerance of the pinned baseline (or the baseline was just
+  pinned on a first run).
+- Exit `1`: `hit@k`, `recall@k`, or `MRR` dropped past tolerance, or
+  `zero_result_rate` rose past it. The offending deltas are printed.
+- Exit `2`: the set is unusable — bytes no longer match the manifest, the
+  baseline belongs to a different set, or too few cases survive retirement.
+
+A frozen set decays as memories are archived. The runner retires any case whose
+expected memories are no longer active and reports the count; if survivors drop
+below `--min-cases` it fails rather than scoring a smaller, flattering set.
+Archived-target retirement is a re-freeze signal, not a regression.
+
+Pin a new baseline with `--update-baseline` only when the set or the intended
+behavior changed on purpose. Never use it to silence a drop: the baseline file
+is the record of what "no worse" meant on a given day.
+
+Read the frozen number as a **relative** gate, not an absolute quality score. It
+replays real traffic deterministically: same labels, same database snapshot, same
+code produces byte-identical metrics, so a nonzero delta means something changed.
+The labels themselves are model-attributed `used` events rather than human
+judgments, so some positives are noise and a memory that never had a chance of
+being retrieved counts as a miss in every run — including the baseline. That
+inflates the miss rate but does not weaken the gate.
+
 ## 2. Paired tool-calling evaluation
 
 The tool harness has two modes. Both require exactly one `default_built_in` and one `cortex` observation for every pair.
