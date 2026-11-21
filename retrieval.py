@@ -19,6 +19,7 @@ from .cortex_trace import (
 )
 from .preload import RecallCache
 from .source_authority import cap_conflicts
+from .abstention import should_abstain
 from .diversity import enforce_distinct
 from .stability import apply_stability_blend
 from .negative_cues import excluded_terms, suppress
@@ -247,9 +248,13 @@ class MemoryRetriever:
         semantic_pool: int = 20,
         semantic_model_id: str | None = None,
         semantic_floor: float = 0.0,
+        abstain_threshold: float | None = None,
     ):
         self.store = store
         self.threshold = threshold
+        # Off by default: no measured signal separates hits from misses yet
+        # (see docs/ABSTENTION.md). Enabling this is an explicit choice.
+        self.abstain_threshold = abstain_threshold
         # Semantic fusion is OFF by default: 0.0 reproduces the previous
         # behaviour exactly, so enabling it is an explicit, reversible choice.
         self.semantic_weight = max(0.0, float(semantic_weight))
@@ -720,6 +725,12 @@ class MemoryRetriever:
                         max_similarity_to_selected[other_key] = similarity
         # Soft similarity penalties still let four copies of one note through when every
         # alternative scores lower. Enforce the hard ceiling, and say so in the report.
+        abstain, abstain_reason = should_abstain(selected, threshold=self.abstain_threshold)
+        if abstain:
+            stage_ms["abstained"] = 1.0
+            stage_ms["abstained_top_score"] = round(float(selected[0].score), 6)
+            selected = []
+
         selected, duplicates_replaced = enforce_distinct(selected, remaining, limit=limit)
         if duplicates_replaced:
             stage_ms["duplicates_replaced"] = float(duplicates_replaced)
