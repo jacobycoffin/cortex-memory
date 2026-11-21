@@ -68,6 +68,7 @@ from .hermes_hooks import (
 )
 
 from .floor_context import build_floor
+from .recall_explain import record_breakdown
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
     _CREATION_POSITIVE_FEEDBACK,
@@ -857,6 +858,9 @@ class CortexMemoryProvider(MemoryProvider):
                 task_id=task_id,
                 stage_ms=dict(diagnostics.stage_ms),
             )
+            # Keep the arithmetic, not just the answer: this is what makes a wrong
+            # recall explainable after the fact instead of a mystery.
+            record_breakdown(self._store, task_id, results)
             self._record_memory_trace(
                 task_id=task_id,
                 sid=sid,
