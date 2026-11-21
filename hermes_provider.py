@@ -69,6 +69,7 @@ from .hermes_hooks import (
 
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
+from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
 from .recall_explain import record_breakdown
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
@@ -555,6 +556,21 @@ class CortexMemoryProvider(MemoryProvider):
                 threshold=plan.threshold,
                 context=retrieval_context,
             )
+            # An elliptical follow-up ("do that", "the other one") has no topic words of
+            # its own: resolve it against what this session was already discussing.
+            if is_elliptical(query):
+                recent = recent_memory_ids(self._store, sid)
+                if recent:
+                    results, session_boosted = apply_session_boost(results, recent)
+                    if session_boosted:
+                        results = sorted(results, key=lambda r: r.score, reverse=True)
+                        diagnostics = replace(
+                            diagnostics,
+                            stage_ms={
+                                **dict(diagnostics.stage_ms),
+                                "session_boosted": float(session_boosted),
+                            },
+                        )
             tool_guidance = (
                 self._store.tool_guidance(task_type, limit=max(1, plan.tool_limit))
                 if plan.tool_limit
