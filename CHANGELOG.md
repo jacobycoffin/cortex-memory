@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- added **use-weighted ranking** (`usage_weight.py`): a log-scaled, capped boost (max 0.09) from `access_log.event='used'` count, applied before the sort. Retrieval counts are ignored. Frozen set moved hit@6 0.5167 -> 0.6250, MRR 0.2927 -> 0.4415 — treat with suspicion, see the PR note on label leakage;
+- fixed two latent crashes: `RetrievalResult` is a frozen dataclass, so the authority cap and the usage boost now return replacements instead of mutating, and read-only queries no longer open a write transaction (`store_read.py`) which had been adding a second COMMIT;
 - added the **always-on floor** (`floor_context.py`): when the planner decides a turn needs no retrieval, the turn now still receives up to three always-on facts (open commitments, then pinned, then highest-importance), ~240 tokens, rendered through the same injection containment. Kills the "it didn't check memory" failure on greeting-shaped turns; 9 tests including a provider-level wiring test where `prefetch("hi")` returns the pinned fact;
 - added `scripts/encryption_readiness.py` and `docs/ENCRYPTION.md`: reports whether the SQLite build can encrypt, whether the key file is private enough, and whether the store is plaintext, so an encrypted migration cannot be attempted by wishful thinking. Live verdict: NOT READY (no SQLCipher on this host, no key file). 10 tests;
 - added `scripts/model_swap_drill.py`: runs the frozen set under the current model config and under an alternate one and requires identical recall, proving the "any model + great memory" thesis rather than asserting it. Live: current vs `hy4-flash-free` both `hit@6 0.5167 / recall 0.2448 / MRR 0.2934`, exit 0; 6 tests;

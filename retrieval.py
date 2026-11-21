@@ -19,6 +19,7 @@ from .cortex_trace import (
 )
 from .preload import RecallCache
 from .source_authority import cap_conflicts
+from .usage_weight import apply_usage_boost
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
 
@@ -570,6 +571,13 @@ class MemoryRetriever:
                 evidence_lookup=evidence_lookup,
             )
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # Rank on use, not on retrieval count: a memory that informed an answer is worth
+        # more than one that merely matched a query.
+        scored_list, usage_boosted = apply_usage_boost(self.store, scored.values())
+        if usage_boosted:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["usage_boosted"] = float(usage_boosted)
 
         # A document must not outrank the user's own words on the same fact. Applied
         # before the sort, so it can only cap a competitor -- never lift anything.

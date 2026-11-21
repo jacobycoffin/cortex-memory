@@ -30,12 +30,28 @@ DEFAULT_TOKEN_BUDGET = 240
 CHARS_PER_TOKEN = 4
 
 
-def _rows(conn: sqlite3.Connection, sql: str, params: tuple[Any, ...]) -> list[sqlite3.Row]:
+def _select_rows(store: Any, sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Rows as dicts, read without opening a transaction."""
+    lock = getattr(store, "_lock", None)
+    conn = getattr(store, "_conn", None)
+    if conn is None:
+        return []
+    previous = conn.row_factory
     conn.row_factory = sqlite3.Row
-    return list(conn.execute(sql, params))
+    try:
+        if lock is not None:
+            with lock:
+                rows = conn.execute(sql, params).fetchall()
+        else:
+            rows = conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.row_factory = previous
+    return [dict(row) for row in rows]
 
 
-def _provenance(row: sqlite3.Row) -> str:
+def _provenance(row: dict[str, Any]) -> str:
     category = str(row["source_category"] or "unknown").lower()
     kind = str(row["kind"] or "semantic")
     return f"{kind} · {category}"
@@ -59,33 +75,29 @@ def build_floor(
     seen: set[str] = set()
     spent = 0
 
-    with store.transaction() as conn:
-        try:
-            prospective = _rows(
-                conn,
-                """SELECT m.id, m.content, m.kind, m.source_category
-                   FROM prospective_items p JOIN memories m ON m.id = p.memory_id
-                   WHERE p.status IN ('open', 'due') AND m.state IN ('active', 'cold')
-                   ORDER BY p.created_at ASC LIMIT 1""",
-                (),
-            )
-        except sqlite3.Error:
-            prospective = []
+    def _rows(sql: str, params: tuple[Any, ...]) -> list[Any]:
+        # Read-only: the floor must never open or commit a write transaction.
+        return _select_rows(store, sql, params)
 
-        pinned = _rows(
-            conn,
-            """SELECT id, content, kind, source_category FROM memories
-               WHERE pinned = 1 AND state IN ('active', 'cold')
-               ORDER BY importance DESC, updated_at DESC LIMIT ?""",
-            (limit,),
-        )
-        important = _rows(
-            conn,
-            """SELECT id, content, kind, source_category FROM memories
-               WHERE state IN ('active', 'cold')
-               ORDER BY importance DESC, updated_at DESC LIMIT ?""",
-            (limit * 2,),
-        )
+    prospective = _rows(
+        """SELECT m.id, m.content, m.kind, m.source_category
+           FROM prospective_items p JOIN memories m ON m.id = p.memory_id
+           WHERE p.status IN ('open', 'due') AND m.state IN ('active', 'cold')
+           ORDER BY p.created_at ASC LIMIT 1""",
+        (),
+    )
+    pinned = _rows(
+        """SELECT id, content, kind, source_category FROM memories
+           WHERE pinned = 1 AND state IN ('active', 'cold')
+           ORDER BY importance DESC, updated_at DESC LIMIT ?""",
+        (limit,),
+    )
+    important = _rows(
+        """SELECT id, content, kind, source_category FROM memories
+           WHERE state IN ('active', 'cold')
+           ORDER BY importance DESC, updated_at DESC LIMIT ?""",
+        (limit * 2,),
+    )
 
     for row in [*prospective, *pinned, *important]:
         if len(chosen) >= limit:

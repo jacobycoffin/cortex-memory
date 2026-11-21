@@ -57,9 +57,11 @@ class AuthorityTests(unittest.TestCase):
         doc = Fake(mem("doc", "DOCUMENT_EXTRACTED"), 0.95)
         results, capped = cap_conflicts([user, doc])
         self.assertEqual(capped, 1)
-        self.assertEqual(user.score, 0.60)
-        self.assertAlmostEqual(doc.score, 0.60 * CAP_RATIO, places=6)
-        self.assertIn("authority_cap", doc.components)
+        by_id = {r.memory["id"]: r for r in results}
+        self.assertEqual(by_id["user"].score, 0.60)
+        self.assertAlmostEqual(by_id["doc"].score, 0.60 * CAP_RATIO, places=6)
+        self.assertIn("authority_cap", by_id["doc"].components)
+        self.assertEqual(doc.score, 0.95)  # the input object is never mutated
 
     def test_different_facts_are_untouched(self) -> None:
         user = Fake(mem("user", "USER_EXPLICIT", subject="truck"), 0.20)
@@ -73,8 +75,9 @@ class AuthorityTests(unittest.TestCase):
         doc = Fake(mem("doc", "DOCUMENT_EXTRACTED"), 0.12)
         results, capped = cap_conflicts([user, doc])
         self.assertEqual(capped, 1)
-        self.assertAlmostEqual(doc.score, 0.09, places=6)
-        self.assertEqual(user.score, 0.10)  # the user statement never moves
+        by_id = {r.memory["id"]: r for r in results}
+        self.assertAlmostEqual(by_id["doc"].score, 0.09, places=6)
+        self.assertEqual(by_id["user"].score, 0.10)  # the user statement never moves
 
     def test_a_document_that_is_the_only_evidence_still_wins(self) -> None:
         doc = Fake(mem("doc", "DOCUMENT_EXTRACTED"), 0.88)
