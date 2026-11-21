@@ -121,3 +121,42 @@ def safe_prompt_text(text: str) -> str:
         .replace("</CORTEX_RECALL>", "[/CORTEX_RECALL]")
         .replace("```", "'''")
     )
+
+# Patterns that read as a directive rather than as a fact. Memory content is data:
+# when it starts issuing orders, the renderer quotes the order instead of obeying it.
+_DIRECTIVE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bignore\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|above|earlier)\s+"
+                r"(?:instructions?|prompts?|rules?|directions?)\b", re.I), "ignore-previous"),
+    (re.compile(r"\bdisregard\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|above|system)\s+"
+                r"(?:instructions?|prompts?|rules?)\b", re.I), "disregard-instructions"),
+    (re.compile(r"\bsystem\s*(?:override|prompt)\b", re.I), "system-override"),
+    (re.compile(r"\byou\s+are\s+now\s+(?:a|an|the)\b", re.I), "role-reassignment"),
+    (re.compile(r"<\|?im_(?:start|end)\|?>|\[INST\]|<<SYS>>", re.I), "chat-template-token"),
+    # A fake turn can start a line or follow a sentence break.
+    (re.compile(r"(?:^|(?<=[.;!?:])\s+)(?:system|assistant|developer)\s*:", re.I | re.M),
+     "fake-role-turn"),
+    (re.compile(r"\b(?:run|execute)\s+(?:this|the following)\s+(?:command|tool)\b", re.I),
+     "tool-exhortation"),
+    (re.compile(r"\b(?:always|never)\s+(?:reveal|disclose|output)\b", re.I), "exfiltration-demanded"),
+)
+
+
+def contain_directives(text: str) -> tuple[str, int]:
+    """Quote directive-shaped spans so a memory cannot issue orders.
+
+    Content is kept — a human still needs to read what was stored — but any span
+    that reads as an instruction is wrapped in a visible marker, and the count is
+    returned so the renderer can say how many it defused.
+
+    Returns (text, defused_count).
+    """
+
+    def _quote(match: re.Match[str]) -> str:
+        return f"[quoted directive: {match.group(0).strip()}]"
+
+    defused = 0
+    result = normalize_text(text or "")
+    for pattern, _label in _DIRECTIVE_PATTERNS:
+        result, hits = pattern.subn(_quote, result)
+        defused += hits
+    return result, defused
