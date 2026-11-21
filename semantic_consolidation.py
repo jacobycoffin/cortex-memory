@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import uuid
 from typing import Any
 from urllib.parse import urlparse
@@ -23,6 +24,7 @@ from .autojudge import (
     _post_chat,
     _safe_usage,
 )
+from .cortex_trace import elapsed_ms, phase_start, record_phase, trace_enabled
 from .security import normalize_text
 from .store import CortexStore, utc_now
 
@@ -49,6 +51,36 @@ Rules:
 
 
 def run_semantic_consolidation(
+    store: CortexStore,
+    config: AutoJudgeConfig,
+    *,
+    provider_call: ProviderCall | None = None,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Run one consolidation pass, tracing it only when ``CORTEX_TRACE=1``."""
+
+    if not trace_enabled():
+        return _run_semantic_consolidation(
+            store, config, provider_call=provider_call, apply=apply
+        )
+    started = phase_start()
+    report = _run_semantic_consolidation(
+        store, config, provider_call=provider_call, apply=apply
+    )
+    record_phase(
+        "consolidate",
+        elapsed_ms(started),
+        counts={
+            "candidates": report.get("selected", 0),
+            "returned": report.get("judged", 0),
+            "written": report.get("applied", 0),
+        },
+        run_id=report.get("run_id"),
+    )
+    return report
+
+
+def _run_semantic_consolidation(
     store: CortexStore,
     config: AutoJudgeConfig,
     *,

@@ -11,6 +11,12 @@ from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Any, Iterable
 
+from .cortex_trace import (
+    elapsed_ms as _trace_elapsed_ms,
+    phase_start as _trace_phase_start,
+    record_phase as _trace_record,
+    trace_enabled as _trace_enabled,
+)
 from .preload import RecallCache
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
@@ -305,6 +311,59 @@ class MemoryRetriever:
         return results
 
     def search_detailed(
+        self,
+        query: str,
+        *,
+        limit: int = 6,
+        token_budget: int = 700,
+        include_archived: bool = False,
+        temporal_mode: str = "current",
+        as_of: str | None = None,
+        graph_depth: int = 1,
+        threshold: float | None = None,
+        context: RetrievalContext | None = None,
+        evidence_lookup: bool = False,
+    ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
+        # One traced line per retrieval, only when CORTEX_TRACE=1. With tracing
+        # off this is a single boolean test before the real work.
+        if not _trace_enabled():
+            return self._search_detailed(
+                query,
+                limit=limit,
+                token_budget=token_budget,
+                include_archived=include_archived,
+                temporal_mode=temporal_mode,
+                as_of=as_of,
+                graph_depth=graph_depth,
+                threshold=threshold,
+                context=context,
+                evidence_lookup=evidence_lookup,
+            )
+        started = _trace_phase_start()
+        results, diagnostics = self._search_detailed(
+            query,
+            limit=limit,
+            token_budget=token_budget,
+            include_archived=include_archived,
+            temporal_mode=temporal_mode,
+            as_of=as_of,
+            graph_depth=graph_depth,
+            threshold=threshold,
+            context=context,
+            evidence_lookup=evidence_lookup,
+        )
+        _trace_record(
+            "recall",
+            _trace_elapsed_ms(started),
+            counts={
+                "candidates": diagnostics.candidate_count,
+                "returned": diagnostics.selected_count,
+            },
+            session_id=(context.scope or {}).get("session_id") if context else None,
+        )
+        return results, diagnostics
+
+    def _search_detailed(
         self,
         query: str,
         *,

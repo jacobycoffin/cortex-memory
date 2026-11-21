@@ -228,6 +228,38 @@ procedure, then run the audit and behavior checks in [AGENTS.md](../AGENTS.md).
 Retain the private snapshot and previous plugin for rollback. Trial warming
 separately after foreground quality and latency pass.
 
+## Phase traces: which phase was slow
+
+Recall, write, pruning and consolidation share one process, so a slow turn names
+no phase. Set `CORTEX_TRACE=1` and each call path appends one JSONL line
+(`$CORTEX_HOME/cortex-trace.jsonl`, override with `CORTEX_TRACE_PATH`):
+
+```json
+{"ts":"2026-11-21T12:00:00.000Z","phase":"recall","duration_ms":12.345,
+ "counts":{"candidates":40,"returned":6,"written":0},"run_id":"9f2c...","session_id":null,"pid":8123}
+```
+
+Phases are `recall`, `write`, `prune` and `consolidate`; `counts` carries
+`candidates`/`returned`/`written` where each applies, and `run_id` is the
+pruning/consolidation run id when the store created one. Trace records contain
+no query text and no memory content.
+
+```bash
+CORTEX_TRACE=1 python3 -m cortex search "..."      # 1 line per recall
+python3 scripts/cortex_trace_report.py --path ~/.cortex/cortex-trace.jsonl
+python3 scripts/cortex_trace_report.py --budget recall=100 --budget prune=2000
+```
+
+The report prints nearest-rank p50/p95/max per phase and every run strictly over
+its budget (defaults: recall 250 ms, write 500 ms, prune 5 000 ms, consolidate
+60 000 ms). It exits 1 when a breach exists, 2 when the file or a `--budget`
+spec is unusable.
+
+Tracing off is the shipped state, and the off path does no work: the flag is read
+once per process and each call site pays one module-global boolean test — no
+clock read, no allocation, no file handle. `tests/test_cortex_trace.py` pins
+that, plus percentile math and breach detection from a fixture.
+
 ## Experiments that can improve Cortex next
 
 1. **Measure prediction usefulness before adding a predictor.** Compare explicit

@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from . import cortex_records as _records
+from . import cortex_trace as _trace
 
 from .refinery import (
     CLARITY_FLAGS,
@@ -2266,7 +2268,8 @@ class CortexStore:
         recall_eligibility: str | None = None,
         preserve_exact_duplicate: bool = False,
     ) -> tuple[str, bool]:
-        return _records.add_memory(
+        started = _trace.phase_start() if _trace.trace_enabled() else None
+        result = _records.add_memory(
             self,
             content,
             kind=kind,
@@ -2307,6 +2310,14 @@ class CortexStore:
             recall_eligibility=recall_eligibility,
             preserve_exact_duplicate=preserve_exact_duplicate,
         )
+        if started is not None:
+            _trace.record_phase(
+                "write",
+                _trace.elapsed_ms(started),
+                counts={"written": 1 if result[1] else 0},
+                session_id=session_id,
+            )
+        return result
 
     def correct_memory(
         self,
