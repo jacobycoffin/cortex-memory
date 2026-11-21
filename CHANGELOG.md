@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- added **negative-cue suppression** (`negative_cues.py`): queries carrying an exclusion ("not the X", "other than X", "except X", "anything but X", "without X", "don't mention X") now demote matching memories to 0.2x instead of confidently returning them. Demotion only - a misparsed sentence can never make a memory unreachable. Whole-word matching, terms capped at 4. Live check: "seerr telegram notifications (not the seerr)" drops every Seerr note out of the top 3;
 - added **score transparency** (`recall_explain.py` + `scripts/explain_recall.py`): the top five results' scores and components are written to an additive `recall_score_breakdown` table inside the caller's transaction, so a bad recall can be explained afterwards and a rolled-back turn leaves no residue. 6 tests, 138 recall/provider/preload tests pass;
 - added **use-weighted ranking** (`usage_weight.py`): a log-scaled, capped boost (max 0.09) from `access_log.event='used'` count, applied before the sort. Retrieval counts are ignored. Frozen set moved hit@6 0.5167 -> 0.6250, MRR 0.2927 -> 0.4415 — treat with suspicion, see the PR note on label leakage;
 - fixed two latent crashes: `RetrievalResult` is a frozen dataclass, so the authority cap and the usage boost now return replacements instead of mutating, and read-only queries no longer open a write transaction (`store_read.py`) which had been adding a second COMMIT;

@@ -19,6 +19,7 @@ from .cortex_trace import (
 )
 from .preload import RecallCache
 from .source_authority import cap_conflicts
+from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
@@ -571,6 +572,12 @@ class MemoryRetriever:
                 evidence_lookup=evidence_lookup,
             )
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # If the query said what it does not want, do not return it confidently.
+        scored_list, negative_cue_suppressed = suppress(scored.values(), excluded_terms(query))
+        if negative_cue_suppressed:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["negative_cue_suppressed"] = float(negative_cue_suppressed)
 
         # Rank on use, not on retrieval count: a memory that informed an answer is worth
         # more than one that merely matched a query.
