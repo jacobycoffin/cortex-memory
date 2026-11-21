@@ -18,13 +18,20 @@ from .cortex_trace import (
     record_phase as _trace_record,
     trace_enabled as _trace_enabled,
 )
+from .precompute import Precompute, revision_of
+from .store_read import select
 from .preload import RecallCache
 from .source_authority import cap_conflicts
 from .abstention import should_abstain
 from .cognition import query_class
 from .density import by_confidence
 from .diversity import enforce_distinct
-from .entity_anchor import entity_memory_ids, extract_entities, known_entities
+from .entity_anchor import (
+    entity_memories,
+    entity_memory_ids,
+    extract_entities,
+    known_entities,
+)
 from .stability import apply_stability_blend
 from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
@@ -299,6 +306,21 @@ class MemoryRetriever:
         # orthogonal vectors; deployments may raise it for stricter precision.
         self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
         self.recall_cache = RecallCache()
+        # Query-independent inputs, shared across turns until the store changes.
+        self.precompute = Precompute()
+
+    def _edge_sets(self, relation: str) -> tuple[set[str], set[str]]:
+        """(sources, destinations) of one edge relation, cached per store revision."""
+
+        def compute() -> tuple[set[str], set[str]]:
+            rows = select(
+                self.store, "SELECT src_id, dst_id FROM edges WHERE relation = ?", (relation,)
+            )
+            return ({str(row[0]) for row in rows}, {str(row[1]) for row in rows})
+
+        return self.precompute.get(
+            f"edges:{relation}", compute, revision=revision_of(self.store)
+        )
 
     def _anchor_names(self, query: str) -> list[str]:
         """Entities this query anchors on, memoised until the store revision changes.
@@ -471,8 +493,12 @@ class MemoryRetriever:
             return [], RetrievalDiagnostics(0, 0, 0, True)
         expanded_query = _expand_query(query)
         retrieval_context = _normalize_retrieval_context(context, goal=query)
-        scoring_profile = self.store.active_scoring_weights(
-            retrieval_context.scope.get("task_type")
+        scoring_profile = self.precompute.get(
+            f"weights:{retrieval_context.scope.get('task_type')}",
+            lambda: self.store.active_scoring_weights(
+                retrieval_context.scope.get("task_type")
+            ),
+            revision=revision_of(self.store),
         )
         candidate_limit = max(40, limit * 8)
         stage_ms: dict[str, float] = {}
@@ -521,7 +547,13 @@ class MemoryRetriever:
         )
         stage_ms["neighborhood"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
-        prospective_candidates = self.store.due_prospective_memories(limit=min(2, limit))
+        # Query-independent and expensive (measured ~17ms/turn): reuse across turns until
+        # the store changes. The preloader primes this, so the foreground turn is free.
+        prospective_candidates = self.precompute.get(
+            "due_prospective",
+            lambda: self.store.due_prospective_memories(limit=2),
+            revision=revision_of(self.store),
+        )[: min(2, limit)]
         candidates_by_id: dict[str, dict[str, Any]] = {}
         for candidate in lexical_candidates:
             candidates_by_id[str(candidate["id"])] = candidate
@@ -556,14 +588,15 @@ class MemoryRetriever:
         # of entity anchoring; filling the context alone changed no ranking.
         if anchored_entities:
             expanded = 0
-            for memory_id in entity_memory_ids(self.store, anchored_entities, limit=candidate_limit):
+            entity_ids = entity_memory_ids(
+                self.store, anchored_entities, limit=candidate_limit
+            )
+            missing = [mid for mid in entity_ids if mid not in candidates_by_id]
+            for memory_id in entity_ids:
                 if memory_id in candidates_by_id:
                     candidates_by_id[memory_id]["entity_candidate"] = 1.0
-                    continue
-                row = self.store.get_memory(memory_id)
-                if not row:
-                    continue
-                candidates_by_id[memory_id] = {**row, "entity_candidate": 1.0}
+            for row in entity_memories(self.store, missing):
+                candidates_by_id[str(row["id"])] = {**row, "entity_candidate": 1.0}
                 expanded += 1
             if expanded:
                 stage_ms["entity_expanded"] = float(expanded)
@@ -578,11 +611,35 @@ class MemoryRetriever:
             if memory_id in candidates_by_id:
                 candidates_by_id[memory_id].update(evidence)
         candidates = list(candidates_by_id.values())
-        schema_source_ids = self.store.active_schema_source_ids(list(candidates_by_id))
+        # Query-independent (7.6ms/turn measured) and cached per store revision: the set
+        # of memories serving as schema examples changes only when dependencies change.
+        all_schema_sources = self.precompute.get(
+            "schema_sources",
+            lambda: {
+                str(row[0])
+                for row in select(
+                    self.store,
+                    "SELECT DISTINCT evidence_id FROM memory_dependencies "
+                    "WHERE relation = 'schema_source' AND active = 1",
+                )
+            },
+            revision=revision_of(self.store),
+        )
+        schema_source_ids = {cid for cid in candidates_by_id if cid in all_schema_sources}
         for candidate in candidates:
             candidate["schema_example"] = str(candidate["id"]) in schema_source_ids
-        superseded = self.store.superseded_ids(list(candidates_by_id)) if temporal_mode == "current" else set()
-        contradicted = self.store.contradicted_ids(list(candidates_by_id))
+        # Both of these are edge lookups over the candidate list; the edge table is small
+        # and changes only when memories are written, so the global sets are cached per
+        # revision and intersected in memory (~17ms of every turn otherwise).
+        superseded = (
+            {cid for cid in candidates_by_id if cid in self._edge_sets("supersedes")[1]}
+            if temporal_mode == "current"
+            else set()
+        )
+        contradicts = self._edge_sets("contradicts")
+        contradicted = {
+            cid for cid in candidates_by_id if cid in contradicts[0] or cid in contradicts[1]
+        }
         stage_ms["prospective_merge"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
         prepared = _QuerySignals.prepare(expanded_query, retrieval_context)
