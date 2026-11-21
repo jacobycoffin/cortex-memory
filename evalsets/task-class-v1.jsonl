@@ -11,7 +11,7 @@
 {"query": "run the test suite and tell me what broke", "task_type": "shell"}
 {"query": "what processes are eating memory on ct116", "task_type": "shell"}
 {"query": "where does the cortex dashboard serve from", "task_type": "shell"}
-{"query": "read the file at /root/.hermes/config.yaml", "task_type": "filesystem"}
+{"query": "read the file at ~/.config/app/settings.yaml", "task_type": "filesystem"}
 {"query": "open the temple project folder", "task_type": "filesystem"}
 {"query": "patch the retrieval module to cache anchors", "task_type": "filesystem"}
 {"query": "what is in the workspace directory", "task_type": "filesystem"}
