@@ -18,6 +18,7 @@ from .cortex_trace import (
     trace_enabled as _trace_enabled,
 )
 from .preload import RecallCache
+from .source_authority import cap_conflicts
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
 
@@ -569,6 +570,13 @@ class MemoryRetriever:
                 evidence_lookup=evidence_lookup,
             )
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # A document must not outrank the user's own words on the same fact. Applied
+        # before the sort, so it can only cap a competitor -- never lift anything.
+        scored_list, authority_capped = cap_conflicts(scored.values())
+        if authority_capped:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["authority_capped"] = float(authority_capped)
 
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
         eligible_ids = self.store.recall_eligible_ids(
