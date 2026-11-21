@@ -21,6 +21,7 @@ from .cortex_trace import (
 from .preload import RecallCache
 from .source_authority import cap_conflicts
 from .abstention import should_abstain
+from .density import by_confidence
 from .diversity import enforce_distinct
 from .entity_anchor import entity_memory_ids, extract_entities, known_entities
 from .stability import apply_stability_blend
@@ -77,6 +78,9 @@ _MEMORY_TYPE_PRIOR = {
 # continues to use the current policy until outcome evidence supports a switch.
 LIVE_SCORING_POLICY_VERSION = "retrieval_live_v2"
 SHADOW_SCORING_POLICY_VERSION = "semantic_graph_shadow_v1"
+
+# Budgets at or above this are preload-scale and are spent by density.
+DENSITY_MIN_BUDGET = 2000
 
 # Association is weaker than lexical evidence, so the entity bonus stays small.
 # Measured on the frozen set: 0.02/0.03 give 0.6167/0.2917/0.4389,
@@ -280,6 +284,8 @@ class MemoryRetriever:
         # points of hit@6). Stage one already carries a 0.20 lexical weight with phrase
         # matching, so BM25 over full content mostly re-weights note length.
         self.rerank_enabled = False
+        # Spend preload-scale budgets by density (CORTEX_DENSITY_BUDGET=0 to A/B).
+        self.density_budget_enabled = os.environ.get("CORTEX_DENSITY_BUDGET", "1") != "0"
         # Anchor recall on entity names found in the query (CORTEX_ENTITY_ANCHOR=0 to A/B).
         self.entity_anchor_enabled = os.environ.get("CORTEX_ENTITY_ANCHOR", "1") != "0"
         # Semantic fusion is OFF by default: 0.0 reproduces the previous
@@ -852,6 +858,17 @@ class MemoryRetriever:
                     str(result.memory["id"]),
                     "selected after replacing a near-duplicate",
                 )
+        # Preload-scale budgets are spent by density instead of by rank: the same tokens
+        # then carry more, sharper evidence. Inline recall (<=700) is untouched.
+        if (
+            getattr(self, "density_budget_enabled", True)
+            and token_budget >= DENSITY_MIN_BUDGET
+            and ranked
+        ):
+            by_confidence_selection = by_confidence(ranked, token_budget, max_items=limit)
+            if by_confidence_selection:
+                selected = by_confidence_selection
+                stage_ms["density_selected"] = float(len(selected))
         stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
