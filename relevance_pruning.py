@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import uuid
 from typing import Any
 from urllib.parse import urlparse
@@ -18,6 +19,7 @@ from .autojudge import (
     _post_chat,
     _safe_usage,
 )
+from .cortex_trace import elapsed_ms, phase_start, record_phase, trace_enabled
 from .security import normalize_text
 from .store import CortexStore, utc_now
 
@@ -43,6 +45,48 @@ Rules:
 
 
 def run_adaptive_pruning(
+    store: CortexStore,
+    config: AutoJudgeConfig,
+    *,
+    provider_call: ProviderCall | None = None,
+    relevance_threshold: float = 0.25,
+    max_candidates: int = ADAPTIVE_PRUNING_MAX_CANDIDATES,
+    apply: bool = False,
+) -> dict[str, Any]:
+    """Run one pruning pass, tracing it only when ``CORTEX_TRACE=1``."""
+
+    if not trace_enabled():
+        return _run_adaptive_pruning(
+            store,
+            config,
+            provider_call=provider_call,
+            relevance_threshold=relevance_threshold,
+            max_candidates=max_candidates,
+            apply=apply,
+        )
+    started = phase_start()
+    report = _run_adaptive_pruning(
+        store,
+        config,
+        provider_call=provider_call,
+        relevance_threshold=relevance_threshold,
+        max_candidates=max_candidates,
+        apply=apply,
+    )
+    record_phase(
+        "prune",
+        elapsed_ms(started),
+        counts={
+            "candidates": report.get("selected", 0),
+            "returned": report.get("judged", 0),
+            "written": report.get("applied", 0),
+        },
+        run_id=report.get("run_id"),
+    )
+    return report
+
+
+def _run_adaptive_pruning(
     store: CortexStore,
     config: AutoJudgeConfig,
     *,
