@@ -22,6 +22,7 @@ from .source_authority import cap_conflicts
 from .abstention import should_abstain
 from .diversity import enforce_distinct
 from .stability import apply_stability_blend
+from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
 from .semantics import feature_similarity
@@ -607,6 +608,15 @@ class MemoryRetriever:
             stage_ms["authority_capped"] = float(authority_capped)
 
         ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
+
+        # Namespace isolation: a finance/work memory must not reach a turn that declared a
+        # different channel. Applied before eligibility so a blocked memory never even
+        # consumes a slot or a token.
+        channel = channel_namespaces(context)
+        if channel:
+            ranked, namespace_blocked = filter_results(ranked, channel)
+            if namespace_blocked:
+                stage_ms["namespace_blocked"] = float(namespace_blocked)
         eligible_ids = self.store.recall_eligible_ids(
             [str(result.memory["id"]) for result in ranked],
             evidence_lookup=evidence_lookup, include_archived=include_archived,

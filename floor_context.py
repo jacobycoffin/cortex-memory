@@ -21,8 +21,10 @@ import sqlite3
 from typing import Any
 
 try:  # package import when installed as a plugin
+    from .namespace import admissible
     from .security import contain_directives, safe_prompt_text
 except ImportError:  # standalone checkout / tests
+    from namespace import admissible
     from security import contain_directives, safe_prompt_text
 
 DEFAULT_LIMIT = 3
@@ -62,6 +64,7 @@ def build_floor(
     *,
     limit: int = DEFAULT_LIMIT,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
+    channel: set[str] | None = None,
 ) -> str:
     """Return a small always-on block, or "" when the store has nothing worth guaranteeing.
 
@@ -80,20 +83,20 @@ def build_floor(
         return _select_rows(store, sql, params)
 
     prospective = _rows(
-        """SELECT m.id, m.content, m.kind, m.source_category
+        """SELECT m.id, m.content, m.kind, m.source_category, m.scope_json
            FROM prospective_items p JOIN memories m ON m.id = p.memory_id
            WHERE p.status IN ('open', 'due') AND m.state IN ('active', 'cold')
            ORDER BY p.created_at ASC LIMIT 1""",
         (),
     )
     pinned = _rows(
-        """SELECT id, content, kind, source_category FROM memories
+        """SELECT id, content, kind, source_category, scope_json FROM memories
            WHERE pinned = 1 AND state IN ('active', 'cold')
            ORDER BY importance DESC, updated_at DESC LIMIT ?""",
         (limit,),
     )
     important = _rows(
-        """SELECT id, content, kind, source_category FROM memories
+        """SELECT id, content, kind, source_category, scope_json FROM memories
            WHERE state IN ('active', 'cold')
            ORDER BY importance DESC, updated_at DESC LIMIT ?""",
         (limit * 2,),
@@ -104,6 +107,8 @@ def build_floor(
             break
         memory_id = str(row["id"])
         if memory_id in seen:
+            continue
+        if not admissible(row, channel or set()):
             continue
         text, _defused = contain_directives(safe_prompt_text(str(row["content"] or "")))
         text = " ".join(text.split())

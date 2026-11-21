@@ -70,6 +70,7 @@ from .hermes_hooks import (
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
+from .namespace import channel_namespaces
 from .project_detect import candidate_projects, detect
 from .recall_explain import record_breakdown
 from .hermes_receipts import (
@@ -497,7 +498,9 @@ class CortexMemoryProvider(MemoryProvider):
             self._last_prepare_ms = (time.perf_counter() - prepare_start) * 1000
             # Retrieval judged this turn self-contained, but some facts must never be
             # absent: open commitments, pinned memories, the highest-importance ones.
-            return build_floor(self._store)
+            return build_floor(
+                self._store, channel=channel_namespaces(retrieval_context)
+            )
         if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
             budget_diagnostics = self._store.recommend_token_budget(
                 task_type,
