@@ -1,0 +1,53 @@
+{"query": "which systemd unit runs the cortex dashboard", "task_type": "shell"}
+{"query": "what service is listening on port 8100", "task_type": "shell"}
+{"query": "why did the t3 build fail on the lxc", "task_type": "shell"}
+{"query": "show me the journalctl output for t3code", "task_type": "shell"}
+{"query": "how much disk is the cortex db using", "task_type": "shell"}
+{"query": "restart the grafana container and check logs", "task_type": "shell"}
+{"query": "is ssh password auth disabled on the vps", "task_type": "shell"}
+{"query": "what is the uptime of r630", "task_type": "shell"}
+{"query": "check whether fail2ban banned that ip", "task_type": "shell"}
+{"query": "install ffmpeg on the media box", "task_type": "shell"}
+{"query": "run the test suite and tell me what broke", "task_type": "shell"}
+{"query": "what processes are eating memory on ct116", "task_type": "shell"}
+{"query": "where does the cortex dashboard serve from", "task_type": "shell"}
+{"query": "read the file at /root/.hermes/config.yaml", "task_type": "filesystem"}
+{"query": "open the temple project folder", "task_type": "filesystem"}
+{"query": "patch the retrieval module to cache anchors", "task_type": "filesystem"}
+{"query": "what is in the workspace directory", "task_type": "filesystem"}
+{"query": "write a note to my vault about today", "task_type": "filesystem"}
+{"query": "which branch has the duo layout changes", "task_type": "github"}
+{"query": "open a pull request for the difficulty rewrite", "task_type": "github"}
+{"query": "did the github actions run pass on pr 51", "task_type": "github"}
+{"query": "what issues are assigned to me", "task_type": "github"}
+{"query": "merge main into the feature branch", "task_type": "github"}
+{"query": "search the web for seerr notification settings", "task_type": "web_research"}
+{"query": "what is the latest news about opencode zen pricing", "task_type": "web_research"}
+{"query": "look online for the synology rsync flags", "task_type": "web_research"}
+{"query": "research sqlcipher support in sqlite", "task_type": "web_research"}
+{"query": "what does the seerr docs article say", "task_type": "web_research"}
+{"query": "what is on my calendar tomorrow", "task_type": "calendar"}
+{"query": "do i have any meetings thursday afternoon", "task_type": "calendar"}
+{"query": "book a dentist appointment for next week", "task_type": "calendar"}
+{"query": "when is jamie available for a call", "task_type": "calendar"}
+{"query": "check my inbox for the apple email", "task_type": "email"}
+{"query": "forward the testflight mail to jarvis", "task_type": "email"}
+{"query": "did apple reply about the app review", "task_type": "email"}
+{"query": "remember that i prefer the v2 nightly channel", "task_type": "memory"}
+{"query": "do you remember what we decided about pruning", "task_type": "memory"}
+{"query": "what is my preference for release notes style", "task_type": "memory"}
+{"query": "forget the old temple branch naming", "task_type": "memory"}
+{"query": "analyze the cost per turn csv from last month", "task_type": "data_analysis"}
+{"query": "what is the average recall latency percentile", "task_type": "data_analysis"}
+{"query": "plot the storage growth over 90 days", "task_type": "data_analysis"}
+{"query": "what is the correlation between tokens and hits", "task_type": "data_analysis"}
+{"query": "summarize the metrics spreadsheet", "task_type": "data_analysis"}
+{"query": "how many memories were used last week", "task_type": "data_analysis"}
+{"query": "what should we build next for cortex", "task_type": "general"}
+{"query": "tell me a joke about homelabs", "task_type": "general"}
+{"query": "what is the best way to learn rust", "task_type": "general"}
+{"query": "how do you feel about the roadmap", "task_type": "general"}
+{"query": "can you explain how memory consolidation works", "task_type": "general"}
+{"query": "what do you think about the new theme", "task_type": "general"}
+{"query": "which is better for a nas, zfs or btrfs", "task_type": "general"}
+{"query": "how long has this session been running", "task_type": "general"}

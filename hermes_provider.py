@@ -620,8 +620,11 @@ class CortexMemoryProvider(MemoryProvider):
                                 "session_boosted": float(session_boosted),
                             },
                         )
+            # A `general` turn has no recorded class, so scope the lookup to any class
+            # rather than dropping every warning (#218).
+            guidance_scope = None if task_type == "general" else task_type
             tool_guidance = (
-                self._store.tool_guidance(task_type, limit=max(1, plan.tool_limit))
+                self._store.tool_guidance(guidance_scope, limit=max(1, plan.tool_limit))
                 if plan.tool_limit
                 else []
             )

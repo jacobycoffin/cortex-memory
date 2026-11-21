@@ -7303,19 +7303,28 @@ class CortexStore:
             ).fetchone()
         return created, dict(stats) if stats else {}
 
-    def tool_guidance(self, task_type: str, *, limit: int = 4) -> list[dict[str, Any]]:
-        """Return only reinforced tool evidence; single attempts do not generalize."""
+    def tool_guidance(
+        self, task_type: str | None, *, limit: int = 4
+    ) -> list[dict[str, Any]]:
+        """Return only reinforced tool evidence; single attempts do not generalize.
+
+        `task_type=None` means "any class" and exists for turns the classifier could not
+        place (#218): a `general` turn used to lose every tool warning, because the
+        guidance is scoped by class and `general` matches no recorded row.
+        """
+        scope = "s.task_type=?" if task_type is not None else "1=1"
+        params: tuple[Any, ...] = (task_type, limit) if task_type is not None else (limit,)
         with self._lock:
             rows = self._conn.execute(
-                """SELECT s.*,
+                f"""SELECT s.*,
                    CAST(s.success_count AS REAL)/MAX(1,s.success_count+s.failure_count) reliability,
                    (SELECT COUNT(DISTINCT NULLIF(e.task_context,'')) FROM tool_executions e
                     WHERE e.task_type=s.task_type AND e.tool_name=s.tool_name) distinct_tasks
-                   FROM tool_stats s WHERE s.task_type=? AND s.success_count+s.failure_count>=2
+                   FROM tool_stats s WHERE {scope} AND s.success_count+s.failure_count>=2
                    AND (SELECT COUNT(DISTINCT NULLIF(e.task_context,'')) FROM tool_executions e
                         WHERE e.task_type=s.task_type AND e.tool_name=s.tool_name)>=2
                    ORDER BY reliability DESC, success_count DESC, failure_count ASC LIMIT ?""",
-                (task_type, limit),
+                params,
             ).fetchall()
         return [dict(row) for row in rows]
 
