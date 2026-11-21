@@ -86,6 +86,20 @@ interpreter the installer prints as `Hermes Python:`. Re-running
 Backups are plain SQLite files. Claude Code backups are in `$CORTEX_HOME/backups/`
 (`python -m cortex.mcp_server backup`). Hermes backups are whatever copies you made, plus the installer's `config.yaml.bak-cortex-*` files for the config.
 
+Before you need one, prove the path works:
+
+```bash
+python3 scripts/backup_restore_drill.py "$CORTEX_HOME/cortex.db"     # or any database path
+```
+
+It takes an online snapshot with SQLite's backup API (never a file copy of a live
+database), restores that snapshot into a scratch directory, then compares per-table
+row counts, a SHA-256 over a deterministic 200-row sample of `memories` and `edges`,
+and `PRAGMA integrity_check` on the restore. Exit `0` means every table matched,
+`1` means a mismatch or a corrupt copy, `2` means the source was unreadable.
+`--keep` leaves the restored copy in place if you want to inspect it. It opens the
+source read-only and never writes to it.
+
 1. Stop the agent (quit Claude Code sessions; stop Hermes / `hermes gateway stop`).
 2. Keep the current file aside: `mv cortex.db cortex.db.broken-$(date +%Y%m%d%H%M%S)`. Also move any `cortex.db-wal` and `cortex.db-shm` files next to it.
 3. Copy the backup in place: `cp backups/cortex-YYYYMMDDTHHMMSS.db cortex.db && chmod 600 cortex.db`.
