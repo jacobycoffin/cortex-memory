@@ -19,6 +19,7 @@ from .cortex_trace import (
 )
 from .preload import RecallCache
 from .source_authority import cap_conflicts
+from .diversity import enforce_distinct
 from .stability import apply_stability_blend
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
@@ -717,6 +718,16 @@ class MemoryRetriever:
                     similarity = _memory_similarity(other, result)
                     if similarity > max_similarity_to_selected.get(other_key, 0.0):
                         max_similarity_to_selected[other_key] = similarity
+        # Soft similarity penalties still let four copies of one note through when every
+        # alternative scores lower. Enforce the hard ceiling, and say so in the report.
+        selected, duplicates_replaced = enforce_distinct(selected, remaining, limit=limit)
+        if duplicates_replaced:
+            stage_ms["duplicates_replaced"] = float(duplicates_replaced)
+            for result in selected:
+                rejection_reasons.setdefault(
+                    str(result.memory["id"]),
+                    "selected after replacing a near-duplicate",
+                )
         stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
