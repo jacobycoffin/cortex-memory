@@ -281,3 +281,36 @@ that, plus percentile math and breach detection from a fixture.
 
 These experiments are not automatically enabled or promoted by a passing local
 microbenchmark. See [ROADMAP.md](ROADMAP.md) for the broader release gates.
+
+## Hard latency ceiling
+
+Recall has a soft budget (p50 ≤150ms, p95 ≤250ms, max ≤900ms, zero-result ≤5%), checked by
+`scripts/slo_check.py`. That budget is now also enforced at runtime when a deployment opts
+in:
+
+```yaml
+latency_budget_ms: 120      # or CORTEX_LATENCY_BUDGET_MS=120
+```
+
+When the deadline passes, the optional expensive phases are not started (semantic fusion)
+and the selection loop keeps the picks it already has — **best-so-far beats
+late-and-complete** for an interactive turn. The degradation is recorded in
+`diagnostics.stage_ms` as `budget_exhausted` / `semantic_skipped`.
+
+Off by default: skipping work makes results time-dependent, and a deterministic retriever
+should only become so when someone asks for it.
+
+### Measured cost of the L1 work
+
+Adding stability blending, negative-cue suppression, use weighting, diversity capping,
+namespace filtering and the session/ledger writes moved the frozen-set latency by:
+
+| metric | before | after | budget |
+| --- | --- | --- | --- |
+| p50 | 113.4ms | 111.0ms | 150ms |
+| p95 | 149.7ms | 157.5ms | 250ms |
+| max | 205.4ms | 229.8ms | 900ms |
+| zero-result | 0.0% | 0.0% | 5% |
+
+p95 pays ~8ms and the max ~24ms for eight new passes over the candidate set. Within budget,
+and worth stating plainly rather than reporting only the parts that improved.
