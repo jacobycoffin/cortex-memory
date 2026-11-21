@@ -22,6 +22,7 @@ from .source_authority import cap_conflicts
 from .abstention import should_abstain
 from .diversity import enforce_distinct
 from .stability import apply_stability_blend
+from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
@@ -250,12 +251,15 @@ class MemoryRetriever:
         semantic_model_id: str | None = None,
         semantic_floor: float = 0.0,
         abstain_threshold: float | None = None,
+        latency_budget_ms: float | None = None,
     ):
         self.store = store
         self.threshold = threshold
         # Off by default: no measured signal separates hits from misses yet
         # (see docs/ABSTENTION.md). Enabling this is an explicit choice.
         self.abstain_threshold = abstain_threshold
+        # Deadline for candidate work; unset keeps recall fully deterministic.
+        self.latency_budget_ms = latency_budget_ms
         # Semantic fusion is OFF by default: 0.0 reproduces the previous
         # behaviour exactly, so enabling it is an explicit, reversible choice.
         self.semantic_weight = max(0.0, float(semantic_weight))
@@ -407,6 +411,7 @@ class MemoryRetriever:
         )
         candidate_limit = max(40, limit * 8)
         stage_ms: dict[str, float] = {}
+        budget = budget_from(self.latency_budget_ms)
         stage_start = time.perf_counter()
         lexical_candidates = self.store.fts_search(
             expanded_query,
@@ -567,7 +572,7 @@ class MemoryRetriever:
         # merely re-ranking it: the measured gain comes from embeddings finding
         # memories the lexical signals never surfaced, which re-ranking alone
         # cannot do. Inert (empty dict) unless semantic_weight > 0.
-        if self.semantic_weight > 0.0:
+        if self.semantic_weight > 0.0 and not budget.expired():
             self._inject_semantic_candidates(
                 query,
                 scored,
@@ -579,6 +584,9 @@ class MemoryRetriever:
                 include_archived=include_archived,
                 evidence_lookup=evidence_lookup,
             )
+        else:
+            if self.semantic_weight > 0.0 and budget.expired():
+                stage_ms["semantic_skipped"] = 1.0
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
 
         # A fact restated over months should settle near-ties against one fresh sentence.
@@ -636,6 +644,10 @@ class MemoryRetriever:
         max_similarity_to_selected: dict[str, float] = {}
         selected_kinds: set[str] = set()
         while remaining and len(selected) < limit:
+            if budget.expired():
+                # Best-so-far beats late-and-complete for an interactive turn.
+                stage_ms["budget_exhausted"] = 1.0
+                break
 
             def diversified_value(result: RetrievalResult) -> float:
                 similarity = max_similarity_to_selected.get(str(result.memory["id"]), 0.0)
