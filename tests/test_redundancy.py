@@ -10,11 +10,11 @@ from cortex.redundancy import Memory, canonical, cluster, jaccard, memory_from_r
 
 FACT_A = (
     "Jacoby runs Cortex on the r630 at 192.168.1.50 and the store lives at "
-    "/root/.hermes/cortex/cortex.db with nightly backups."
+    "~/.local/share/cortex/cortex.db with nightly backups."
 )
 FACT_A_VARIANT = (
     "Cortex runs on the r630 host 192.168.1.50, its store is "
-    "/root/.hermes/cortex/cortex.db, and nightly backups are taken."
+    "~/.local/share/cortex/cortex.db, and nightly backups are taken."
 )
 FACT_B = "The maintenance window is Sunday 02:00 and lasts about an hour on CT116."
 
@@ -58,7 +58,7 @@ class ClusterTests(unittest.TestCase):
         self.assertEqual(groups, [])
 
     def test_a_partial_overlap_is_not_a_duplicate(self) -> None:
-        shared = "The maintenance window is Sunday 02:00 and the store lives at /root/.hermes"
+        shared = "The maintenance window is Sunday 02:00 and the store lives at srv/cortex"
         groups = cluster([mem("a", FACT_A), mem("b", shared + " and nothing else matters here")])
         self.assertEqual(groups, [])
 
