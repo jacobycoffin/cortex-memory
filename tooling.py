@@ -10,6 +10,7 @@ from typing import Any, Sequence
 
 from .security import sanitize_memory
 from .semantics import semantic_features
+from .task_class import classify
 
 
 _PLAIN_FAILURE = re.compile(
@@ -59,11 +60,14 @@ class ToolWorkflow:
 
 
 def classify_task(query: str, tool_name: str = "") -> str:
-    combined = f"{query} {tool_name.replace('_', ' ')}"
-    for name, pattern in _TASK_RULES:
-        if pattern.search(combined):
-            return name
-    return "general"
+    """Classify a turn, scoring classes instead of taking the first match (#218).
+
+    The rules below are kept because the legacy scorer is the baseline the labelled set
+    (`evalsets/task-class-v1.jsonl`, `scripts/task_class_eval.py`) measures against:
+    first-match-wins scored 62.3%, the scored classifier 83.0%, and its remaining misses
+    abstain to `general` rather than filing a wrong class with confidence.
+    """
+    return classify(query, tool_name).task_type
 
 
 def extract_tool_executions(messages: Sequence[dict[str, Any]], *, session_id: str) -> list[ToolExecution]:
