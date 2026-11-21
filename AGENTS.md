@@ -249,6 +249,12 @@ Full contract: [docs/INTEGRATION.md](docs/INTEGRATION.md).
   then `scripts/evaluate_real_history.py` (refuses < `--min-cases`, default 8;
   fails closed on privacy self-check). Needs a `cortex`-importable package:
   `pip install .` first, or run from a checkout whose parent dir exposes it.
+- Frozen set (the regression baseline): `scripts/build_frozen_evalset.py` freezes
+  >=200 real queries whose expected memories are the ones the agent actually
+  marked `used`; `scripts/frozen_evalset.py run` replays them in one command,
+  refuses a set that no longer matches its manifest, retires cases whose target
+  memories were archived, and exits non-zero when hit@k/recall@k/MRR drop past
+  tolerance. Labels and baseline live outside the repo.
 - Paired tool-calling: `scripts/benchmark_tool_calling.py recorded|live`.
 - Claim boundaries (what each runner does and does not prove):
   [docs/EVALUATION.md](docs/EVALUATION.md). Small samples are exploratory.

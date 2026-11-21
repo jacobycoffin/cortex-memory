@@ -123,6 +123,63 @@ The output contains only aggregate metrics and numbered case outcomes. It omits 
 
 By default, group names are also omitted. `--include-group-summary` is available for private diagnosis, but it marks the report as requiring additional review because operator-authored group names may reveal metadata.
 
+### Frozen real-usage set: the regression baseline
+
+Hand-labeled cases answer "did we find what I expected?". A frozen set answers
+"did retrieval get worse than last week?" without asking a human to label
+anything, so it can run unattended.
+
+`scripts/build_frozen_evalset.py` builds one from evidence already in the
+database: each case is a query Cortex was really asked, and its expected
+memories are the memories the agent actually marked `used` on that query
+(`access_log.event = 'used'` joined to `state = 'active'` memories). No new
+judgment is introduced — the set replays real traffic with real outcomes.
+
+```bash
+python3 scripts/build_frozen_evalset.py \
+  --db "$HOME/.hermes/cortex/cortex.db" \
+  --out "$HOME/cortex-evaluations/frozen/frozen-v1.jsonl" \
+  --set-id frozen-v1 --min-cases 200 --limit 240
+```
+
+The builder refuses to write inside the repository (those queries are private),
+refuses to freeze fewer than `--min-cases`, and sorts deterministically, so the
+same database snapshot always produces the same bytes. Alongside the labels it
+writes `<set-id>.manifest.json`: the labels' SHA-256, the case count, the
+selection parameters, and a fingerprint of the source database.
+
+Rerunning is one command, and it gates:
+
+```bash
+python3 scripts/frozen_evalset.py run \
+  --db "$HOME/.hermes/cortex/cortex.db" \
+  --set-dir "$HOME/cortex-evaluations/frozen"
+```
+
+- Exit `0`: within tolerance of the pinned baseline (or the baseline was just
+  pinned on a first run).
+- Exit `1`: `hit@k`, `recall@k`, or `MRR` dropped past tolerance, or
+  `zero_result_rate` rose past it. The offending deltas are printed.
+- Exit `2`: the set is unusable — bytes no longer match the manifest, the
+  baseline belongs to a different set, or too few cases survive retirement.
+
+A frozen set decays as memories are archived. The runner retires any case whose
+expected memories are no longer active and reports the count; if survivors drop
+below `--min-cases` it fails rather than scoring a smaller, flattering set.
+Archived-target retirement is a re-freeze signal, not a regression.
+
+Pin a new baseline with `--update-baseline` only when the set or the intended
+behavior changed on purpose. Never use it to silence a drop: the baseline file
+is the record of what "no worse" meant on a given day.
+
+Read the frozen number as a **relative** gate, not an absolute quality score. It
+replays real traffic deterministically: same labels, same database snapshot, same
+code produces byte-identical metrics, so a nonzero delta means something changed.
+The labels themselves are model-attributed `used` events rather than human
+judgments, so some positives are noise and a memory that never had a chance of
+being retrieved counts as a miss in every run — including the baseline. That
+inflates the miss rate but does not weaken the gate.
+
 ## 2. Paired tool-calling evaluation
 
 The tool harness has two modes. Both require exactly one `default_built_in` and one `cortex` observation for every pair.
@@ -247,3 +304,36 @@ off, then uses `scripts/evaluate_preload.py` for a separate offline Hermes repla
 with useful warm hits, signed added process CPU, and foreground p95. Only the
 aggregate handoff returns; label replay does not establish live prediction hit
 rate.
+
+## The frozen retrieval gate
+
+`scripts/frozen_evalset.py` reruns a frozen set of real queries against a Cortex database and
+compares the result to a pinned baseline. It exists so that "retrieval got better" is a number
+rather than an opinion, and so a change that quietly costs recall cannot reach a release.
+
+    python3 scripts/frozen_evalset.py run --db ~/.hermes/cortex/cortex.db
+
+Exit codes: `0` within tolerance (or a baseline was just pinned), `1` regression beyond tolerance,
+`2` the set is unusable (hash mismatch, missing files, too few surviving cases).
+
+### Why this gate runs locally, not in CI
+
+The frozen cases are real private queries with real memory ids attached. They cannot live in the
+repository, in a CI job, or in a CI log. The gate therefore runs where the data already is — on the
+machine that owns the database — and it runs at the last moment before a branch leaves:
+
+    ./scripts/install_git_hooks.sh     # sets core.hooksPath -> .githooks
+
+`.githooks/pre-push` runs the gate and refuses the push on exit 1 or 2. It skips cleanly when the
+set or database is absent, so a fresh clone can still push unrelated work. `SKIP_FROZEN_GATE=1`
+bypasses it for a single push, deliberately and visibly.
+
+### What the labels are, and what they are not
+
+Cases are built from `access_log.event = 'used'` — memories the agent actually acted on for that
+query — capped per case and ordered most-recent-first. That makes the set faithful to real usage and
+it makes it **self-referential**: it measures whether retrieval still agrees with what retrieval used
+to pick, not whether those picks were correct. Treat a hit@k drop as a regression signal, not as
+proof of a quality loss, and treat an improvement as worth confirming elsewhere. The builder records
+this in `label_provenance` on purpose. A human-labelled and an adversarially-labelled slice are the
+next step, and they belong in the same gate.
