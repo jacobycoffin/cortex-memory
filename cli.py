@@ -16,7 +16,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(prog="cortex-memory", description="Inspect and test Cortex Memory")
     parser.add_argument(
         "--db",
-        default=os.environ.get("CORTEX_DB", str(Path.home() / ".hermes" / "cortex" / "cortex.db")),
+        default=os.environ.get(
+            "CORTEX_DB",
+            str(Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes").expanduser() / "cortex" / "cortex.db"),
+        ),
         help="Path to cortex.db",
     )
     sub = parser.add_subparsers(dest="command", required=True)
@@ -37,6 +40,14 @@ def main() -> int:
     remember.add_argument("content")
     remember.add_argument("--kind", default="semantic")
     remember.add_argument("--pin", action="store_true")
+    review = sub.add_parser(
+        "review",
+        help="List or decide staged memory proposals locally (no remote service needed)",
+    )
+    review.add_argument("action", nargs="?", default="list", choices=["list", "approve", "reject", "approve-all"])
+    review.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
+    review.add_argument("--limit", type=int, default=50)
+    review.add_argument("--reason", default="local CLI review")
     explain = sub.add_parser("explain")
     explain.add_argument("memory_id")
     maintenance = sub.add_parser("maintenance")
@@ -386,6 +397,8 @@ def main() -> int:
                 quarantine_reason=sanitized.quarantine_reason,
             )
             result = {"memory_id": memory_id, "created": created, "quarantined": bool(sanitized.quarantine_reason)}
+        elif args.command == "review":
+            result = _review(store, args)
         elif args.command == "explain":
             memory_id = store.resolve_id(args.memory_id)
             result = store.explain(memory_id) if memory_id else None
@@ -690,6 +703,47 @@ def main() -> int:
         return 0
     finally:
         store.close()
+
+
+def _review(store: CortexStore, args: argparse.Namespace) -> object:
+    """Local, offline review of staged creation proposals.
+
+    Hermes stages auto-captured memories as review_required proposals; they are
+    not recallable until a decision. This is the terminal equivalent of the
+    dashboard's review queue, for people who use neither the dashboard nor the
+    opt-in remote auto-judge.
+    """
+
+    pending = store.list_memory_creation_proposals(status="pending", limit=1000, oldest_first=True)
+    if args.action == "list":
+        return [
+            {
+                "proposal_id": item["proposal_id"],
+                "kind": item.get("kind"),
+                "source": item.get("source_category"),
+                "content": item.get("content"),
+                "seen": item.get("recurrence_count"),
+                "last_seen_at": item.get("last_seen_at"),
+            }
+            for item in pending[: max(1, args.limit)]
+        ]
+    if args.action == "approve-all":
+        targets = [item["proposal_id"] for item in pending]
+    else:
+        if not args.proposal_ids:
+            raise SystemExit("review approve/reject needs one or more proposal ids (see: review list)")
+        targets = []
+        for raw in args.proposal_ids:
+            matches = [item["proposal_id"] for item in pending if str(item["proposal_id"]).startswith(raw)]
+            if len(matches) != 1:
+                raise SystemExit(f"{raw!r} matches {len(matches)} pending proposals; give a longer prefix")
+            targets.append(matches[0])
+    action = "reject" if args.action == "reject" else "remember"
+    decided = []
+    for proposal_id in targets:
+        outcome = store.review_memory_creation(proposal_id, action, actor="cli-operator", reason_text=args.reason)
+        decided.append({"proposal_id": proposal_id, "action": action, "memory_id": outcome.get("memory_id")})
+    return decided
 
 
 if __name__ == "__main__":

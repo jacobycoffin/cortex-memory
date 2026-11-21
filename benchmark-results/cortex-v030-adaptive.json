@@ -1,0 +1,125 @@
+{
+  "adaptive_vs_fixed_verbose": {
+    "approx_context_token_reduction": 0.163678,
+    "labeled_answer_context_recall_delta": 0.0
+  },
+  "benchmark": "cortex_adaptive_prompt_preparation",
+  "claim_boundary": "Local prompt-preparation ablation only. Approximate context tokens are characters/4. This does not measure model inference, TTFT, total response latency, or task completion.",
+  "conditions": {
+    "adaptive_compact": {
+      "by_task_class": {
+        "deep": {
+          "context_tokens_total_approx": 3361,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        },
+        "memory": {
+          "context_tokens_total_approx": 10024,
+          "queries": 30,
+          "zero_context_rate": 0.0
+        },
+        "no_memory": {
+          "context_tokens_total_approx": 0,
+          "queries": 12,
+          "zero_context_rate": 1.0
+        },
+        "procedural": {
+          "context_tokens_total_approx": 702,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        }
+      },
+      "context_tokens_median_approx": 333.0,
+      "context_tokens_total_approx": 14087,
+      "labeled_answer_context_recall": 1.0,
+      "prepare_latency_ms": {
+        "maximum_ms": 86.771528,
+        "minimum_ms": 1.19907,
+        "p50_ms": 43.905524,
+        "p95_ms": 63.510369,
+        "p99_ms": 77.857039
+      },
+      "queries": 62,
+      "zero_context_rate": 0.193548
+    },
+    "fixed_compact": {
+      "by_task_class": {
+        "deep": {
+          "context_tokens_total_approx": 3361,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        },
+        "memory": {
+          "context_tokens_total_approx": 10024,
+          "queries": 30,
+          "zero_context_rate": 0.0
+        },
+        "no_memory": {
+          "context_tokens_total_approx": 677,
+          "queries": 12,
+          "zero_context_rate": 0.833333
+        },
+        "procedural": {
+          "context_tokens_total_approx": 702,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        }
+      },
+      "context_tokens_median_approx": 333.0,
+      "context_tokens_total_approx": 14764,
+      "labeled_answer_context_recall": 1.0,
+      "prepare_latency_ms": {
+        "maximum_ms": 76.797051,
+        "minimum_ms": 4.176749,
+        "p50_ms": 46.331294,
+        "p95_ms": 69.303504,
+        "p99_ms": 75.178526
+      },
+      "queries": 62,
+      "zero_context_rate": 0.16129
+    },
+    "fixed_verbose": {
+      "by_task_class": {
+        "deep": {
+          "context_tokens_total_approx": 3841,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        },
+        "memory": {
+          "context_tokens_total_approx": 11448,
+          "queries": 30,
+          "zero_context_rate": 0.0
+        },
+        "no_memory": {
+          "context_tokens_total_approx": 773,
+          "queries": 12,
+          "zero_context_rate": 0.833333
+        },
+        "procedural": {
+          "context_tokens_total_approx": 782,
+          "queries": 10,
+          "zero_context_rate": 0.0
+        }
+      },
+      "context_tokens_median_approx": 381.0,
+      "context_tokens_total_approx": 16844,
+      "labeled_answer_context_recall": 1.0,
+      "prepare_latency_ms": {
+        "maximum_ms": 82.481869,
+        "minimum_ms": 3.77633,
+        "p50_ms": 46.468918,
+        "p95_ms": 68.229643,
+        "p99_ms": 75.769748
+      },
+      "queries": 62,
+      "zero_context_rate": 0.16129
+    }
+  },
+  "corpus_memories": 500,
+  "created_at": "2026-09-18T14:35:33+00:00",
+  "workload": {
+    "memory_queries": 30,
+    "seed": 7,
+    "total_queries": 62
+  }
+}

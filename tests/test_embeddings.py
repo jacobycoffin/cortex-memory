@@ -1,11 +1,11 @@
 """
 Tests for the local ONNX embedder (cortex/embeddings.py).
 
-The most important test here is `test_embedding_space_is_unchanged`: it hashes a
-fixed sentence's embedding. If pooling, normalisation, tokenisation or the model
-file changes, the hash changes and this fails — which is what we want, because a
-silently different embedding space would invalidate every measurement that
-justified adding this feature (fastembed agreement was cosine 1.0000).
+The reference test checks a synthetic sentence against independently pooled
+ONNX output from a pinned, checksummed model and tokenizer. Numeric tolerances
+allow small CPU/runtime rounding differences while catching pooling, model,
+normalization, and tokenizer drift. An exact float-byte digest cannot provide
+that portability.
 
 Tests degrade to skips when the model or its ONNX backend is unavailable, so the
 suite still runs on a machine that cannot embed.
@@ -13,18 +13,18 @@ suite still runs on a machine that cannot embed.
 
 from __future__ import annotations
 
-import hashlib
+import json
 import math
+import os
 import tempfile
 import unittest
 from pathlib import Path
 
 from embeddings import DIM, MODEL_ID, Embedder, get_embedder, pack_vector, unpack_vector
+from scripts.download_embedding_model import MODEL_FILES, MODEL_REVISION, file_sha256
 
-# Captured 2026-09-10 from the verified configuration (CLS pooling, L2 norm,
-# onnxruntime CPU, threads=1). See plans/Cortex Semantic Fusion results.
-GOLDEN_FIXTURE = "Cortex embedding regression fixture sentence."
-GOLDEN_SHA256 = "1c893c2cbd542b3750bb6ca59fb07fe0353cbc7df1d484f8d3303ca60b9802c3"
+REFERENCE = json.loads((Path(__file__).with_name("fixtures") / "embedding_reference.json").read_text())
+GOLDEN_FIXTURE = REFERENCE["sentence"]
 
 
 def _model_available() -> bool:
@@ -45,23 +45,40 @@ def _model_available() -> bool:
         return False
 
 
-@unittest.skipUnless(_model_available(), "embedding model not installed")
+MODEL_AVAILABLE = _model_available()
+if os.environ.get("CORTEX_REQUIRE_EMBEDDINGS") == "1" and not MODEL_AVAILABLE:
+    raise RuntimeError("Embedding CI requires a working local model, ONNX Runtime, tokenizers, and NumPy")
+
+
+@unittest.skipUnless(MODEL_AVAILABLE, "embedding model not installed")
 class EmbedderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.embedder = get_embedder()
 
-    def test_embedding_space_is_unchanged(self):
-        """Locks the vector space. A change here invalidates prior measurements."""
+    def test_embedding_space_matches_pinned_reference(self):
+        """Check the entire vector, allowing only minor numeric rounding."""
+        import numpy as np
+
         vec = self.embedder.embed_one(GOLDEN_FIXTURE)
         self.assertEqual(len(vec), DIM)
-        digest = hashlib.sha256(pack_vector(vec)).hexdigest()
-        self.assertEqual(
-            digest,
-            GOLDEN_SHA256,
-            "embedding changed — pooling/normalisation/model drifted; "
-            "every benchmark taken against the old space is now invalid",
+        np.testing.assert_allclose(
+            vec, REFERENCE["vector"], rtol=1e-3, atol=5e-4,
+            err_msg="embedding model, tokenizer, pooling, or normalization drifted",
         )
+        # Quantized graph fusions can move individual components slightly.
+        # Direction must still agree closely with the independent reference.
+        expected = np.asarray(REFERENCE["vector"])
+        actual = np.asarray(vec)
+        cosine = float(np.dot(actual, expected) / (np.linalg.norm(actual) * np.linalg.norm(expected)))
+        self.assertGreaterEqual(cosine, 0.99999)
+
+    def test_model_and_tokenizer_artifacts_are_pinned(self):
+        self.assertEqual(REFERENCE["artifacts"], MODEL_FILES)
+        self.assertEqual(REFERENCE["model_revision"], MODEL_REVISION)
+        for name, digest in MODEL_FILES.items():
+            with self.subTest(artifact=name):
+                self.assertEqual(file_sha256(self.embedder.model_dir / name), digest)
 
     def test_dimensions_and_identity(self):
         self.assertEqual(self.embedder.dim, DIM)

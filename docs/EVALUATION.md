@@ -11,7 +11,7 @@ They deliberately produce machine-readable JSON. They do not upload a Cortex dat
 
 The authenticated Outcome & Causality Lab provides the operator path for ongoing measurement:
 
-1. Use Kaya normally on a task where Cortex memory was attributed to the response.
+1. Use the agent normally on a task where Cortex memory was attributed to the response.
 2. Label the task helpful, validated, harmful, or corrected. The decision is audited and reversible.
 3. Helpful and validated labels become private real-history cases; negative labels deactivate the case.
 4. At eight active positive cases, run the private evaluation button. Cortex evaluates fixed and adaptive retrieval over the same cases in a disposable SQLite snapshot.
@@ -289,6 +289,21 @@ For a result that can support a public model comparison:
 8. Publish the sanitized JSON, protocol, model, date, and sample count. Keep private labels and raw traces local.
 
 An offline retrieval improvement is evidence that Cortex found labeled information. A live tool-selection improvement is evidence about the tested model and scenarios. Neither alone proves that autonomous pruning, workflow learning, or the entire production agent improved.
+
+## Compare retrieval quality with speed
+
+[PERFORMANCE.md](PERFORMANCE.md) documents the synthetic preparation runner and
+`scripts/compare_retrieval_reports.py`. The comparator also accepts two sanitized
+private real-history reports from this guide, checking recall, precision, MRR,
+and latency together. Use the same local labels and database snapshot in both
+checkouts. Aggregate comparison alone does not establish answer accuracy or
+activate a policy.
+
+An operator-run validation keeps the brain and labels on their host. It first compares retrieval with preloading
+off, then uses `scripts/evaluate_preload.py` for a separate offline Hermes replay
+with useful warm hits, signed added process CPU, and foreground p95. Only the
+aggregate handoff returns; label replay does not establish live prediction hit
+rate.
 
 ## The frozen retrieval gate
 

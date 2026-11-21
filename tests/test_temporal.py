@@ -1,8 +1,7 @@
-"""Tests for temporal validity classification and its presentation wiring.
+"""Temporal classification and presentation tests using invented fixtures.
 
-The three probe texts are trimmed from the REAL memories the operator flagged
-on 2026-09-11, so these tests fail if the classifier regresses on the cases that
-motivated it.
+The fixtures preserve table, version, timestamp, and preference shapes without
+copying operator history. Names, addresses, amounts, and settings are synthetic.
 """
 import unittest
 
@@ -16,40 +15,38 @@ from cortex.temporal import (
     find_as_of,
 )
 
-# --- trimmed from the live corpus (operator-flagged) --------------------------
-PROXMOX_HOST_SPECS = (
-    "Proxmox › Host Specs | Attribute | Value | |---|---|---| | Hostname | r630 | "
-    "| IP | 192.168.1.208 | | PVE version | 8.4.19 (pve-manager) | | CPU | Intel Xeon | "
-    "| RAM | 188.5 GiB total — 36.3 GB used (17.9%) | | Uptime | 36.5 days | "
-    "| Load avg | 1.64, 1.56, 1.92 |"
+# Entirely synthetic examples; network addresses use a documentation range.
+HOST_SPECS = (
+    "Example Lab › Host Specs | Attribute | Value | |---|---|---| | Hostname | cedar | "
+    "| IP | 192.0.2.20 | | PVE version | 8.2.1 (pve-manager) | | CPU | Example CPU | "
+    "| RAM | 64 GiB total — 16 GiB used (25%) | | Uptime | 12.5 days | "
+    "| Load avg | 0.20, 0.30, 0.40 |"
 )
 DEFAULT_MODEL = (
-    "Hermes Agent › Default model → Muse Spark 1.3 Contributor — 2026-09-02 › "
-    "Where to change models in the FUTURE (full checklist, verified 2026-09-02) "
-    "| `~/.hermes/config.yaml` → `model:` | `default: muse-spark-1.3-contributor` "
-    "| ALWAYS — this is the single source of truth |"
+    "Example Agent › Default model → Example Model 2.0 — 2026-09-02 › "
+    "Where to change models in the FUTURE (checklist, verified 2026-09-02) "
+    "| `./config.yaml` → `model:` | `default: example-model-2.0` |"
 )
-DEBT_OVERVIEW = (
-    "Debt Overview — Consolidated view of Jacoby's debt (Plaid-connected + manual "
-    "Apple Card). Live snapshot via `~/.hermes/scripts/plaid_api.py snapshot`. "
-    "## Current balances (as of 2026-08-07 — live Plaid snapshot) "
-    "| Debt | Balance | APR | Source | |---|---|---|---| "
-    "| Frontier Airlines Mastercard | $382.24 | 29.49% | Plaid live |"
+ACCOUNT_SNAPSHOT = (
+    "Example Accounts — Consolidated view of fictional account balances. "
+    "Live snapshot via `./scripts/example_accounts.py snapshot`. "
+    "## Current balances (as of 2026-08-07 — synthetic snapshot) "
+    "| Account | Balance | APR | Source | |---|---|---|---| "
+    "| Example Card | $125.00 | 12.50% | Example service |"
 )
 DURABLE_EXAMPLE = (
-    "For self-hosted Jarvis services, Jacoby prefers placing them in a dedicated "
-    "unprivileged LXC on the physical Proxmox homelab rather than on the VPS. "
-    "Policy: never on the bare Proxmox host."
+    "For self-hosted Example Lab services, Avery prefers placing them in a "
+    "dedicated unprivileged container rather than on the shared host. "
+    "Policy: never on the bare host."
 )
 
-
 class TestTemporalClassifier(unittest.TestCase):
-    def test_flags_the_three_memories_the_operator_flagged(self):
-        """Each was a correct retrieval whose volatile values were unmarked."""
+    def test_flags_mixed_synthetic_tables_and_configuration(self):
+        """Durable context and changing values remain distinguishable."""
         for name, text in (
-            ("proxmox host specs", PROXMOX_HOST_SPECS),
+            ("host specs", HOST_SPECS),
             ("default model", DEFAULT_MODEL),
-            ("debt overview", DEBT_OVERVIEW),
+            ("account snapshot", ACCOUNT_SNAPSHOT),
         ):
             with self.subTest(memory=name):
                 verdict = classify_temporal(text)
@@ -62,7 +59,7 @@ class TestTemporalClassifier(unittest.TestCase):
                 self.assertTrue(verdict.needs_stamp)
 
     def test_uptime_and_load_are_caught_without_an_explicit_as_of(self):
-        verdict = classify_temporal(PROXMOX_HOST_SPECS)
+        verdict = classify_temporal(HOST_SPECS)
         self.assertIn("Uptime", verdict.volatile_markers)
         self.assertIn("Load avg", verdict.volatile_markers)
         # the worst class: volatile values and nothing to date them from
@@ -71,7 +68,7 @@ class TestTemporalClassifier(unittest.TestCase):
         self.assertIn("temporal_undated", verdict.flags())
 
     def test_recovers_as_of_and_stamps_the_action(self):
-        verdict = classify_temporal(DEBT_OVERVIEW)
+        verdict = classify_temporal(ACCOUNT_SNAPSHOT)
         self.assertEqual(verdict.as_of, "2026-08-07")
         self.assertIn("as_of=2026-08-07", verdict.action)
 
@@ -125,7 +122,7 @@ class TestPresentationWiring(unittest.TestCase):
         }
 
     def test_volatile_record_carries_flags_and_as_of(self):
-        presentation = build_presentation(self._memory(DEBT_OVERVIEW), {"record_role": "canonical"})
+        presentation = build_presentation(self._memory(ACCOUNT_SNAPSHOT), {"record_role": "canonical"})
         self.assertIn("temporal_mixed", presentation["readability_flags"])
         self.assertIn("as of 2026-08-07", presentation["applies_when"])
 
@@ -139,7 +136,7 @@ class TestPresentationWiring(unittest.TestCase):
 
     def test_wiring_does_not_change_role_or_content(self):
         """Flags are additive: role and content must be untouched."""
-        memory = self._memory(PROXMOX_HOST_SPECS)
+        memory = self._memory(HOST_SPECS)
         presentation = build_presentation(memory, {"record_role": "reference"})
         self.assertEqual(memory["record_role"], "canonical")
         self.assertTrue(presentation["display_summary"])

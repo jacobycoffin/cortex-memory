@@ -61,7 +61,7 @@ class RecallSetTests(unittest.TestCase):
         self.assertIn(personal_id, {row["id"] for row in restored})
 
     def test_promoting_legacy_memory_adds_membership_without_rewriting_it(self) -> None:
-        memory_id, _ = self.store.add_memory("Jacoby prefers the compact review layout.", kind="preference")
+        memory_id, _ = self.store.add_memory("Alex prefers the compact review layout.", kind="preference")
         original = self.store.get_memory(memory_id)
         self.store.start_trained_recall_set(actor="test-operator")
 

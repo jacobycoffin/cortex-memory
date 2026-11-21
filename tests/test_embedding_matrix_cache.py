@@ -22,10 +22,21 @@ from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex`
 
 from cortex.store import CortexStore
 
+try:
+    import numpy  # noqa: F401 - the embedding-matrix path requires numpy
+    _MATRIX_AVAILABLE = True
+except ImportError:  # pragma: no cover - bare environments (CI) have no numpy
+    _MATRIX_AVAILABLE = False
+
+_MATRIX_SKIP = unittest.skipUnless(
+    _MATRIX_AVAILABLE, "embedding matrix requires numpy (optional dependency)"
+)
+
 MODEL = "test-model"
 QUERY = [1.0, 0.0, 0.0, 0.0]
 
 
+@_MATRIX_SKIP
 class EmbeddingMatrixCacheTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()

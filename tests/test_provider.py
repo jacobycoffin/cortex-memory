@@ -265,11 +265,11 @@ class CortexProviderTests(unittest.TestCase):
     def test_opt_in_attentional_learning_records_only_resolved_shadow_evidence(self) -> None:
         self.provider._config["attentional_learning"] = True
         self.provider._store.add_memory(
-            "Plex deploys to the Proxmox server.",
+            "Plex deploys to the Nomad server.",
             kind="procedure",
             confidence=0.95,
         )
-        query = "Deploy Plex to the Proxmox server"
+        query = "Deploy Plex to the Nomad server"
 
         context = self.provider.prefetch(query, session_id="session-1")
         self.assertIn("Plex deploys", context)
@@ -278,7 +278,7 @@ class CortexProviderTests(unittest.TestCase):
 
         self.provider.sync_turn(
             query,
-            "Plex deploys to the Proxmox server.",
+            "Plex deploys to the Nomad server.",
             session_id="session-1",
         )
         report = self.provider._store.attention_learning_summary()
@@ -330,15 +330,15 @@ class CortexProviderTests(unittest.TestCase):
 
     def test_output_hook_mechanically_adds_a_complete_recall_count(self) -> None:
         memory_id, _ = self.provider._store.add_memory(
-            "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+            "The hv01 Nomad server is the physical machine in Alex's closet.",
             kind="semantic",
             confidence=0.95,
         )
-        query = "Tell me about my Proxmox server."
+        query = "Tell me about my Nomad server."
         context = self.provider.prefetch(query, session_id="session-1")
         self.assertIn(memory_id[:8], context)
 
-        original = "The r630 Proxmox server is the physical machine in your closet."
+        original = "The hv01 Nomad server is the physical machine in your closet."
         transformed = self.provider.transform_llm_output(
             original,
             session_id="session-1",
@@ -427,14 +427,14 @@ class CortexProviderTests(unittest.TestCase):
     def test_output_hook_adds_dashboard_link_when_model_omits_receipt(self) -> None:
         self.provider._config["memory_receipt_url"] = "https://brain.example/"
         memory_id, _ = self.provider._store.add_memory(
-            "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+            "The hv01 Nomad server is the physical machine in Alex's closet.",
             kind="semantic",
             confidence=0.95,
         )
-        query = "Tell me about my Proxmox server."
+        query = "Tell me about my Nomad server."
         self.provider.prefetch(query, session_id="session-1")
         _ids, task_ids = self.provider._peek_current_prefetches("session-1")
-        original = "The r630 Proxmox server is the physical machine in your closet."
+        original = "The hv01 Nomad server is the physical machine in your closet."
 
         transformed = self.provider.transform_llm_output(
             original,
@@ -524,16 +524,16 @@ class CortexProviderTests(unittest.TestCase):
             _install_hermes_output_hook(provider, "bridge-session")
             self.assertEqual(len(callbacks), 1)
             memory_id, _ = provider._store.add_memory(
-                "The r630 Proxmox server is the physical machine in Jacoby's closet.",
+                "The hv01 Nomad server is the physical machine in Alex's closet.",
                 kind="semantic",
                 confidence=0.95,
             )
             provider.prefetch(
-                "Tell me about my Proxmox server.",
+                "Tell me about my Nomad server.",
                 session_id="bridge-session",
             )
             transformed = callbacks[0](
-                "The r630 Proxmox server is the physical machine in your closet.",
+                "The hv01 Nomad server is the physical machine in your closet.",
                 session_id="bridge-session",
                 model="deepseek-v4-flash",
                 platform="telegram",
@@ -542,7 +542,7 @@ class CortexProviderTests(unittest.TestCase):
             provider.shutdown()
             self.assertIsNone(
                 callbacks[0](
-                    "The r630 is in your closet.",
+                    "The hv01 is in your closet.",
                     session_id="bridge-session",
                 )
             )
@@ -651,7 +651,7 @@ class CortexProviderTests(unittest.TestCase):
         self.provider.on_memory_write(
             "add",
             "user",
-            "Jacoby prefers result-first deployment reports.",
+            "Alex prefers result-first deployment reports.",
             {"tool_name": "memory", "session_id": "session-1"},
         )
         proposals = self.provider._store.list_memory_creation_proposals(status="pending")

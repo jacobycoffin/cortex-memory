@@ -11,6 +11,14 @@ canary procedure.
 
 ---
 
+> **Off by default, always.** The auto-judge sends staged memory text to a
+> remote model and is normally billed. Nothing enables it automatically, even
+> when API keys are present. Turn it on with
+> `bash scripts/install.sh --enable-auto-judge` (add `--enable-jev` for the Jev engine)
+> or `CORTEX_AUTO_JUDGE_ENABLED=1` in `$HERMES_HOME/cortex/auto-judge.env`, and off
+> with `--no-auto-judge` / `=0`. Without it, review proposals locally with
+> `python -m cortex review list|approve|reject` or the dashboard.
+
 ## Quick start
 
 ```bash

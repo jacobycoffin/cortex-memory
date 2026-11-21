@@ -4,7 +4,7 @@ WHY THIS EXISTS. A memory can be perfectly *relevant* and still be dangerous: it
 mixes durable facts with values that were only true at capture. Real examples
 from the live corpus, all three flagged by the operator unprompted:
 
-  * ``Proxmox > Host Specs``      — "Uptime 36.5 days", "Load avg 1.64", "PVE 8.4.19"
+  * ``Hypervisor > Host Specs``      — "Uptime 36.5 days", "Load avg 1.64", "Kernel 6.8.12"
   * ``Hermes Agent > Default model`` — a model pin plus "(verified 2026-09-02)"
   * ``Debt Overview``             — balances and APRs under "as of 2026-08-07"
 
@@ -77,7 +77,7 @@ VOLATILE_MARKERS: list[tuple[str, int]] = [
     (r"\b(free|used)\s+(space|disk|memory|ram)\b", 2),
     (r"\b(pending|due|scheduled)\b", 1),
     (r"\b(yesterday|today|tonight|this (week|month))\b", 2),
-    # A product + version pin ("Muse Spark 1.3", "PVE 8.4.19", "HomeBox v0.25.x").
+    # A product + version pin ("Muse Spark 1.3", "Kernel 6.8.12", "HomeBox v0.25.x").
     # (?-i: ...) keeps it case-sensitive: a case-insensitive scan would match any
     # lowercase word before a decimal, e.g. "the 5.49".
     (r"(?-i:\b[A-Z][\w.-]*\s+v?\d+\.\d+(\.\d+|\.x)?\b)", 2),

@@ -10,10 +10,42 @@ python3 scripts/benchmark.py
 python3 scripts/benchmark_compare.py --sizes 100,500,2000 --queries 200
 python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
 python3 scripts/benchmark_cache.py --size 2000 --repetitions 80
+python3 scripts/benchmark_recall.py --size 2000 --repetitions 30 --output /tmp/cortex-performance.json
 PYTHON_BIN=python3 bash scripts/smoke_install_upgrade.sh
 ```
 
 GitHub Actions runs the unit and install/upgrade suites on Python 3.10 through 3.14, then checks Python and shell syntax, public-file privacy, SVG validity, and whitespace. For the full benchmark methodology, paired live-model runner, metric definitions, and public-claim guardrails, see [BENCHMARKING.md](BENCHMARKING.md). For private real-history retrieval and paired tool-call measurement, see [EVALUATION.md](EVALUATION.md).
+
+The separate Python 3.12 embeddings job installs `.[embeddings]`, downloads an
+immutable, SHA-256-verified model/tokenizer revision, and requires the embedding
+tests to execute. A missing backend or model fails that job rather than skipping
+its coverage. The dependency-free jobs continue to exercise graceful fallback.
+
+To reproduce embedding coverage in an isolated environment:
+
+```bash
+python3 -m venv /tmp/cortex-tests-venv
+/tmp/cortex-tests-venv/bin/python -m pip install '.[embeddings]'
+CORTEX_TEST_HOME="$(mktemp -d)"
+python3 scripts/download_embedding_model.py --output "$CORTEX_TEST_HOME/models/bge-small-en-v1.5"
+HERMES_HOME="$CORTEX_TEST_HOME" CORTEX_REQUIRE_EMBEDDINGS=1 /tmp/cortex-tests-venv/bin/python -m unittest discover -s tests -v
+```
+
+Model setup explicitly downloads public artifacts from the pinned
+[Qdrant ONNX model](https://huggingface.co/Qdrant/bge-small-en-v1.5-onnx-Q/tree/aa8f8b060edb00e03bfdd08813a2949946c8ba55).
+It sends no memory data; normal inference remains offline. The synthetic numeric
+reference in `tests/fixtures/embedding_reference.json` was generated independently
+with CPU ONNX graph optimizations disabled, CLS pooling, and L2 normalization.
+Artifact hashes prevent model/tokenizer drift; component tolerances and a
+0.99999 minimum cosine permit small quantized-runtime differences. This replaces
+an undocumented-artifact float-byte digest that was not reproducible with the
+pinned artifacts. It is a regression baseline, not evidence of equivalence to
+previous deployments or an update to published benchmark results.
+
+Public fixtures must be invented. The repository checker rejects declared
+history-derived fixtures in tests, benchmarks, and fixture directories in
+addition to secret/path patterns. Human privacy review remains necessary:
+pattern matching cannot establish whether arbitrary prose is private.
 
 The suite currently covers:
 
@@ -58,8 +90,8 @@ The suite currently covers:
 - schema 12/13 migration, cross-project isolation, required-context gates, context-independent candidate recall, storage preflight, context-specific usefulness and reversal, context-repair Sleep proposals, source-cited summary candidates, and combined quality reporting.
 - schema 15 Review Inbox coverage: decision-ready proposal snapshots, explained connection approval, typed operator-learning signals, reversible denial, and tombstone/restore version history.
 - schema 16 operator-policy coverage: review compilation, support and consistency gates, replay, shadow observations, scoped promotion, live retrieval adjustment, version audit, and rollback.
-- schema 17 decision-reach coverage: one-off exclusion from policy training, exact-duplicate discovery and reversible multi-memory action, explicit Teach Kaya compilation, counters, audit history, and migration defaults.
-- schema 18 Memory Refinery coverage: deterministic role classification (code, tables, configuration, diagrams, documents → reference; explicit user statements canonical; episodes events; unsupported inferences claims), presentation fidelity (negation, anchors, and uncertainty preserved; no invented summaries; no paths in reference titles), idempotent rebuilds with source-change invalidation, legacy-database backfill without touching state/content/IDs, vault reindex idempotency with stable IDs, item-only/exact-duplicate/Teach Kaya reach on clarity actions, editable rewrite/split previews with preserved source dependencies, optional reasons, undo that never overwrites later changes, aggregate-only privacy in summaries and reports, Stage 1 byte-identical retrieval equivalence, and mutation-free shadow role-tier comparisons.
+- schema 17 decision-reach coverage: one-off exclusion from policy training, exact-duplicate discovery and reversible multi-memory action, explicit Teach Cortex compilation, counters, audit history, and migration defaults.
+- schema 18 Memory Refinery coverage: deterministic role classification (code, tables, configuration, diagrams, documents → reference; explicit user statements canonical; episodes events; unsupported inferences claims), presentation fidelity (negation, anchors, and uncertainty preserved; no invented summaries; no paths in reference titles), idempotent rebuilds with source-change invalidation, legacy-database backfill without touching state/content/IDs, vault reindex idempotency with stable IDs, item-only/exact-duplicate/Teach Cortex reach on clarity actions, editable rewrite/split previews with preserved source dependencies, optional reasons, undo that never overwrites later changes, aggregate-only privacy in summaries and reports, Stage 1 byte-identical retrieval equivalence, and mutation-free shadow role-tier comparisons.
 - schema 19 connection-training coverage: stable source-and-kind pattern grouping, readable connection review metadata, typed explained edge creation and undo, default pattern-evidence reach, independent-witness policy compilation, pending weak-proposal filtering on promotion, and proposal restoration on rollback.
 
 ## Current compatibility check
@@ -83,8 +115,8 @@ Keep `pruning_mode: shadow`.
 11. Preview consolidation, apply it only on a backup test database, and undo the run.
 12. Run `cortex audit` and verify `ok: true`.
 13. Run `cortex sleep --mode shadow --reflection-token-budget 0`, verify no state/edge changes, and inspect the Sleep section in Cognition.
-14. Open **Train Kaya** and verify the review initially asks only **What should happen?**. Select an action, confirm reach and optional action-specific reasons appear, and submit successfully with no suggested reason selected. Verify reach defaults to **Only this memory/review**. When an eligible duplicate exists, confirm its exact count is shown before selecting **All exact copies**. Then mark five consistent matching reviews **Teach Kaya from this** and verify only those five produce a proposed standard with an explained selector and bounded core change.
-15. Filter **Train Kaya → Connections**. Choose a pattern, verify the A/B titles and summaries are readable, raw stored text is collapsed, witness counts and shared signals are visible, and no reason taxonomy is required. Approve a typed relationship and verify the exact edge opens highlighted on the memory map with the operator explanation. Return to reviews, deny five matching co-occurrence-only pairs, run replay plus three shadow reviews, approve the scoped standard, verify matching weak pending proposals leave the inbox, then roll it back and verify eligible proposals return.
+14. Open **Train Cortex** and verify the review initially asks only **What should happen?**. Select an action, confirm reach and optional action-specific reasons appear, and submit successfully with no suggested reason selected. Verify reach defaults to **Only this memory/review**. When an eligible duplicate exists, confirm its exact count is shown before selecting **All exact copies**. Then mark five consistent matching reviews **Teach Cortex from this** and verify only those five produce a proposed standard with an explained selector and bounded core change.
+15. Filter **Train Cortex → Connections**. Choose a pattern, verify the A/B titles and summaries are readable, raw stored text is collapsed, witness counts and shared signals are visible, and no reason taxonomy is required. Approve a typed relationship and verify the exact edge opens highlighted on the memory map with the operator explanation. Return to reviews, deny five matching co-occurrence-only pairs, run replay plus three shadow reviews, approve the scoped standard, verify matching weak pending proposals leave the inbox, then roll it back and verify eligible proposals return.
 15. Run its evidence replay, start shadow observation, add three new matching reviews, and confirm activation remains unavailable until the shadow gate passes.
 16. Approve the scoped version, verify it appears under Active policy versions, then roll it back and confirm the version becomes inactive without deleting its evidence.
 
@@ -103,3 +135,12 @@ Keep `pruning_mode: shadow`.
 ## Public benchmark rule
 
 `scripts/benchmark.py` is a local p95 performance gate and `scripts/benchmark_compare.py` is an offline capacity/retrieval evaluation. `scripts/benchmark_cache.py` measures only an identical repeated prefetch inside the cache lifetime; it does not establish a production hit rate or varied-query speed. None of these measures model inference. Only results from `scripts/benchmark_e2e.py` may be described as TTFT or total-response speed, and those results must name the exact model, provider class, corpus, paired question count, and uncertainty interval.
+
+## Performance and speculative recall checks
+
+See [PERFORMANCE.md](PERFORMANCE.md) for paired reports and the aggregate
+comparison gate. Tests cover read-only warming, queue bounds, failures,
+shutdown, cache isolation and expiry, context separation, correction and
+external-write invalidation, atomic recall logging, schema-33 index upgrade,
+and warmed/uncached selection equivalence. Wall-clock thresholds remain outside
+unit tests. The optional worker remains off until an operator chooses to try it.

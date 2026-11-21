@@ -3,7 +3,8 @@ set -euo pipefail
 
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
 VAULT_PATH="${VAULT_PATH:-$HERMES_HOME/obsidian-vault}"
-PYTHON_BIN="${PYTHON_BIN:-/usr/local/lib/hermes-agent/venv/bin/python}"
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/hermes_python.sh"
+PYTHON_BIN="$(cortex_find_hermes_python "${PYTHON_BIN:-}")" || PYTHON_BIN=""
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
 if [[ ! -x "$PYTHON_BIN" ]]; then

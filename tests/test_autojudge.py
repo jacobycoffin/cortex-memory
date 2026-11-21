@@ -350,7 +350,7 @@ class AutoJudgeTests(unittest.TestCase):
 
     def test_positive_feedback_never_increases_rejection_confidence(self) -> None:
         proposal = self.store.propose_memory_creation(
-            "Jacoby prefers clock-aligned schedules for recurring jobs.",
+            "Alex prefers clock-aligned schedules for recurring jobs.",
             source_type="user_turn",
             source_category="USER_STATED",
         )

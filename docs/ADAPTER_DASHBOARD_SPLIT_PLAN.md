@@ -10,6 +10,11 @@ HTML/CSS/JS; the split is file organization only.
 
 ## `__init__.py` split (preserve public imports + plugin loading)
 
+Stages A–D are implemented: hooks, receipt/feedback helpers, configuration,
+and the provider live in the four modules below. Public imports, plugin
+registration, and previously available root helper imports remain compatible.
+The installer ships each module. Dashboard stages E–G remain future work.
+
 `register(ctx)`, `CortexMemoryProvider`, and the `cortex.*` re-exports used
 by `tests/_bootstrap.py` (`import cortex` → `cortex.store`, `cortex.client`,
 `cortex.harness`, …) must keep working untouched.

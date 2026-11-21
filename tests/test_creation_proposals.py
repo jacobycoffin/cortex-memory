@@ -376,7 +376,7 @@ class MemoryCreationProposalTests(unittest.TestCase):
 
     def test_schema_23_upgrade_recovers_origin_for_created_proposal_memory(self) -> None:
         proposal = self.store.propose_memory_creation(
-            "Jacoby prefers the compact deployment review.",
+            "Alex prefers the compact deployment review.",
             kind="preference",
             source_type="user_turn",
             source_category="USER_STATED",

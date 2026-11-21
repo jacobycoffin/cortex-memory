@@ -22,7 +22,7 @@ class LearningBaselineTests(unittest.TestCase):
 
     def test_review_preserves_origin_separately_from_approval(self) -> None:
         proposal = self.store.propose_memory_creation(
-            "Jacoby prefers an amber release theme.",
+            "Alex prefers an amber release theme.",
             kind="preference",
             source_type="user_turn",
             source_category="USER_STATED",

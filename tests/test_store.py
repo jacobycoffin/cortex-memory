@@ -1174,8 +1174,8 @@ class CortexStoreTests(unittest.TestCase):
         self.assertTrue(self.store.superseded_ids([first]))
 
     def test_guided_conflict_review_can_keep_both_contexts(self) -> None:
-        first, _ = self.store.add_memory("Kaya runs locally during development.")
-        second, _ = self.store.add_memory("Kaya runs on the VPS in production.")
+        first, _ = self.store.add_memory("Cortex runs locally during development.")
+        second, _ = self.store.add_memory("Cortex runs on the VPS in production.")
         self.store.add_edge(first, second, "contradicts", weight=0.8)
 
         self.assertTrue(self.store.resolve_contradiction(first, second, "both_valid"))
@@ -1341,10 +1341,10 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(snapshot["stats"]["benchmark_runs"], 1)
 
     def test_outcome_labels_are_audited_reversible_and_build_private_cases(self) -> None:
-        memory_id, _ = self.store.add_memory("Kaya deploys the service through the private blue gateway.")
+        memory_id, _ = self.store.add_memory("Cortex deploys the service through the private blue gateway.")
         task_id = self.store.create_usage_batch(
             [(memory_id, 0.9)],
-            query="Which private gateway deploys Kaya?",
+            query="Which private gateway deploys Cortex?",
             session_id="session-1",
             task_type="deployment",
             recall_mode="focused",
@@ -1511,7 +1511,7 @@ class CortexStoreTests(unittest.TestCase):
         self.assertEqual(self.store.tool_evaluation_snapshot()["follow_rate"], 0.5)
 
         evidence_id, _ = self.store.add_memory("The operator recorded blue as the active gateway.")
-        claim_id, _ = self.store.add_memory("Kaya uses the blue gateway.", kind="semantic")
+        claim_id, _ = self.store.add_memory("Cortex uses the blue gateway.", kind="semantic")
         self.assertTrue(self.store.add_dependency(claim_id, evidence_id))
         hierarchy = self.store.evidence_hierarchy_snapshot()
         self.assertEqual(hierarchy["dependency_count"], 1)

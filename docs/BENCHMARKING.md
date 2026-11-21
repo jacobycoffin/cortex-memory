@@ -44,7 +44,7 @@ Metrics:
 | p50/p95 query latency | Median and tail retrieval overhead, excluding indexing and model inference. |
 | Approximate context tokens | `ceil(characters / 4)` for portable comparison; not provider billing tokens. |
 
-The checked-in 0.2 result is saved as a [human-readable report](../benchmark-results/cortex-v020-retrieval.md) with its [raw JSON](../benchmark-results/cortex-v020-retrieval.json). The fixture deliberately gives each project eight competing attributes, so matching the project alone is insufficient and paraphrase cases are harder for FTS-only retrieval. Cortex achieved 99.0%, 98.5%, and 99.5% recall@6 as the corpus grew, with MRR between 0.947 and 0.985, 12.0–34.0 ms p95 retrieval, and roughly 173 median context tokens. The built-in 2,200-character snapshot held 18 synthetic facts and covered 18.0%, 3.0%, and 1.5% of the sampled questions. These results are a capacity/retrieval finding, not yet an inference-speed finding. An earlier [comparison run](../benchmark-results/cortex-compare-20260713T123444Z.md) is included as a cross-check.
+The checked-in 0.2 result is saved as a [human-readable report](../benchmark-results/cortex-v020-retrieval.md) with its [raw JSON](../benchmark-results/cortex-v020-retrieval.json). The fixture deliberately gives each project eight competing attributes, so matching the project alone is insufficient and paraphrase cases are harder for FTS-only retrieval. Cortex achieved 99.0%, 98.5%, and 99.5% recall@6 as the corpus grew, with MRR between 0.947 and 0.985, 12.0–34.0 ms p95 retrieval, and roughly 173 median context tokens. The September 2026 VPS rerun ([report](../benchmark-results/cortex-v030-retrieval.md), [raw JSON](../benchmark-results/cortex-v030-retrieval.json)) reproduced 100.0%, 98.5%, and 99.5% recall@6 with MRR 0.961–0.985 and the same ≈173-token median context; its p95 retrieval was 27.7–85.7 ms, with a visibly higher 2,000-memory tail than the July macOS run. The built-in 2,200-character snapshot held 18 synthetic facts and covered 18.0%, 3.0%, and 1.5% of the sampled questions. These results are a capacity/retrieval finding, not yet an inference-speed finding. An earlier [comparison run](../benchmark-results/cortex-compare-20260713T123444Z.md) is included as a cross-check.
 
 ### Dashboard standard suite
 
@@ -75,7 +75,7 @@ python3 scripts/benchmark_adaptive.py --size 500 --memory-queries 30
 
 This compares fixed verbose context, fixed compact context, and adaptive compact context on the same database and mixed workload. It reports approximate memory-context tokens, zero-context rate, labeled answer availability, and local preparation latency. It does not call a model.
 
-The checked-in 0.2 run used 500 memories and 62 mixed queries. Adaptive compact recall used 21.7% fewer approximate memory-context tokens than fixed verbose recall while preserving the same labeled answer-context recall in that sample. This is a prompt-preparation result, not evidence of faster inference. See [the report](../benchmark-results/cortex-adaptive-v020.md) and [raw JSON](../benchmark-results/cortex-adaptive-v020.json).
+The checked-in 0.2 run (July 2026) used 500 memories and 62 mixed queries and measured 21.7% fewer approximate memory-context tokens than fixed verbose recall at the same labeled answer-context recall. The September 2026 VPS rerun ([report](../benchmark-results/cortex-v030-adaptive.md), [raw JSON](../benchmark-results/cortex-v030-adaptive.json)) measured **16.4% fewer tokens** (16,844 → 14,087) at unchanged 100% labeled answer-context recall on the same mixed workload. This is a prompt-preparation result, not evidence of faster inference.
 
 ## Test 3: paired end-to-end model latency
 
@@ -124,7 +124,18 @@ python3 scripts/benchmark_aggregate.py \
 
 The aggregate reports every run, pooled medians, and a hierarchical bootstrap interval that resamples both runs and paired questions.
 
-### July 13, 2026 VPS result
+### September 2026 VPS result (current)
+
+The September rerun used `deepseek-chat` through its direct API, a 500-memory synthetic corpus, `adaptive_compact` recall, `additive` mode, and 30 paired questions (60 model requests). See the [report](../benchmark-results/cortex-vs-builtin-e2e-20260910.md) and [raw JSON](../benchmark-results/cortex-vs-builtin-e2e-20260910.json).
+
+| Condition | Accuracy | Answer available | Median prompt tokens | p50 whole-agent TTFT | p95 whole-agent TTFT | p50 whole-agent total |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Hermes built-in bounded snapshot | 3.3% | 3.3% | 605 | 845.0 ms | 1,280.8 ms | 919.0 ms |
+| Built-in + Cortex | 90.0% | 96.7% | 908 | 841.3 ms | 1,007.4 ms | 935.1 ms |
+
+Cortex's own memory preparation took 23.9 ms at p50. The paired median Cortex-minus-default whole-agent TTFT was -42.1 ms (mean bootstrap 95% CI: -132.4 to +24.9 ms), and the paired median total-latency difference was -23.0 ms (CI: -131.9 to +33.3 ms). Both intervals cross zero, so this run supports **no clear latency difference**, not a raw-speed improvement. Cortex used 50.1% more median prompt tokens to make the needed memory available and produced an 86.7-percentage-point answer-accuracy gain.
+
+### July 13, 2026 VPS result (earlier run)
 
 The faithful additive test used `tencent/hy3:free` through OpenRouter, a 500-memory synthetic corpus, three independently seeded runs, and 30 paired questions per run (90 pairs / 180 model requests total). It retained Hermes's built-in memory in both conditions and changed only whether Cortex guidance and retrieved evidence were available.
 

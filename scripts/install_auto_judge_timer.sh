@@ -20,13 +20,8 @@ if [[ ! -f "$SERVICE_TEMPLATE" || ! -f "$TIMER_TEMPLATE" ]]; then
   exit 1
 fi
 
-if [[ -n "${CORTEX_PYTHON_BIN:-}" ]]; then
-  PYTHON_BIN="$CORTEX_PYTHON_BIN"
-elif [[ -x "$HERMES_HOME/venv/bin/python" ]]; then
-  PYTHON_BIN="$HERMES_HOME/venv/bin/python"
-elif command -v python3 >/dev/null 2>&1; then
-  PYTHON_BIN="$(command -v python3)"
-else
+source "$SCRIPT_DIR/hermes_python.sh"
+if ! PYTHON_BIN="$(cortex_find_hermes_python "${CORTEX_PYTHON_BIN:-}")"; then
   echo "python3 was not found" >&2
   exit 1
 fi

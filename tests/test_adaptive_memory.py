@@ -39,12 +39,12 @@ class RecallPlannerTests(unittest.TestCase):
         self.assertGreater(procedural.tool_limit, 0)
 
     def test_explicit_attention_override_is_deep_and_topics_are_bounded(self) -> None:
-        plan = plan_recall("Pay close attention to Plex and Proxmox during this deploy")
+        plan = plan_recall("Pay close attention to Plex and Nomad during this deploy")
         self.assertEqual(plan.mode, "deep")
         self.assertIn("explicit user request", plan.reason)
         self.assertEqual(
-            attention_topics("Pay close attention to Plex and Proxmox during this deploy"),
-            ("plex", "proxmox", "deploy"),
+            attention_topics("Pay close attention to Plex and Nomad during this deploy"),
+            ("plex", "nomad", "deploy"),
         )
 
 
