@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Show why a recall picked what it picked.
 
-    python3 scripts/explain_recall.py --task-id 8f2c... 
+    python3 scripts/explain_recall.py --task-id 8f2c1d04
     python3 scripts/explain_recall.py --last 3          # the three most recent turns
 
 Reads the additive `recall_score_breakdown` table written by the provider. Read-only.
