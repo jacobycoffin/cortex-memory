@@ -56,6 +56,35 @@ _EXPLICIT_ATTENTION = re.compile(
     r"\b(?:pay close attention to|focus closely on|use detailed memory (?:for|about))\b",
     re.I,
 )
+# Query classes (#5). The planner already varied depth by *cue*; this names the kind of
+# question, because a lookup and a planning turn want opposite things from memory: a lookup
+# wants one precise fact and tolerates a narrow threshold, planning wants principles and
+# tolerates almost nothing irrelevant.
+_LOOKUP = re.compile(
+    r"^\s*(?:what(?:'s| is| are| was)|where(?:'s| is| are)|who(?:'s| is| are)|when (?:is|was|did)|"
+    r"which (?:port|path|file|ip|host|token|version|name|url|command)|how (?:many|much|long|far)|"
+    r"(?:give me|show me|find|look up|what value))\b",
+    re.I,
+)
+_PLANNING = re.compile(
+    r"\b(?:should (?:we|i)|next step|what'?s next|plan|roadmap|priorit\w*|strategy|approach|"
+    r"how (?:do|should) (?:we|i)|what would you|options|trade-?offs?|design)\b",
+    re.I,
+)
+_CHITCHAT = re.compile(
+    r"\b(?:thanks|thank you|nice|cool|great|lol|haha|good (?:morning|night)|how are you|"
+    r"you around|just checking)\b",
+    re.I,
+)
+CLASS_STRATEGIES: dict[str, dict[str, Any]] = {
+    # A lookup wants the fact, so widen the net slightly and lower the bar a little.
+    "lookup": {"limit": 6, "token_budget": 560, "threshold_delta": -0.02, "graph_depth": 1},
+    # Planning wants principles and prior decisions, compact and high-precision.
+    "planning": {"limit": 4, "token_budget": 520, "threshold_delta": 0.02, "graph_depth": 1},
+    "recall": {"limit": 6, "token_budget": 620, "threshold_delta": 0.0, "graph_depth": 1},
+    "chitchat": {"limit": 0, "token_budget": 0, "threshold_delta": 0.0, "graph_depth": 0},
+}
+
 _TOPIC_TOKEN = re.compile(r"[A-Za-z][A-Za-z0-9._-]{2,31}")
 _TOPIC_STOP = {
     "about",
@@ -118,6 +147,27 @@ class RecallPlan:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def query_class(query: str) -> str:
+    """Name the kind of turn: lookup, planning, chitchat or recall.
+
+    Deterministic and cheap — same spirit as the rest of the planner, no model call.
+    """
+    text = " ".join((query or "").split())
+    if not text:
+        return "recall"
+    if _GREETING_ONLY.match(text):
+        return "chitchat"
+    # Planning is checked before lookup: "what should we do next" starts with "what" but
+    # wants principles, not a value.
+    if _PLANNING.search(text):
+        return "planning"
+    if _LOOKUP.search(text):
+        return "lookup"
+    if _CHITCHAT.search(text) and len(text.split()) <= 6:
+        return "chitchat"
+    return "recall"
 
 
 def plan_recall(
@@ -201,16 +251,31 @@ def plan_recall(
             graph_depth=1,
             tool_limit=3,
         )
+    # No durable-context cue fired, so let the *kind* of question decide. A lookup still
+    # wants its fact; a planning turn wants principles and should not pay for six memories.
+    klass = query_class(text)
+    if klass == "chitchat":
+        return RecallPlan(
+            "none",
+            False,
+            0,
+            0,
+            base_threshold,
+            "chit-chat; durable recall not needed",
+            temporal_mode,
+            as_of,
+        )
+    strategy = CLASS_STRATEGIES[klass]
     return RecallPlan(
-        "lean",
+        "lean" if klass == "recall" else klass,
         True,
-        min(max_limit, 6),
-        min(max_token_budget, 620),
-        min(0.30, base_threshold + 0.02),
-        "no strong memory cue; conservative recall",
+        min(max_limit, int(strategy["limit"])),
+        min(max_token_budget, int(strategy["token_budget"])),
+        min(0.30, max(0.08, base_threshold + float(strategy["threshold_delta"]))),
+        f"{klass} turn; class-specific recall plan",
         temporal_mode,
         as_of,
-        graph_depth=1,
+        graph_depth=int(strategy["graph_depth"]),
     )
 
 
