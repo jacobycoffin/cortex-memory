@@ -273,17 +273,19 @@ class PromotionPolicy:
             )
         return verdict
 
-    def denied_for_read(self, text: str, *, origin_tenant: str = "") -> bool:
+    def denied_for_read(self, text: str, *, origin_tenant: str = "", source_type: str = "") -> bool:
         """Read-side filter for the shared layer.
 
         Promotion is the gate, but a shared row can still arrive out of band
         (manual SQL, a future writer, a policy tightened after admission). Any
-        finance or credential hit — or content whose originating tenant is
-        deny-listed — is dropped at recall time, so a bad row can never reach a
-        prompt even if it reached the file.
+        finance or credential hit — or content whose originating tenant or
+        source type is deny-listed — is dropped at recall time, so a bad row can
+        never reach a prompt even if it reached the file.
         """
 
         if str(origin_tenant or "").strip().lower() in self.deny_tenants:
+            return True
+        if str(source_type or "").strip().lower() in self.deny_source_types:
             return True
         return bool(self.inspect_text(text).hard_matches)
 
@@ -822,7 +824,11 @@ class FleetMemory:
                         owns_it = False
                     if owns_it:
                         continue
-                if self.policy.denied_for_read(text, origin_tenant=origin):
+                if self.policy.denied_for_read(
+                    text,
+                    origin_tenant=origin,
+                    source_type=str(result.memory.get("source_type") or ""),
+                ):
                     continue
                 hits.append(
                     FleetHit(
@@ -1243,9 +1249,10 @@ class PromotionGate:
                 reasons=verdict.reasons or ["policy_denied"],
                 content_preview=str(memory.get("content") or "")[:160],
             )
-        final_text = verdict.redacted_text if verdict.redacted_text is not None else str(memory.get("content") or "")
+        # Pass the raw text: ``promote_content`` re-runs the policy (admission is
+        # the security boundary) and applies its redaction exactly once.
         return self.promote_content(
-            final_text,
+            str(memory.get("content") or ""),
             origin_memory_id=str(memory_id),
             kind=str(memory.get("kind") or "semantic"),
             source_type=str(memory.get("source_type") or ""),
@@ -1285,12 +1292,19 @@ class PromotionGate:
 
         text = str(content or "")
         preview = text[:160]
-        verdict = self.policy.inspect_text(text) if approved_verdict is None else approved_verdict
-        if not verdict.allowed:
+        # Admission is the security boundary: re-inspect the text here and never
+        # trust a caller-supplied verdict. ``approved_verdict`` is advisory only
+        # (kept for call-site compatibility); a forged ``allowed`` verdict used
+        # to skip the finance scan entirely and launder denied content through
+        # the shared layer.
+        verdict = self.policy.inspect_text(text)
+        record_reasons = self.policy.inspect_record({"source_type": str(source_type or "")})
+        if not verdict.allowed or record_reasons:
+            reasons = sorted(set(record_reasons) | set(verdict.reasons))
             return PromotionReceipt(
                 status="denied",
                 origin_memory_id=str(origin_memory_id),
-                reasons=verdict.reasons or ["policy_denied"],
+                reasons=reasons or ["policy_denied"],
                 content_preview=preview,
             )
         if verdict.redacted_text is not None and verdict.redacted_text != text:
