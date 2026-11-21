@@ -100,7 +100,7 @@ def main() -> None:
                     "top_coverage": coverages[0] if coverages else 0.0,
                     "n_results": len(results),
                     "span": float(results[0].score - results[-1].score) if len(results) > 1 else 0.0,
-                    
+
                 }
             )
     finally:
