@@ -21,6 +21,7 @@ from .cortex_trace import (
 from .preload import RecallCache
 from .source_authority import cap_conflicts
 from .abstention import should_abstain
+from .cognition import query_class
 from .density import by_confidence
 from .diversity import enforce_distinct
 from .entity_anchor import entity_memory_ids, extract_entities, known_entities
@@ -299,14 +300,50 @@ class MemoryRetriever:
         self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
         self.recall_cache = RecallCache()
 
+    def _anchor_names(self, query: str) -> list[str]:
+        """Entities this query anchors on, memoised until the store revision changes.
+
+        The name list is ~489 rows and only changes when memories change, so it is fetched
+        per revision rather than per call: the cache key must not cost more than the work
+        it exists to avoid.
+        """
+        try:
+            revision = self.store.retrieval_revision()
+        except Exception:  # noqa: BLE001 - a cache key must never break recall
+            revision = None
+        cached = getattr(self, "_anchor_cache", None)
+        if cached and revision is not None and cached[0] == revision:
+            names = cached[1]
+        else:
+            names = known_entities(self.store)
+            self._anchor_cache = (revision, names)
+        return extract_entities(query, names)
+
     def search_cached(
         self, query: str, *, speculative: bool = False, **options: Any
     ) -> tuple[list[RetrievalResult], RetrievalDiagnostics]:
         """Reuse exact recall only while both context and store revision match."""
 
-        settings = (self.threshold, self.semantic_weight, self.semantic_pool,
-                    self.semantic_model_id, self.semantic_floor)
-        key = self.recall_cache.key(query, options, settings)
+        # Everything that can change a result belongs in the key: the scoring settings,
+        # the on/off switches, the query's class and the entities it anchors on. Two turns
+        # with the same words but a different class or anchor set must not share an entry.
+        settings = (
+            self.threshold, self.semantic_weight, self.semantic_pool,
+            self.semantic_model_id, self.semantic_floor,
+            bool(getattr(self, "entity_anchor_enabled", True)),
+            float(ENTITY_BOOST),
+            bool(getattr(self, "rerank_enabled", False)),
+            bool(getattr(self, "density_budget_enabled", True)),
+            getattr(self, "latency_budget_ms", None),
+            getattr(self, "abstain_threshold", None),
+        )
+        scoped = dict(options)
+        scoped["__class__"] = query_class(query)
+        if getattr(self, "entity_anchor_enabled", True) and not (
+            getattr(options.get("context"), "entities", None)
+        ):
+            scoped["__entities__"] = self._anchor_names(query)
+        key = self.recall_cache.key(query, scoped, settings)
         started = time.perf_counter()
         computed = False
         def compute():
