@@ -68,6 +68,7 @@ from .hermes_hooks import (
 )
 
 from .floor_context import build_floor
+from .abstention_ledger import record as record_abstention_shadow
 from .recall_explain import record_breakdown
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
@@ -861,6 +862,15 @@ class CortexMemoryProvider(MemoryProvider):
             # Keep the arithmetic, not just the answer: this is what makes a wrong
             # recall explainable after the fact instead of a mystery.
             record_breakdown(self._store, task_id, results)
+            # Shadow abstention: what the policy would have done, so the threshold can be
+            # tuned from real turns even though the policy itself ships disabled.
+            record_abstention_shadow(
+                self._store,
+                task_id,
+                top_score=float(results[0].score) if results else 0.0,
+                top_memory_id=str(results[0].memory["id"]) if results else None,
+                session_id=sid,
+            )
             self._record_memory_trace(
                 task_id=task_id,
                 sid=sid,
