@@ -70,6 +70,7 @@ from .hermes_hooks import (
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
+from .project_detect import candidate_projects, detect
 from .recall_explain import record_breakdown
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
@@ -335,8 +336,20 @@ class CortexMemoryProvider(MemoryProvider):
         task_started = time.monotonic()
         task_id = str(uuid.uuid4())
         task_type = classify_task(query)
+        active_project = self._active_project or ""
+        if not active_project:
+            # Infer the project rather than leaving scoped memory inapplicable. A tie
+            # returns nothing: the wrong project silently admits the wrong memories.
+            configured = self._config.get("projects") or []
+            if isinstance(configured, str):
+                configured = [part for part in configured.split(",") if part.strip()]
+            detected, _scores = detect(
+                query=query,
+                candidates=candidate_projects(self._store, configured),
+            )
+            active_project = detected or ""
         retrieval_context = RetrievalContext(
-            active_project=self._active_project,
+            active_project=active_project or None,
             goal=query,
             scope={"conversation": sid, "task_type": task_type},
             system_state=dict(self._system_state),
