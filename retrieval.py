@@ -865,7 +865,13 @@ class MemoryRetriever:
             and token_budget >= DENSITY_MIN_BUDGET
             and ranked
         ):
-            by_confidence_selection = by_confidence(ranked, token_budget, max_items=limit)
+            # Same gates the selection loop applies: the threshold and pinned protection
+            # are not optional just because the budget is large.
+            eligible = [
+                r for r in ranked
+                if float(r.score) >= effective_threshold or r.memory.get("pinned")
+            ]
+            by_confidence_selection = by_confidence(eligible, token_budget, max_items=limit)
             if by_confidence_selection:
                 selected = by_confidence_selection
                 stage_ms["density_selected"] = float(len(selected))
