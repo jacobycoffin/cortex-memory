@@ -70,6 +70,7 @@ from .hermes_hooks import (
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
+from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_detect import candidate_projects, detect
 from .recall_explain import record_breakdown
@@ -501,6 +502,21 @@ class CortexMemoryProvider(MemoryProvider):
             # absent: open commitments, pinned memories, the highest-importance ones.
             return build_floor(
                 self._store, channel=channel_namespaces(retrieval_context)
+            )
+        # Task-type allocation first, then let the learned layer adjust from that prior
+        # instead of from a single global number (measured: every task type was getting
+        # 612-680 tokens and selecting ~3.2 memories, so the limit was the real constraint).
+        allocation = plan_for(
+            task_type,
+            max_limit=int(self._config["top_k"]),
+            max_token_budget=int(self._config["token_budget"]),
+        )
+        if (allocation["limit"], allocation["token_budget"]) != (plan.limit, plan.token_budget):
+            plan = replace(
+                plan,
+                limit=allocation["limit"],
+                token_budget=allocation["token_budget"],
+                reason=f"{plan.reason}; {allocation['reason']}",
             )
         if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
             budget_diagnostics = self._store.recommend_token_budget(
@@ -944,6 +960,12 @@ class CortexMemoryProvider(MemoryProvider):
                            token_budget=int(self._config["token_budget"]), graph_depth=1,
                            threshold=float(self._config["retrieval_threshold"]))
         task_type = classify_task(query)
+        allocation = plan_for(
+            task_type,
+            max_limit=int(self._config["top_k"]),
+            max_token_budget=int(self._config["token_budget"]),
+        )
+        plan = replace(plan, limit=allocation["limit"], token_budget=allocation["token_budget"])
         budget = plan.token_budget
         if _as_bool(self._config.get("adaptive_recall", True)) and _as_bool(
             self._config.get("adaptive_budget_learning", True)
