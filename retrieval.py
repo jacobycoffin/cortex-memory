@@ -26,6 +26,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
+from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
@@ -261,6 +262,12 @@ class MemoryRetriever:
         self.abstain_threshold = abstain_threshold
         # Deadline for candidate work; unset keeps recall fully deterministic.
         self.latency_budget_ms = latency_budget_ms
+        # Stage-two lexical rerank over the top slice; deterministic, no model. OFF by
+        # default: measured on the frozen set it gains 0.008 hit@6 at weight 0.05 and
+        # costs 0.012 MRR, and degrades monotonically as the weight rises (0.20 -> -3.0
+        # points of hit@6). Stage one already carries a 0.20 lexical weight with phrase
+        # matching, so BM25 over full content mostly re-weights note length.
+        self.rerank_enabled = False
         # Semantic fusion is OFF by default: 0.0 reproduces the previous
         # behaviour exactly, so enabling it is an explicit, reversible choice.
         self.semantic_weight = max(0.0, float(semantic_weight))
@@ -589,6 +596,18 @@ class MemoryRetriever:
             if self.semantic_weight > 0.0 and budget.expired():
                 stage_ms["semantic_skipped"] = 1.0
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # Stage two: rerank the top slice with BM25 over the actual contents, so a memory
+        # that contains the query's exact terms beats one that merely shares a category.
+        if getattr(self, "rerank_enabled", True):
+            ordered = sorted(scored.values(), key=lambda r: (-r.score, r.memory["id"]))
+            head, tail = ordered[:DEFAULT_TOP_N], ordered[DEFAULT_TOP_N:]
+            reranked_head, reranked = rerank(head, query, top_n=DEFAULT_TOP_N)
+            if reranked:
+                # Only the head was rescored; the tail keeps its stage-one scores so the
+                # candidate pool is never silently shrunk to the rerank window.
+                scored = {r.memory["id"]: r for r in [*reranked_head, *tail]}
+                stage_ms["reranked"] = float(reranked)
 
         # A memory that something else supersedes is history: reachable, never winning a
         # tie against its replacement.
