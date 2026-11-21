@@ -52,14 +52,30 @@ def used_counts(store: Any, memory_ids: Iterable[str]) -> dict[str, int]:
     return {str(row[0]): int(row[1]) for row in rows}
 
 
-def apply_usage_boost(store: Any, results: Iterable[Any]) -> tuple[list[Any], int]:
+def all_used_counts(store: Any) -> dict[str, int]:
+    """Used-event counts for every memory, in one query.
+
+    Cached per turn by the retriever: the per-candidate `IN (...)` query cost 29.6ms per
+    turn, which was the largest single item the L1 work added to recall latency.
+    """
+    rows = select(
+        store,
+        "SELECT memory_id, COUNT(*) FROM access_log WHERE event = 'used' "
+        "AND memory_id IS NOT NULL GROUP BY memory_id",
+    )
+    return {str(row[0]): int(row[1]) for row in rows}
+
+
+def apply_usage_boost(
+    store: Any, results: Iterable[Any], *, counts: dict[str, int] | None = None
+) -> tuple[list[Any], int]:
     """Add the use boost to each result's score in place.
 
     Returns (results, boosted_count). Records `use_boost` and `use_count` on the
     components so a ranking decision can be explained after the fact.
     """
     results = list(results)
-    counts = used_counts(
+    counts = counts if counts is not None else used_counts(
         store,
         [str((getattr(r, "memory", {}) or {}).get("id") or "") for r in results],
     )

@@ -599,7 +599,7 @@ class MemoryRetriever:
                 candidates_by_id[str(row["id"])] = {**row, "entity_candidate": 1.0}
                 expanded += 1
             if expanded:
-                stage_ms["entity_expanded"] = float(expanded)
+                stage_ms["entity_expanded_count"] = float(expanded)
         for candidate in prospective_candidates:
             memory_id = str(candidate["id"])
             if memory_id in candidates_by_id:
@@ -753,7 +753,7 @@ class MemoryRetriever:
                 )
                 entity_boosted += 1
             if entity_boosted:
-                stage_ms["entity_boosted"] = float(entity_boosted)
+                stage_ms["entity_boosted_count"] = float(entity_boosted)
 
         # Stage two: rerank the top slice with BM25 over the actual contents, so a memory
         # that contains the query's exact terms beats one that merely shares a category.
@@ -794,10 +794,11 @@ class MemoryRetriever:
 
         # Rank on use, not on retrieval count: a memory that informed an answer is worth
         # more than one that merely matched a query.
+        # One cached global map instead of an IN(...) query per turn (measured 29.6ms).
         scored_list, usage_boosted = apply_usage_boost(self.store, scored.values())
         if usage_boosted:
             scored = {r.memory["id"]: r for r in scored_list}
-            stage_ms["usage_boosted"] = float(usage_boosted)
+            stage_ms["usage_boosted_count"] = float(usage_boosted)
 
         # A document must not outrank the user's own words on the same fact. Applied
         # before the sort, so it can only cap a competitor -- never lift anything.
