@@ -44,7 +44,12 @@ from .research import (
     complete_agent_tasks,
     record_agent_task_start,
 )
-from .security import neutralize_role_tags, safe_prompt_text, sanitize_memory
+from .security import (
+    contain_directives,
+    neutralize_role_tags,
+    safe_prompt_text,
+    sanitize_memory,
+)
 from .store import CortexStore
 from .tooling import build_tool_workflow, classify_task, extract_tool_executions, task_fingerprint
 
@@ -724,9 +729,11 @@ class CortexMemoryProvider(MemoryProvider):
                     if monitor_mode == "enforce" and assessment and assessment.decision == "verify"
                     else ""
                 )
+                body, defused = contain_directives(safe_prompt_text(result.memory['content']))
+                note = f" [contains {defused} quoted directive{'s' if defused != 1 else ''}]" if defused else ""
                 line = (
-                    f"- M:{memory_id[:8]} {neutralize_role_tags(str(result.memory['kind']))}{caution}: "
-                    f"{safe_prompt_text(result.memory['content'])} [{_provenance_label(result.memory)}]"
+                    f"- M:{memory_id[:8]} {neutralize_role_tags(str(result.memory['kind']))}{caution}{note}: "
+                    f"{body} [{_provenance_label(result.memory)}]"
                 )
             else:
                 monitor = (
@@ -737,7 +744,7 @@ class CortexMemoryProvider(MemoryProvider):
                 line = (
                     f"- [M:{memory_id[:8]} kind={neutralize_role_tags(str(result.memory['kind']))} confidence={result.memory['confidence']:.2f} "
                     f"score={result.score:.2f}{monitor}; {_provenance_label(result.memory)}] "
-                    f"{safe_prompt_text(result.memory['content'])}"
+                    f"{contain_directives(safe_prompt_text(result.memory['content']))[0]}"
                 )
             if (len("\n".join([*lines, line])) + 3) // 4 > plan.token_budget:
                 continue
