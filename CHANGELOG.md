@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- added `scripts/encryption_readiness.py` and `docs/ENCRYPTION.md`: reports whether the SQLite build can encrypt, whether the key file is private enough, and whether the store is plaintext, so an encrypted migration cannot be attempted by wishful thinking. Live verdict: NOT READY (no SQLCipher on this host, no key file). 10 tests;
 - added `scripts/model_swap_drill.py`: runs the frozen set under the current model config and under an alternate one and requires identical recall, proving the "any model + great memory" thesis rather than asserting it. Live: current vs `hy4-flash-free` both `hit@6 0.5167 / recall 0.2448 / MRR 0.2934`, exit 0; 6 tests;
 - added **prompt-injection containment** (`security.contain_directives`): recalled memory content that reads as a directive ("ignore previous instructions", fake `system:` turns, chat-template tokens, tool exhortations) is quoted in place and counted, so a stored note cannot issue orders. Applied in both provider render paths; 10 tests, 76 security/provider tests pass;
 - added **source authority** (`source_authority.py`): a memory's score is capped when a higher-authority memory occupies the same subject+predicate slot, so a vault document or agent inference can no longer silently outrank the user's own words. Applied before the final sort; it only ever lowers a competitor. Retrieval suite 124 passed, frozen-set metrics unchanged (hit@6 0.5167, MRR 0.2927 -> 0.2934);
