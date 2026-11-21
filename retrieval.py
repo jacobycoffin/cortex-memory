@@ -26,6 +26,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
+from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
 
@@ -588,6 +589,19 @@ class MemoryRetriever:
             if self.semantic_weight > 0.0 and budget.expired():
                 stage_ms["semantic_skipped"] = 1.0
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # A memory that something else supersedes is history: reachable, never winning a
+        # tie against its replacement.
+        # Historical recall wants the old value — that is the question being asked. Demote
+        # superseded memories only when the turn is about what is true now.
+        scored_list, superseded_demoted = (
+            apply_validity_penalty(scored.values(), superseded_ids(self.store))
+            if temporal_mode != "historical"
+            else (list(scored.values()), 0)
+        )
+        if superseded_demoted:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["superseded_demoted"] = float(superseded_demoted)
 
         # A fact restated over months should settle near-ties against one fresh sentence.
         scored_list, stability_boosted = apply_stability_blend(scored.values())
