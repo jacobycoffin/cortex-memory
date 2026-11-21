@@ -67,6 +67,7 @@ from .hermes_hooks import (
     _install_hermes_output_hook,
 )
 
+from .floor_context import build_floor
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
     _CREATION_POSITIVE_FEEDBACK,
@@ -478,7 +479,9 @@ class CortexMemoryProvider(MemoryProvider):
                 )
             self._register_pending_prefetch(sid, task_id, [], task_started)
             self._last_prepare_ms = (time.perf_counter() - prepare_start) * 1000
-            return ""
+            # Retrieval judged this turn self-contained, but some facts must never be
+            # absent: open commitments, pinned memories, the highest-importance ones.
+            return build_floor(self._store)
         if adaptive_recall and _as_bool(self._config.get("adaptive_budget_learning", True)):
             budget_diagnostics = self._store.recommend_token_budget(
                 task_type,

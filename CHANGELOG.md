@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- added the **always-on floor** (`floor_context.py`): when the planner decides a turn needs no retrieval, the turn now still receives up to three always-on facts (open commitments, then pinned, then highest-importance), ~240 tokens, rendered through the same injection containment. Kills the "it didn't check memory" failure on greeting-shaped turns; 9 tests including a provider-level wiring test where `prefetch("hi")` returns the pinned fact;
 - added `scripts/encryption_readiness.py` and `docs/ENCRYPTION.md`: reports whether the SQLite build can encrypt, whether the key file is private enough, and whether the store is plaintext, so an encrypted migration cannot be attempted by wishful thinking. Live verdict: NOT READY (no SQLCipher on this host, no key file). 10 tests;
 - added `scripts/model_swap_drill.py`: runs the frozen set under the current model config and under an alternate one and requires identical recall, proving the "any model + great memory" thesis rather than asserting it. Live: current vs `hy4-flash-free` both `hit@6 0.5167 / recall 0.2448 / MRR 0.2934`, exit 0; 6 tests;
 - added **prompt-injection containment** (`security.contain_directives`): recalled memory content that reads as a directive ("ignore previous instructions", fake `system:` turns, chat-template tokens, tool exhortations) is quoted in place and counted, so a stored note cannot issue orders. Applied in both provider render paths; 10 tests, 76 security/provider tests pass;
