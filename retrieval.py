@@ -358,6 +358,11 @@ class MemoryRetriever:
             bool(getattr(self, "density_budget_enabled", True)),
             getattr(self, "latency_budget_ms", None),
             getattr(self, "abstain_threshold", None),
+            # Every policy switch belongs in the key, or an A/B comparison serves the
+            # baseline's entry to the challenger (#25).
+            bool(getattr(self, "usage_boost_enabled", True)),
+            bool(getattr(self, "negative_cues_enabled", True)),
+            bool(getattr(self, "session_scope_enabled", True)),
         )
         scoped = dict(options)
         scoped["__class__"] = query_class(query)
@@ -787,7 +792,12 @@ class MemoryRetriever:
             stage_ms["stability_boosted"] = float(stability_boosted)
 
         # If the query said what it does not want, do not return it confidently.
-        scored_list, negative_cue_suppressed = suppress(scored.values(), excluded_terms(query))
+        if getattr(self, "negative_cues_enabled", True):
+            scored_list, negative_cue_suppressed = suppress(
+                scored.values(), excluded_terms(query)
+            )
+        else:
+            scored_list, negative_cue_suppressed = list(scored.values()), 0
         if negative_cue_suppressed:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["negative_cue_suppressed"] = float(negative_cue_suppressed)
@@ -795,7 +805,10 @@ class MemoryRetriever:
         # Rank on use, not on retrieval count: a memory that informed an answer is worth
         # more than one that merely matched a query.
         # One cached global map instead of an IN(...) query per turn (measured 29.6ms).
-        scored_list, usage_boosted = apply_usage_boost(self.store, scored.values())
+        if getattr(self, "usage_boost_enabled", True):
+            scored_list, usage_boosted = apply_usage_boost(self.store, scored.values())
+        else:
+            scored_list, usage_boosted = list(scored.values()), 0
         if usage_boosted:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["usage_boosted_count"] = float(usage_boosted)
