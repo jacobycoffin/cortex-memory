@@ -73,6 +73,7 @@ from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
 from .namespace import channel_namespaces
 from .project_detect import candidate_projects, detect
 from .recall_explain import record_breakdown
+from .recall_replay import record as record_replay
 from .hermes_receipts import (
     _AMBIGUOUS_FEEDBACK,
     _CREATION_POSITIVE_FEEDBACK,
@@ -894,6 +895,11 @@ class CortexMemoryProvider(MemoryProvider):
             # Keep the arithmetic, not just the answer: this is what makes a wrong
             # recall explainable after the fact instead of a mystery.
             record_breakdown(self._store, task_id, results)
+            # And keep the bytes the model actually saw: an answer can be re-derived from
+            # the exact injected block, not from a reconstruction of it.
+            record_replay(
+                self._store, task_id, context, memory_ids=ids, session_id=sid
+            )
             # Shadow abstention: what the policy would have done, so the threshold can be
             # tuned from real turns even though the policy itself ships disabled.
             record_abstention_shadow(
