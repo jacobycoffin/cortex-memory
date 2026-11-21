@@ -41,13 +41,16 @@ class SimilarityTests(unittest.TestCase):
 
 def note(path: str, section: str, score: float) -> Fake:
     """Distinct prose that shares only a source path — the real Seerr case."""
+    # No nested dict inside the f-string: PEP 701 syntax breaks Python 3.10/3.11.
+    phrase = {
+        "a": "notification routing and webhook setup",
+        "b": "the api key rotation schedule",
+        "c": "disk usage warnings from the container",
+        "d": "the reverse proxy header rules",
+    }.get(section, "misc")
     content = (
         f"Vault note: {section} Path: {path} Section: {section}. "
-        f"Unique body text for {section} covering {
-            {'a': 'notification routing and webhook setup',
-             'b': 'the api key rotation schedule',
-             'c': 'disk usage warnings from the container',
-             'd': 'the reverse proxy header rules'}.get(section, 'misc')}."
+        f"Unique body text for {section} covering {phrase}."
     )
     return Fake({"id": section, "content": content, "source_ref": path}, score)
 
