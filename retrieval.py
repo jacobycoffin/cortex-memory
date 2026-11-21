@@ -19,6 +19,7 @@ from .cortex_trace import (
 )
 from .preload import RecallCache
 from .source_authority import cap_conflicts
+from .stability import apply_stability_blend
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
 from .semantics import feature_similarity
@@ -572,6 +573,12 @@ class MemoryRetriever:
                 evidence_lookup=evidence_lookup,
             )
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # A fact restated over months should settle near-ties against one fresh sentence.
+        scored_list, stability_boosted = apply_stability_blend(scored.values())
+        if stability_boosted:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["stability_boosted"] = float(stability_boosted)
 
         # If the query said what it does not want, do not return it confidently.
         scored_list, negative_cue_suppressed = suppress(scored.values(), excluded_terms(query))

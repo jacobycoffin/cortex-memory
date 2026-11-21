@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- added **recency-vs-stability blend** (`stability.py`): a small capped boost (max 0.02) from `confirmed_count + validated_count + helpful_count`, saturating at five supports, halved for a single support, decaying with a 180-day half-life. Measured live: only 82 of 3,829 active memories carry any corroboration, so the blend is honest but nearly inert until reinforcement is captured (new item #216);
 - added **negative-cue suppression** (`negative_cues.py`): queries carrying an exclusion ("not the X", "other than X", "except X", "anything but X", "without X", "don't mention X") now demote matching memories to 0.2x instead of confidently returning them. Demotion only - a misparsed sentence can never make a memory unreachable. Whole-word matching, terms capped at 4. Live check: "seerr telegram notifications (not the seerr)" drops every Seerr note out of the top 3;
 - added **score transparency** (`recall_explain.py` + `scripts/explain_recall.py`): the top five results' scores and components are written to an additive `recall_score_breakdown` table inside the caller's transaction, so a bad recall can be explained afterwards and a rolled-back turn leaves no residue. 6 tests, 138 recall/provider/preload tests pass;
 - added **use-weighted ranking** (`usage_weight.py`): a log-scaled, capped boost (max 0.09) from `access_log.event='used'` count, applied before the sort. Retrieval counts are ignored. Frozen set moved hit@6 0.5167 -> 0.6250, MRR 0.2927 -> 0.4415 — treat with suspicion, see the PR note on label leakage;
