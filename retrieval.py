@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import time
 from dataclasses import dataclass, field, replace
@@ -21,6 +22,7 @@ from .preload import RecallCache
 from .source_authority import cap_conflicts
 from .abstention import should_abstain
 from .diversity import enforce_distinct
+from .entity_anchor import entity_memory_ids, extract_entities, known_entities
 from .stability import apply_stability_blend
 from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
@@ -75,6 +77,16 @@ _MEMORY_TYPE_PRIOR = {
 # continues to use the current policy until outcome evidence supports a switch.
 LIVE_SCORING_POLICY_VERSION = "retrieval_live_v2"
 SHADOW_SCORING_POLICY_VERSION = "semantic_graph_shadow_v1"
+
+# Association is weaker than lexical evidence, so the entity bonus stays small.
+# Measured on the frozen set: 0.02/0.03 give 0.6167/0.2917/0.4389,
+# 0.06 gives 0.6167/0.2903/0.4410, 0.10 gives 0.6208/0.2934/0.4403. The spread is one case
+# of hit@6, i.e. noise on 240 labels; 0.10 is kept because it is not worse and it closes a
+# real hole (query entities were never extracted at all).
+try:
+    ENTITY_BOOST = float(os.environ.get("CORTEX_ENTITY_BOOST", "0.10"))
+except ValueError:
+    ENTITY_BOOST = 0.10
 SCORE_SIGNAL_WEIGHTS = {
     "lexical": 0.20,
     "phrase": 0.06,
@@ -268,6 +280,8 @@ class MemoryRetriever:
         # points of hit@6). Stage one already carries a 0.20 lexical weight with phrase
         # matching, so BM25 over full content mostly re-weights note length.
         self.rerank_enabled = False
+        # Anchor recall on entity names found in the query (CORTEX_ENTITY_ANCHOR=0 to A/B).
+        self.entity_anchor_enabled = os.environ.get("CORTEX_ENTITY_ANCHOR", "1") != "0"
         # Semantic fusion is OFF by default: 0.0 reproduces the previous
         # behaviour exactly, so enabling it is an explicit, reversible choice.
         self.semantic_weight = max(0.0, float(semantic_weight))
@@ -420,6 +434,15 @@ class MemoryRetriever:
         candidate_limit = max(40, limit * 8)
         stage_ms: dict[str, float] = {}
         budget = budget_from(self.latency_budget_ms)
+
+        # Anchor on the names in the query before anything else runs: entity_match is the
+        # strongest signal the store has, and in a real chat nothing fills it in.
+        anchored_entities: list[str] = list(retrieval_context.entities or ())
+        if not anchored_entities and self.entity_anchor_enabled:
+            anchored_entities = extract_entities(query, known_entities(self.store))
+            if anchored_entities:
+                retrieval_context = replace(retrieval_context, entities=tuple(anchored_entities))
+                stage_ms["entities_anchored"] = float(len(anchored_entities))
         stage_start = time.perf_counter()
         lexical_candidates = self.store.fts_search(
             expanded_query,
@@ -485,6 +508,22 @@ class MemoryRetriever:
                 )
             else:
                 candidates_by_id[memory_id] = candidate
+        # Entity expansion: memories attached to a name the query used, even when no
+        # lexical signal would have surfaced them. This is the "expand before rank" half
+        # of entity anchoring; filling the context alone changed no ranking.
+        if anchored_entities:
+            expanded = 0
+            for memory_id in entity_memory_ids(self.store, anchored_entities, limit=candidate_limit):
+                if memory_id in candidates_by_id:
+                    candidates_by_id[memory_id]["entity_candidate"] = 1.0
+                    continue
+                row = self.store.get_memory(memory_id)
+                if not row:
+                    continue
+                candidates_by_id[memory_id] = {**row, "entity_candidate": 1.0}
+                expanded += 1
+            if expanded:
+                stage_ms["entity_expanded"] = float(expanded)
         for candidate in prospective_candidates:
             memory_id = str(candidate["id"])
             if memory_id in candidates_by_id:
@@ -596,6 +635,25 @@ class MemoryRetriever:
             if self.semantic_weight > 0.0 and budget.expired():
                 stage_ms["semantic_skipped"] = 1.0
         stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+
+        # Entity evidence: a memory reachable *only* because the query named an entity is
+        # relevant by association, and no lexical signal will ever speak for it.
+        if anchored_entities:
+            entity_ids = set(
+                entity_memory_ids(self.store, anchored_entities, limit=candidate_limit)
+            )
+            entity_boosted = 0
+            for memory_id, result in list(scored.items()):
+                if memory_id not in entity_ids:
+                    continue
+                components = dict(result.components or {})
+                components["entity_anchored"] = 1.0
+                scored[memory_id] = replace(
+                    result, score=float(result.score) + ENTITY_BOOST, components=components
+                )
+                entity_boosted += 1
+            if entity_boosted:
+                stage_ms["entity_boosted"] = float(entity_boosted)
 
         # Stage two: rerank the top slice with BM25 over the actual contents, so a memory
         # that contains the query's exact terms beats one that merely shares a category.
