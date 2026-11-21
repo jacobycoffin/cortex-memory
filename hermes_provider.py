@@ -69,6 +69,7 @@ from .hermes_hooks import (
 
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
+from .rewrite import recent_queries, rewrite
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
 from .task_budget import plan_for
 from .namespace import channel_namespaces
@@ -579,8 +580,15 @@ class CortexMemoryProvider(MemoryProvider):
             tool_guidance = list(cached.tool_guidance)
             workflow_guidance = list(cached.workflow_guidance)
         else:
+            # An underspecified follow-up gets the session's topic appended for retrieval
+            # only; the original query is what the run records.
+            retrieval_query, rewritten_terms = rewrite(query, recent_queries(self._store, sid))
+            if rewritten_terms:
+                plan = replace(
+                    plan, reason=f"{plan.reason}; rewritten with: {' '.join(rewritten_terms)}"
+                )
             results, diagnostics = self._retriever.search_cached(
-                query,
+                retrieval_query,
                 limit=plan.limit,
                 token_budget=plan.token_budget,
                 temporal_mode=plan.temporal_mode,
