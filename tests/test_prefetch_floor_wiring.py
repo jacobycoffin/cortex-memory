@@ -47,6 +47,16 @@ class PrefetchFloorWiringTests(unittest.TestCase):
         self.assertIn("CT116", block)
         self.assertIn("always-on floor", block)
 
+    def test_a_real_turn_writes_a_shadow_abstention_row(self) -> None:
+        """The ledger must fill from live turns while the policy stays off."""
+        from cortex.abstention_ledger import summary
+
+        self._pin("Jacoby's maintenance window is Sunday 02:00 and the box is CT116.")
+        self.provider.prefetch("maintenance window")
+        stats = summary(self.store)
+        self.assertEqual(stats["turns"], 1)
+        self.assertEqual(stats["abstained"], 0)
+
     def test_an_empty_store_yields_no_block(self) -> None:
         self.assertEqual(self.provider.prefetch("hi"), "")
 
