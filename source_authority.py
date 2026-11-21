@@ -15,6 +15,7 @@ wins, it just cannot claim to outrank a statement about the same thing.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, Iterable
 
 # Higher means more trustworthy as evidence about the world.
@@ -66,6 +67,7 @@ def cap_conflicts(results: Iterable[Any]) -> tuple[list[Any], int]:
     attributes.
     """
     results = list(results)
+    replaced: dict[int, Any] = {}
     slots: dict[tuple[str, str], list[Any]] = {}
     for result in results:
         slot = _slot(getattr(result, "memory", {}) or {})
@@ -89,7 +91,9 @@ def cap_conflicts(results: Iterable[Any]) -> tuple[list[Any], int]:
             components = dict(getattr(result, "components", {}) or {})
             components["authority_cap"] = round(ceiling, 6)
             components["authority_score_before_cap"] = round(float(result.score), 6)
-            result.score = ceiling
-            result.components = components
+            # RetrievalResult is frozen: replace the element rather than mutate it.
+            replaced[id(result)] = replace(result, score=ceiling, components=components)
             capped += 1
+    if replaced:
+        results = [replaced.get(id(r), r) for r in results]
     return results, capped
