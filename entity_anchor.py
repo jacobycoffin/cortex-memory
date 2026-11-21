@@ -103,6 +103,34 @@ def entity_memory_ids(store: Any, entities: Iterable[str], *, limit: int = 200) 
     return [str(row[0]) for row in rows]
 
 
+def entity_memories(store: Any, memory_ids: Iterable[str]) -> list[dict[str, Any]]:
+    """Fetch candidate rows in one query instead of one `get_memory` call each.
+
+    Entity expansion used to call `get_memory` per candidate — measured at ~0.3ms each, up
+    to 19 per turn, which is most of the stage the precompute work was aimed at.
+    """
+    ids = [str(i) for i in memory_ids if str(i).strip()]
+    if not ids:
+        return []
+    conn = getattr(store, "_conn", None)
+    if conn is None:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    previous = conn.row_factory
+    try:
+        import sqlite3
+
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            f"SELECT * FROM memories WHERE id IN ({placeholders})", tuple(ids)
+        ).fetchall()
+    except Exception:  # noqa: BLE001 - expansion is an enhancement, never a requirement
+        return []
+    finally:
+        conn.row_factory = previous
+    return [dict(row) for row in rows]
+
+
 def parse_entities(raw: Any) -> list[str]:
     """Entities as stored on a memory row (JSON string or list)."""
     if isinstance(raw, (list, tuple)):
