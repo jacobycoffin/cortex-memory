@@ -69,6 +69,7 @@ from .hermes_hooks import (
 
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
+from .confirmation import record_confirmation
 from .continuity import build as build_continuity, first_turn
 from .rewrite import recent_queries, rewrite
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
@@ -1330,6 +1331,31 @@ class CortexMemoryProvider(MemoryProvider):
                 if not content:
                     return _json_error("content is required")
                 sanitized = sanitize_memory(content)
+                # A restatement of something already held is evidence, not a new memory
+                # (#216): it confirms the existing row instead of adding a near-duplicate.
+                # Corrections are excluded inside `record_confirmation` and fall through to
+                # the normal proposal path.
+                if not _as_bool(args.get("force", False)):
+                    confirmation = record_confirmation(
+                        self._store,
+                        sanitized.text,
+                        session_id=self._session_id,
+                        kind=str(args.get("kind") or "") or None,
+                    )
+                    if confirmation is not None:
+                        return _json_ok(
+                            memory_id=confirmation.memory_id,
+                            created=False,
+                            confirmed=True,
+                            similarity=confirmation.similarity,
+                            containment=confirmation.containment,
+                            recallable=True,
+                            message=(
+                                "This restates a memory you already have; it was recorded as "
+                                "confirmation evidence rather than a duplicate."
+                            ),
+                            redacted=sanitized.redacted,
+                        )
                 proposal = self._store.propose_memory_creation(
                     sanitized.text,
                     kind=str(args.get("kind") or "semantic"),
