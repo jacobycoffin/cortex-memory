@@ -25,6 +25,7 @@ from .autojudge import (
 )
 from .security import normalize_text
 from .store import CortexStore, utc_now
+from .telemetry import trace_operation
 
 
 SEMANTIC_CONSOLIDATION_POLICY_VERSION = "semantic_consolidation_v1"
@@ -48,6 +49,7 @@ Rules:
 """
 
 
+@trace_operation("consolidate")
 def run_semantic_consolidation(
     store: CortexStore,
     config: AutoJudgeConfig,

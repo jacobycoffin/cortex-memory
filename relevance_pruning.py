@@ -20,6 +20,7 @@ from .autojudge import (
 )
 from .security import normalize_text
 from .store import CortexStore, utc_now
+from .telemetry import trace_operation
 
 
 ADAPTIVE_PRUNING_POLICY_VERSION = "adaptive_pruning_v1"
@@ -42,6 +43,7 @@ Rules:
 """
 
 
+@trace_operation("prune")
 def run_adaptive_pruning(
     store: CortexStore,
     config: AutoJudgeConfig,

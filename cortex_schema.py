@@ -1675,6 +1675,23 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
             "ALTER TABLE recall_runs ADD COLUMN rendered_tokens INTEGER NOT NULL DEFAULT 0"
         )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_runs_task ON recall_runs(task_id)")
+    # Span-level traces (item 199). Created here rather than only in SCHEMA_SQL so an
+    # already-deployed database gains the table on its next open, with no migration step.
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS operation_spans (
+            span_id TEXT PRIMARY KEY,
+            op TEXT NOT NULL,
+            duration_ms REAL NOT NULL DEFAULT 0,
+            ok INTEGER NOT NULL DEFAULT 1,
+            task_id TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_operation_spans_op_created "
+        "ON operation_spans(op,created_at DESC)"
+    )
     budget_columns = {row[1] for row in conn.execute("PRAGMA table_info(recall_budget_observations)")}
     if "rendered_count" not in budget_columns:
         conn.execute(

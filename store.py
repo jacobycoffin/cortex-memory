@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from . import cortex_records as _records
+from . import telemetry as _telemetry
 
 from .refinery import (
     CLARITY_FLAGS,
@@ -2224,6 +2225,7 @@ class CortexStore:
         )
         return decision_id
 
+    @_telemetry.trace_operation("write")
     def add_memory(
         self,
         content: str,
@@ -5169,6 +5171,18 @@ class CortexStore:
                     max(0, int(rendered_tokens)),
                     utc_now(),
                 ),
+            )
+            _telemetry.record_span_tx(
+                conn,
+                "recall",
+                prepare_ms,
+                task_id=task_id,
+                detail={
+                    "mode": mode,
+                    "candidates": int(candidate_count),
+                    "selected": int(selected_count),
+                    "abstained": int(abstained),
+                },
             )
         return recall_id
 
