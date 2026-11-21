@@ -1,6 +1,6 @@
 """Compare two ranking policies on answer quality, not retrieval metrics (#25).
 
-    python3 scripts/ab_recall.py --db /root/.hermes/cortex/cortex.db --challenger no_entity_anchor
+    python3 scripts/ab_recall.py --db "$HOME/.hermes/cortex/cortex.db" --challenger no_entity_anchor
 
 Cases come from the frozen set, which is private: real queries with real memory ids. It
 lives outside the repository by policy and must stay there — this script reads it from
