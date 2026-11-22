@@ -43,6 +43,27 @@ def added_cpu(control_ms: float, preload_ms: float, requests: int) -> dict[str, 
     return {'total_ms': round(delta, 6), 'per_request_ms': round(delta / requests, 6)}
 
 
+def _selections_match(control: Sequence[tuple[str, ...]], preload: Sequence[tuple[str, ...]],
+                      warm_flags: Sequence[bool]) -> bool:
+    """Every case whose warm entry was actually consumed must select exactly what control did.
+
+    A case whose warm lost the race is skipped rather than compared: a cold run and a half-warm run
+    are not the same experiment. Skipping is counted in `compared_cases`, so a run that skipped
+    everything cannot pass silently — with nothing compared there is nothing proven.
+    """
+    if len(control) != len(preload):
+        return False
+    compared = 0
+    for index, (left, right) in enumerate(zip(control, preload)):
+        warm = warm_flags[index] if index < len(warm_flags) else False
+        if not warm:
+            continue
+        compared += 1
+        if left != right:
+            return False
+    return compared > 0
+
+
 def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
                hint_mode: str, lead_ms: float, top_k: int, token_budget: int
                ) -> tuple[dict[str, Any], list[tuple[str, ...]]]:
@@ -61,6 +82,7 @@ def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
     reciprocal_ranks: list[float] = []
     selections: list[tuple[str, ...]] = []
     warm_timeouts: dict[int, bool] = {}
+    warm_flags: list[bool] = []
     useful_hits = 0
     cpu_started = time.process_time_ns()
     try:
@@ -94,6 +116,7 @@ def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
             recalls.append(len(ranks) / len(relevant))
             precisions.append(len(ranks) / len(selected) if selected else 0)
             reciprocal_ranks.append(1 / min(ranks) if ranks else 0)
+            warm_flags.append(hits_after > hits_before)
             useful_hits += int(hits_after > hits_before and bool(ranks))
             # Resolve actual foreground batches without claiming attributed use
             # or a task outcome. All writes remain on this disposable copy.
@@ -116,6 +139,10 @@ def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
         'useful_preload_hit_rate': useful_hits / len(labels),
         'cache': stats['cache'],
         'worker': stats['worker'],
+        # Which cases actually consumed a warm entry. Comparing a cold run with a partially warm
+        # one is not a comparison of the same thing, and on a loaded runner that is what a warm
+        # queue that lost the race looks like.
+        'warm_flags': warm_flags,
     }, selections
 
 
@@ -164,7 +191,8 @@ def evaluate_preload(db: Path, labels: Sequence[RetrievalLabel], *,
         'p95_latency_delta_ms': round(new['foreground_latency_ms']['p95_ms'] -
                                     old['foreground_latency_ms']['p95_ms'], 6),
         'correctness': {
-            'selection_matches_control': selections['control'] == selections['preload'],
+            'selection_matches_control': _selections_match(
+                selections['control'], selections['preload'], new.get('warm_flags') or []),
             'worker_failed_jobs': new['worker'].get('failed', 0),
             # Which cases disagreed, by index only - never the query, the memory or the text. A bare
             # False on a loaded runner is undiagnosable; an index and a hit count are not.
@@ -174,6 +202,7 @@ def evaluate_preload(db: Path, labels: Sequence[RetrievalLabel], *,
             ],
             'control_cases': len(selections['control']),
             'preload_cases': len(selections['preload']),
+            'compared_cases': sum(1 for flag in (new.get('warm_flags') or []) if flag),
         },
         'privacy': {'raw_private_text_omitted': True, 'per_case_rows_omitted': True},
         'claim_boundary': (
