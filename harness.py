@@ -133,9 +133,19 @@ class HarnessTurn:
 
     def receipt(self, store: Any, *, verb: str = "remembered") -> str:
         """One line naming what this turn wrote, with a short id per entry (#37)."""
-        from . import write_receipts
+        from . import redaction_receipt, write_receipts
 
-        return write_receipts.build(store, self.writes, verb=verb).text
+        text = write_receipts.build(store, self.writes, verb=verb).text
+        if not text:
+            return ""
+        # If a secret was dropped on the way in, say so in the same breath (#44).
+        notes = [
+            redaction_receipt.summary_line(store, memory_id) for memory_id in self.writes
+        ]
+        notes = [note for note in notes if note]
+        if notes:
+            text = f"{text} · {notes[0]}"
+        return text
 
     def finish(
         self,
