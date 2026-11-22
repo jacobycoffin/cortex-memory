@@ -17,7 +17,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -137,7 +137,12 @@ class FullReportTests(unittest.TestCase):
         self._tmp.cleanup()
 
     def _report(self, method: str = "auto") -> dict:
-        return forecast.build_report(self.db, method=method, window_days=30, now=None)
+        # Pin "now" to the same day the fixture was stamped against. Passing None meant the
+        # report read the clock again, so a run that crossed UTC midnight lost the oldest
+        # day of rows and reported 9.667/day instead of 10 - green locally, red on CI.
+        return forecast.build_report(
+            self.db, method=method, window_days=30, now=datetime.combine(TODAY, time(12, 0), tzinfo=timezone.utc)
+        )
 
     def test_projection_follows_rate_times_bytes_per_row(self) -> None:
         report = self._report()
