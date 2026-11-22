@@ -30,6 +30,9 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .core_voice import enabled as voice_enabled
+from .core_voice import rewrite_row
+
 MIN_CHARS = 1200
 MAX_CHARS = 2000
 # One long memory can swallow the whole block: a single pinned note rendered 320 characters
@@ -275,6 +278,10 @@ def build(
         tags.setdefault(str(row["id"]), "[core]")
 
     def line_for(row: dict[str, Any]) -> str:
+        # Model voice (#128): rewriting happens at render time, so classification and
+        # de-duplication still see the memory as it was written.
+        if voice_enabled():
+            row = rewrite_row(row)
         suffix = tags.get(str(row.get("id")), "")
         if row.get("__commitment"):
             due = row.get("due_at")
