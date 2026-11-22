@@ -131,6 +131,7 @@ class Sweep:
     steps: list[Step] = field(default_factory=list)
     protected: dict[str, int] = field(default_factory=dict)
     skipped: dict[str, int] = field(default_factory=dict)
+    protection_failures: dict[str, str] = field(default_factory=dict)
 
     def counts(self) -> dict[str, int]:
         out: dict[str, int] = {}
@@ -176,41 +177,94 @@ def _has_table(store: Any, name: str) -> bool:
     return row is not None
 
 
-def protections(store: Any) -> dict[str, str]:
+# Named protections (#88). Each is one query for the whole store, not one per memory, and each
+# carries a name that appears in reports so "why did this survive" has an answer.
+#
+# An edge protects only when it is corroborated. The store holds ~14,000 edges, most of them
+# `legacy_unattributed` similarity links; treating any edge as evidence would protect nearly
+# every memory and turn the ladder into a no-op. `evidence_count >= 2` is the bar that made
+# "a bare edge is not evidence" operational.
+EDGE_EVIDENCE_BAR = 2
+USE_EVIDENCE_DAYS = 90
+
+
+def _edge_bar() -> int:
+    raw = os.environ.get("CORTEX_FORGET_EDGE_EVIDENCE", "").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return EDGE_EVIDENCE_BAR
+    return value if value >= 1 else EDGE_EVIDENCE_BAR
+
+
+def protection_policy() -> dict[str, Any]:
+    return {
+        "pinned": "a human decision outranks a timer",
+        "open_commitment": "an open or due commitment still has to happen",
+        "useful_feedback": "a resolved helpful/validated outcome is evidence the memory worked",
+        "use_evidence": f"recalled and used within {USE_EVIDENCE_DAYS} days",
+        "edge_bearing": f"connected by an edge with evidence_count >= {_edge_bar()}",
+        "core_member": "currently rendered into the always-on profile",
+    }
+
+
+def protections(
+    store: Any, *, failures: dict[str, str] | None = None
+) -> dict[str, str]:
     """Memory id -> why it must not walk. One query per protection, not one per memory."""
     held: dict[str, str] = {}
     queries = (
-        ("pinned", "SELECT id FROM memories WHERE pinned = 1 AND state IN ('active','cold','archived')"),
+        # (name, required table, sql). A table that does not exist yet is not a failure - the
+        # store creates tables lazily - but a *present* table that errors is.
+        ("pinned", "memories",
+         "SELECT id FROM memories WHERE pinned = 1 AND state IN ('active','cold','archived')"),
         (
             "open_commitment",
+            "prospective_items",
             """SELECT DISTINCT p.memory_id AS id FROM prospective_items p
                JOIN memories m ON m.id = p.memory_id
                WHERE p.status IN ('open','due')""",
         ),
         (
             "core_member",
+            "core_members",
             """SELECT DISTINCT c.memory_id AS id FROM core_members c
                JOIN memories m ON m.id = c.memory_id""",
         ),
         (
+            "useful_feedback",
+            "usage_records",
+            """SELECT DISTINCT memory_id AS id FROM usage_records
+               WHERE outcome IN ('helpful','validated')""",
+        ),
+        (
             "use_evidence",
+            "access_log",
             """SELECT DISTINCT memory_id AS id FROM access_log
                WHERE event IN ('used','helpful','confirmed','validated')
                  AND created_at >= ?""",
         ),
         (
-            "corroborated_edge",
-            """SELECT DISTINCT src_id AS id FROM edges WHERE evidence_count >= 2
-               UNION SELECT DISTINCT dst_id FROM edges WHERE evidence_count >= 2""",
+            "edge_bearing",
+            "edges",
+            f"""SELECT DISTINCT src_id AS id FROM edges WHERE evidence_count >= {_edge_bar()}
+                UNION SELECT DISTINCT dst_id FROM edges
+                WHERE evidence_count >= {_edge_bar()}""",
         ),
     )
-    recent = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
-    for label, query in queries:
+    recent = (datetime.now(timezone.utc) - timedelta(days=USE_EVIDENCE_DAYS)).isoformat()
+    for label, table, query in queries:
+        if not _has_table(store, table):
+            continue
         try:
             rows = store._conn.execute(
                 query, (recent,) if "?" in query else ()
             ).fetchall()
-        except Exception:  # noqa: BLE001 - a missing table must not block the sweep
+        except Exception as error:  # noqa: BLE001 - a missing table must not block the sweep
+            # Silent here once hid a typo'd column for an entire protection (src_id vs
+            # source_id), so the failure is recorded and reported instead of swallowed.
+            if failures is not None:
+                failures[label] = str(error)
             continue
         for row in rows:
             held.setdefault(str(row["id"]), label)
@@ -234,8 +288,9 @@ def plan(
     """
     now = at or datetime.now(timezone.utc)
     has_core = _has_table(store, "core_members")
-    held = protections(store) if hold is None else hold
-    sweep = Sweep()
+    failures: dict[str, str] = {}
+    held = protections(store, failures=failures) if hold is None else hold
+    sweep = Sweep(protection_failures=failures)
     skipped: dict[str, int] = {}
 
     rows = store._conn.execute(
@@ -337,6 +392,48 @@ def sweep(store: Any, *, at: datetime | None = None, apply_steps: bool = False,
 def restore(store: Any, memory_id: str, *, to: str = "active") -> bool:
     """Walk a memory back up the ladder. Tombstone is not a shredder."""
     return bool(store.set_state(memory_id, to, reason="forget ladder: restored"))
+
+
+def explain(store: Any, memory_id: str, *, at: datetime | None = None) -> dict[str, Any]:
+    """Why this memory is or is not eligible to move: every protection checked, named."""
+    row = store.get_memory(memory_id)
+    if not row:
+        return {"memory_id": memory_id, "found": False}
+    row = dict(row)
+    failures: dict[str, str] = {}
+    held = protections(store, failures=failures)
+    kind = str(row.get("kind") or "").strip().lower()
+    state = str(row.get("state") or "active")
+    dwell = _dwell_for(kind)
+    threshold = _threshold(state, dwell)
+    used = last_use(row)
+    now = at or datetime.now(timezone.utc)
+    quiet = (now - used).total_seconds() / 86400.0 if used else None
+    if not walks(kind):
+        verdict = "held: this kind never walks automatically"
+    elif memory_id in held:
+        verdict = f"held: {held[memory_id]}"
+    elif threshold is None:
+        verdict = "held: already at the end of the ladder"
+    elif quiet is None:
+        verdict = "held: no usable timestamp"
+    elif quiet < threshold:
+        verdict = f"warm: {quiet:.0f}d quiet, needs {threshold}d"
+    else:
+        verdict = f"eligible: {quiet:.0f}d quiet at or past the {threshold}d threshold"
+    return {
+        "memory_id": memory_id,
+        "found": True,
+        "kind": kind,
+        "state": state,
+        "next_state": _NEXT.get(state),
+        "dwell_days": list(dwell),
+        "threshold_days": threshold,
+        "quiet_days": round(quiet, 1) if quiet is not None else None,
+        "protections": held.get(memory_id),
+        "verdict": verdict,
+        "protection_failures": failures,
+    }
 
 
 def state_counts(store: Any) -> dict[str, int]:

@@ -179,7 +179,7 @@ class ProtectionTests(LadderTestCase):
             )
         sweep = self.plan()
         self.assertEqual(sweep.steps, [])
-        self.assertIn("corroborated_edge", sweep.protected)
+        self.assertIn("edge_bearing", sweep.protected)
 
     def test_still_used_beats_long_quiet(self) -> None:
         """`last_used_at` outranks `created_at`: a fact still informing answers stays put."""
@@ -190,6 +190,71 @@ class ProtectionTests(LadderTestCase):
                 (days_ago(3), memory_id),
             )
         self.assertEqual(self.plan().steps, [])
+
+
+class NamedProtectionTests(LadderTestCase):
+    """#88: every protection is named, reported, and cannot fail silently."""
+
+    def test_each_declared_protection_is_reported_by_name(self) -> None:
+        declared = ladder.protection_policy()
+        for name in ("pinned", "open_commitment", "useful_feedback", "use_evidence",
+                     "edge_bearing", "core_member"):
+            self.assertIn(name, declared)
+
+    def test_useful_feedback_protects(self) -> None:
+        memory_id = self.memory("worked once", kind="semantic", quiet_days=2000)
+        with self.store.transaction() as conn:
+            conn.execute(
+                """INSERT INTO usage_records(usage_id, task_id, memory_id, session_id, query,
+                                             score, selected, used, attribution, outcome,
+                                             created_at, resolved_at)
+                   VALUES ('u1', 't1', ?, 's', 'q', 0.9, 1, 1, 0.8, 'helpful', ?, ?)""",
+                (memory_id, NOW.isoformat(), NOW.isoformat()),
+            )
+        sweep = self.plan()
+        self.assertEqual(sweep.steps, [])
+        self.assertIn("useful_feedback", sweep.protected)
+
+    def test_edge_bearing_requires_corroboration(self) -> None:
+        left = self.memory("left", kind="semantic", quiet_days=2000)
+        right = self.memory("right", kind="semantic", quiet_days=2000)
+        self.store.add_edge(left, right, "relates_to", evidence_type="fixture")
+        swept = self.plan(max_per_transition=100)
+        self.assertIn(left, [step.memory_id for step in swept.steps])
+
+    def test_a_missing_optional_table_is_not_a_failure(self) -> None:
+        """core_members only exists once something is promoted; that is not an error."""
+        sweep = ladder.plan(self.store, at=NOW, hold=None)
+        self.assertEqual(sweep.protection_failures, {})
+
+    def test_a_broken_protection_query_is_reported_not_swallowed(self) -> None:
+        """Silence here hid a wrong column name for a whole protection once (src_id vs source_id)."""
+        with self.store.transaction() as conn:
+            conn.execute("DROP TABLE IF EXISTS edges")
+            conn.execute("CREATE TABLE edges (src_idx TEXT)")
+        sweep = ladder.plan(self.store, at=NOW, hold=None)
+        self.assertIn("edge_bearing", sweep.protection_failures)
+        self.assertIn("no such column", sweep.protection_failures["edge_bearing"])
+
+    def test_explain_says_why_a_memory_is_held(self) -> None:
+        memory_id = self.memory("pinned fact", kind="semantic", quiet_days=2000, pinned=True)
+        explained = ladder.explain(self.store, memory_id, at=NOW)
+        self.assertTrue(explained["found"])
+        self.assertEqual(explained["protections"], "pinned")
+        self.assertTrue(explained["verdict"].startswith("held"))
+
+    def test_explain_says_when_a_memory_is_warm(self) -> None:
+        memory_id = self.memory("fresh fact", kind="semantic", quiet_days=5)
+        explained = ladder.explain(self.store, memory_id, at=NOW)
+        self.assertIn("warm", explained["verdict"])
+
+    def test_explain_says_when_a_memory_is_eligible(self) -> None:
+        memory_id = self.memory("old fact", kind="semantic", quiet_days=200)
+        explained = ladder.explain(self.store, memory_id, at=NOW)
+        self.assertIn("eligible", explained["verdict"])
+
+    def test_explain_handles_an_unknown_id(self) -> None:
+        self.assertEqual(ladder.explain(self.store, "nope")["found"], False)
 
 
 class ApplyTests(LadderTestCase):
