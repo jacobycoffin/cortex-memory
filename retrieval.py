@@ -856,7 +856,7 @@ class MemoryRetriever:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["authority_capped"] = float(authority_capped)
 
-        ranked = sorted(scored.values(), key=lambda r: (r.score, r.memory["pinned"]), reverse=True)
+        ranked = rank_by_score(scored.values())
 
         # Namespace isolation: a finance/work memory must not reach a turn that declared a
         # different channel. Applied before eligibility so a blocked memory never even
@@ -1609,6 +1609,23 @@ def _weighted_score(
     if float(adjustments.get("context_gate", 1.0)) < 1.0:
         score = min(score, 0.01)
     return max(0.0, min(1.0, score))
+
+
+def rank_by_score(results: Iterable["RetrievalResult"]) -> list["RetrievalResult"]:
+    """Rank by score, then pinned, then memory id.
+
+    The id tie-break is not cosmetic: equal scores used to order by whatever order the dict
+    happened to hold, which is where a "fails once, passes on re-run" suite flake came from
+    (#220). Ranking is now a pure function of the results.
+    """
+    return sorted(
+        results,
+        key=lambda result: (
+            -float(result.score),
+            -float(bool(result.memory.get("pinned"))),
+            str(result.memory.get("id") or ""),
+        ),
+    )
 
 
 def token_overlap(left: str, right: str) -> float:
