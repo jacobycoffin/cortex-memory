@@ -26,7 +26,9 @@ spends the model's attention on every turn for the life of the memory.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 TABLE = "core_members"
@@ -46,6 +48,22 @@ USE_THRESHOLD = 3
 CONFIRMATION_THRESHOLD = 2
 
 
+# How long a core fact may go unconfirmed before it leaves (#123). A quarter is long enough
+# that a genuinely important fact will be used or restated inside it, and short enough that a
+# dead project's notes stop costing ~460 tokens a turn eventually rather than forever.
+DEFAULT_WINDOW_DAYS = 90
+
+HISTORY_TABLE = "core_history"
+HISTORY_SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {HISTORY_TABLE} (
+    memory_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    at TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT ''
+)
+"""
+
+
 @dataclass(frozen=True)
 class Promotion:
     memory_id: str
@@ -55,6 +73,21 @@ class Promotion:
 
 def _ensure(store: Any) -> None:
     store._conn.execute(SCHEMA)
+    store._conn.execute(HISTORY_SCHEMA)
+
+
+def _history(conn: Any, memory_id: str, action: str, at: str, reason: str) -> None:
+    conn.execute(
+        f"INSERT INTO {HISTORY_TABLE}(memory_id, action, at, reason) VALUES(?,?,?,?)",
+        (str(memory_id), action, at, reason[:200]),
+    )
+
+
+def window_days(default: int = DEFAULT_WINDOW_DAYS) -> int:
+    try:
+        return max(1, int(os.environ.get("CORTEX_CORE_WINDOW_DAYS", default)))
+    except (TypeError, ValueError):
+        return default
 
 
 def members(store: Any) -> list[str]:
@@ -95,6 +128,7 @@ def promote(
         )
         if not cursor.rowcount:
             return None
+        _history(conn, memory_id, "promote", stamp, f"{by}: {reason}")
     return Promotion(memory_id=str(memory_id), promoted_by=by, reason=reason)
 
 
@@ -104,9 +138,13 @@ def demote(store: Any, memory_id: str, *, reason: str = "") -> bool:
     Demotion never touches the memory itself — only its membership. A demoted fact is still
     recallable; it simply stops costing tokens on every turn.
     """
+    from .store import utc_now
+
     _ensure(store)
     with store.transaction() as conn:
         cursor = conn.execute(f"DELETE FROM {TABLE} WHERE memory_id = ?", (str(memory_id),))
+        if cursor.rowcount:
+            _history(conn, memory_id, "demote", utc_now(), reason or "manual demotion")
         return bool(cursor.rowcount)
 
 
@@ -183,3 +221,94 @@ def stats(store: Any) -> dict[str, int]:
         ).fetchall()
     }
     return {"members": total, **{f"by_{k}": v for k, v in by_kind.items()}}
+
+
+def stale_members(
+    store: Any,
+    *,
+    days: int | None = None,
+    now: datetime | None = None,
+) -> list[tuple[str, str]]:
+    """Core members that should leave, with the reason: `(memory_id, reason)`.
+
+    Three ways out, in order of certainty:
+
+    - the memory is **archived or superseded** — it is not current any more, so it has no
+      business in an always-present block whatever its window says;
+    - it has been **pinned** — a human decision outranks a timer, so pinned members are never
+      demoted here (unpinning through `cortex_memory` removes the pin and the next pass
+      handles it);
+    - it has gone **quiet past the window** — no confirmation, no use, no re-promotion.
+
+    "Quiet" is measured from the most recent of `last_confirmed_at`, `promoted_at` and the
+    memory's own `last_used_at`: a fact that keeps being used is not stale even if nobody has
+    restated it in so many words.
+    """
+    _ensure(store)
+    horizon_days = window_days() if days is None else max(1, int(days))
+    reference = now or datetime.now(timezone.utc)
+    cutoff = (reference - timedelta(days=horizon_days)).isoformat()
+    rows = store._conn.execute(
+        f"""
+        SELECT c.memory_id,
+               c.promoted_at,
+               c.last_confirmed_at,
+               m.pinned,
+               m.state,
+               COALESCE(m.last_used_at, '') AS last_used_at
+        FROM {TABLE} c
+        LEFT JOIN memories m ON m.id = c.memory_id
+        """
+    ).fetchall()
+    out: list[tuple[str, str]] = []
+    for row in rows:
+        memory_id = str(row["memory_id"])
+        if row["state"] is None:
+            out.append((memory_id, "memory no longer exists"))
+            continue
+        if str(row["state"]) in ("archived", "forgotten", "quarantined"):
+            out.append((memory_id, f"memory is {row['state']}"))
+            continue
+        if int(row["pinned"] or 0):
+            continue
+        recent = max(
+            str(row["promoted_at"] or ""),
+            str(row["last_confirmed_at"] or ""),
+            str(row["last_used_at"] or ""),
+        )
+        if recent and recent < cutoff:
+            out.append((memory_id, f"quiet since {recent[:10]} (window {horizon_days}d)"))
+    return out
+
+
+def demote_stale(
+    store: Any,
+    *,
+    days: int | None = None,
+    now: datetime | None = None,
+    apply: bool = True,
+) -> list[tuple[str, str]]:
+    """Demote every stale core member. `apply=False` reports without changing anything."""
+    stale = stale_members(store, days=days, now=now)
+    if not apply:
+        return stale
+    for memory_id, reason in stale:
+        demote(store, memory_id, reason=reason)
+    return stale
+
+
+def history(store: Any, memory_id: str | None = None, *, limit: int = 50) -> list[dict[str, Any]]:
+    """Promotion and demotion events, newest first — the raw material for a diff view (#124)."""
+    _ensure(store)
+    if memory_id:
+        rows = store._conn.execute(
+            f"SELECT memory_id, action, at, reason FROM {HISTORY_TABLE} "
+            "WHERE memory_id = ? ORDER BY at DESC LIMIT ?",
+            (str(memory_id), limit),
+        ).fetchall()
+    else:
+        rows = store._conn.execute(
+            f"SELECT memory_id, action, at, reason FROM {HISTORY_TABLE} ORDER BY at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
