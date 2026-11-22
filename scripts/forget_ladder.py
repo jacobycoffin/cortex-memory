@@ -30,10 +30,17 @@ def main() -> int:
     parser.add_argument("--per-transition", type=int, default=100,
                         help="max moves for any one transition in this sweep")
     parser.add_argument("--show", type=int, default=15, help="rows to print")
+    parser.add_argument("--why", help="explain one memory id (prefix ok): why it is held or warm")
     args = parser.parse_args()
 
     store = CortexStore(Path(args.db))
     try:
+        if args.why:
+            import json as _json
+
+            resolved = store.resolve_id(args.why) or args.why
+            print(_json.dumps(ladder.explain(store, resolved), indent=2, sort_keys=True))
+            return 0
         described = ladder.policy()
         print("policy:", described["version"], "| never walks:", ", ".join(described["never_walk"]))
         print(
@@ -50,6 +57,11 @@ def main() -> int:
             print("held:", ", ".join(f"{k} {v}" for k, v in sorted(sweep.protected.items())))
         if sweep.skipped:
             print("skipped:", ", ".join(f"{k} {v}" for k, v in sorted(sweep.skipped.items())))
+        if sweep.protection_failures:
+            print(
+                "PROTECTION FAILURES (these are not protecting anything):",
+                "; ".join(f"{k}: {v}" for k, v in sweep.protection_failures.items()),
+            )
         for step in sweep.steps[: args.show]:
             print("  ", step.describe())
         if args.apply:
