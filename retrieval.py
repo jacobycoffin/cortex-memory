@@ -306,8 +306,11 @@ class MemoryRetriever:
         # orthogonal vectors; deployments may raise it for stricter precision.
         self.semantic_floor = max(-1.0, min(1.0, float(semantic_floor)))
         self.recall_cache = RecallCache()
-        # Query-independent inputs, shared across turns until the store changes.
-        self.precompute = Precompute()
+        # Query-independent inputs, shared across turns. Every entry here is a pure function
+        # of the store revision, so there is no TTL: a time-based expiry would make recall
+        # time-dependent, and a cache that changes an answer because five seconds passed is
+        # a correctness bug wearing an optimisation's clothes.
+        self.precompute = Precompute(ttl_seconds=float("inf"))
 
     def _edge_sets(self, relation: str) -> tuple[set[str], set[str]]:
         """(sources, destinations) of one edge relation, cached per store revision."""
@@ -552,13 +555,11 @@ class MemoryRetriever:
         )
         stage_ms["neighborhood"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
-        # Query-independent and expensive (measured ~17ms/turn): reuse across turns until
-        # the store changes. The preloader primes this, so the foreground turn is free.
-        prospective_candidates = self.precompute.get(
-            "due_prospective",
-            lambda: self.store.due_prospective_memories(limit=2),
-            revision=revision_of(self.store),
-        )[: min(2, limit)]
+        # Deliberately NOT memoised: "which commitments are due" depends on the clock, not
+        # on the store revision, so caching it would make a deterministic retriever
+        # time-dependent — the exact mistake the latency budget (#22) is careful about. It
+        # costs 0.3ms, and that is cheaper than a selection that changes with the wall clock.
+        prospective_candidates = self.store.due_prospective_memories(limit=2)[: min(2, limit)]
         candidates_by_id: dict[str, dict[str, Any]] = {}
         for candidate in lexical_candidates:
             candidates_by_id[str(candidate["id"])] = candidate
