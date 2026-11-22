@@ -144,7 +144,7 @@ class ApplyTests(unittest.TestCase):
     def test_the_audit_trail_records_preview_and_apply(self) -> None:
         preview = fp.preview(self.store, "old NAS replacement", limit=2, at=NOW)
         fp.apply(self.store, preview.envelope, preview.ids[0:1], at=NOW)
-        trail = fp.envelopes(self.store)
+        trail = fp.envelopes(self.store, at=NOW)
         self.assertEqual(len(trail), 1)
         self.assertEqual(trail[0]["previewed"], len(preview.ids))
         self.assertEqual(trail[0]["applied"], 1)

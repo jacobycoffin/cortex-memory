@@ -250,8 +250,12 @@ def apply(
     return Applied(envelope=envelope, forgotten=forgotten)
 
 
-def envelopes(store: Any, limit: int = 20) -> list[dict[str, Any]]:
-    """The audit trail: what was previewed, and what was applied."""
+def envelopes(store: Any, limit: int = 20, *, at: datetime | None = None) -> list[dict[str, Any]]:
+    """The audit trail: what was previewed, and what was applied.
+
+    `at` pins the clock that decides "expired". Without it the answer depends on when the report
+    happens to run, which made the test that checks it pass in the morning and fail after lunch.
+    """
     _ensure(store)
     rows = store._conn.execute(
         f"""SELECT envelope, query, ids_json, created_at, applied_at, applied_ids_json
@@ -268,7 +272,7 @@ def envelopes(store: Any, limit: int = 20) -> list[dict[str, Any]]:
                 "applied": len(json.loads(row["applied_ids_json"] or "[]")),
                 "created_at": str(row["created_at"]),
                 "applied_at": row["applied_at"],
-                "expired": _is_expired(str(row["created_at"])),
+                "expired": _is_expired(str(row["created_at"]), at=at),
             }
         )
     return out

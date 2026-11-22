@@ -45,6 +45,36 @@ EXPECTED_REASONS = {
 }
 
 
+class RankingDeterminismTests(unittest.TestCase):
+    """Ties must break on memory id, never on dict insertion order (#220)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def test_equal_scores_rank_by_id_not_by_insertion_order(self) -> None:
+        results = [
+            retrieval.RetrievalResult({"id": memory_id, "pinned": 0, "content": "same"}, 0.5, {}, 12)
+            for memory_id in ("bbbb", "aaaa", "cccc")
+        ]
+        ordered = retrieval.rank_by_score(results)
+        self.assertEqual([result.memory["id"] for result in ordered],
+                         ["aaaa", "bbbb", "cccc"])
+
+    def test_a_higher_score_still_wins_and_pins_still_break_ties(self) -> None:
+        results = [
+            retrieval.RetrievalResult({"id": "b", "pinned": 1, "content": "x"}, 0.5, {}, 12),
+            retrieval.RetrievalResult({"id": "a", "pinned": 0, "content": "x"}, 0.9, {}, 12),
+            retrieval.RetrievalResult({"id": "c", "pinned": 1, "content": "x"}, 0.5, {}, 12),
+        ]
+        ordered = [result.memory["id"] for result in retrieval.rank_by_score(results)]
+        self.assertEqual(ordered, ["a", "b", "c"])
+
+
 class SelectIncrementalSimilarityTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
