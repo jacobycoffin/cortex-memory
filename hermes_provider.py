@@ -83,6 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
+from . import quotes  # (#42)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -1953,6 +1954,18 @@ class CortexMemoryProvider(MemoryProvider):
                 assessment=assessment,
             )
             proposal_id = str(proposal["proposal_id"])
+            # Keep the sentence this candidate came from (#42), against the proposal — a fact
+            # often waits in review, and the audit trail must not start at promotion.
+            try:
+                quotes.record(
+                    self._store,
+                    proposal_id,
+                    candidate.source_text or candidate.content,
+                    kind="proposal",
+                    source_ref=f"session {session_id}" if session_id else None,
+                )
+            except Exception:  # noqa: BLE001 - a quote is audit, never a reason to lose a capture
+                pass
             created = bool(proposal.get("created"))
             status = str(proposal.get("status") or "pending")
             proposal_ids.append(proposal_id)
