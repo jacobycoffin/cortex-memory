@@ -70,7 +70,7 @@ from .hermes_hooks import (
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .confirmation import record_confirmation
-from .promotion import promote, touch_confirmations
+from .promotion import ContradictionError, promote, touch_confirmations
 from .core_block import build as build_core
 from .core_block import dedupe_against, enabled as core_enabled
 from .continuity import build as build_continuity, first_turn
@@ -1512,12 +1512,18 @@ class CortexMemoryProvider(MemoryProvider):
                         sections.setdefault(current, [])
                         continue
                     sections.setdefault(current or "Other", []).append(line)
+                from .contradiction import all_conflicts
+
                 return _json_ok(
                     chars=block.chars,
                     estimated_tokens=block.estimated_tokens,
                     pinned=block.pinned,
                     commitments=block.commitments,
                     sections=sections,
+                    conflicts=[
+                        {"left": left[:8], "right": right[:8], "reason": reason}
+                        for left, right, reason in all_conflicts(self._store)
+                    ],
                 )
 
             if action == "core_edit":
@@ -1544,9 +1550,14 @@ class CortexMemoryProvider(MemoryProvider):
                     reason=str(args.get("reason") or "edited from chat"),
                 )
                 if changed:
-                    promote(
-                        self._store, memory_id, by="edit", reason="edited while in core"
-                    )
+                    try:
+                        promote(
+                            self._store, memory_id, by="edit", reason="edited while in core"
+                        )
+                    except ContradictionError as error:
+                        # The edit landed; membership did not. Say so rather than reporting a
+                        # clean success (#130).
+                        return _json_error(str(error))
                 return _json_ok(memory_id=memory_id, edited=bool(changed))
 
             if action == "pin":

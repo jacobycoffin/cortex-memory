@@ -123,6 +123,10 @@ def is_member(store: Any, memory_id: str) -> bool:
     return row is not None
 
 
+class ContradictionError(ValueError):
+    """Raised when promoting this memory would put two conflicting lines in core (#130)."""
+
+
 def promote(
     store: Any,
     memory_id: str,
@@ -130,11 +134,26 @@ def promote(
     by: str = "use",
     reason: str = "",
     at: str | None = None,
+    check_conflicts: bool = True,
 ) -> Promotion | None:
-    """Record a memory as core. Idempotent: a second promotion changes nothing."""
+    """Record a memory as core. Idempotent: a second promotion changes nothing.
+
+    Refuses a promotion that would contradict a line already in core. Blocking the write is
+    deliberate: hiding one of two contradictory lines at render time would mean the block
+    changing its mind depending on sort order.
+    """
     from .store import utc_now
 
     _ensure(store)
+    if check_conflicts:
+        from .contradiction import check as check_contradictions
+        from .contradiction import summarise
+
+        found = check_contradictions(store, memory_id)
+        if found:
+            raise ContradictionError(
+                "refusing to add a contradictory line to core: " + summarise(found)
+            )
     stamp = at or utc_now()
     with store.transaction() as conn:
         cursor = conn.execute(
