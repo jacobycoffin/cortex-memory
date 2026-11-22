@@ -84,6 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
+from . import path_query  # (#75)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -164,6 +165,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "preferences",
                     "constraints",
                     "reviews",
+                    "path",
                 ],
             },
             "content": {
@@ -1531,6 +1533,14 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "path":
+                # "How are these two related?" - hops with their evidence (#75).
+                left = str(args.get("left") or args.get("source") or "").strip()
+                right = str(args.get("right") or args.get("target") or "").strip()
+                if not left or not right:
+                    return _json_error("left and right are required")
+                return _json_ok(**path_query.describe(self._store, left, right))
 
             if action == "reviews":
                 # Which facts are due a second look? A question, never a deletion (#64).
