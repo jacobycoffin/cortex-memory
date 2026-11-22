@@ -121,6 +121,82 @@ class CoreBlockTests(unittest.TestCase):
             self.assertTrue(enabled())
 
 
+class VerifiedDateTests(unittest.TestCase):
+    """Every core line says when it was last verified (#125)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.tmp.cleanup()
+
+    def _memory(self, content: str, **kwargs) -> str:
+        created = self.store.add_memory(
+            content=content,
+            kind="semantic",
+            source_type="user_turn",
+            source_category="USER_EXPLICIT",
+            **kwargs,
+        )
+        return created[0] if isinstance(created, tuple) else created
+
+    def test_every_line_carries_a_label(self) -> None:
+        self._memory("Pinned fact with no history.", pinned=True, importance=0.9)
+        block = build(self.store)
+        for line in block.text.splitlines()[1:]:
+            self.assertTrue(
+                "[verified " in line or "[unverified]" in line, f"no label: {line[:80]}"
+            )
+
+    def test_a_fact_with_no_history_is_marked_unverified(self) -> None:
+        """Silence would invite the reader to assume freshness."""
+        self._memory("Never used, never confirmed.", pinned=True, importance=0.9)
+        self.assertIn("[unverified]", build(self.store).text)
+
+    def test_use_stamps_the_date(self) -> None:
+        memory_id = self._memory("Used yesterday.", pinned=True, importance=0.9)
+        self.store.log_access(memory_id, "used")
+        self.assertNotIn("[unverified]", build(self.store).text)
+
+    def test_a_confirmation_stamps_the_date(self) -> None:
+        from cortex.promotion import promote, touch_confirmations
+
+        memory_id = self._memory("Confirmed this month.", importance=0.9)
+        promote(self.store, memory_id, at="2026-01-01T00:00:00+00:00")
+        touch_confirmations(self.store, [memory_id], at="2026-11-01T00:00:00+00:00")
+        self.assertIn("2026-11-01", build(self.store).text)
+
+    def test_promotion_alone_is_not_a_verification(self) -> None:
+        """A rule firing is not someone vouching for the fact."""
+        from cortex.promotion import promote
+
+        memory_id = self._memory("Promoted by a rule, never used since.", importance=0.9)
+        promote(self.store, memory_id, at="2026-11-01T00:00:00+00:00")
+        self.assertIn("[unverified]", build(self.store).text)
+
+    def test_the_later_of_use_and_confirmation_wins(self) -> None:
+        from cortex.promotion import promote, touch_confirmations
+
+        memory_id = self._memory("Used long ago, confirmed recently.", importance=0.9)
+        promote(self.store, memory_id, at="2024-01-01T00:00:00+00:00")
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE memories SET last_used_at = ? WHERE id = ?",
+                ("2025-01-01T00:00:00+00:00", memory_id),
+            )
+        touch_confirmations(self.store, [memory_id], at="2026-11-01T00:00:00+00:00")
+        text = build(self.store).text
+        self.assertIn("2026-11-01", text)
+        self.assertNotIn("2025-01-01", text)
+
+    def test_the_label_respects_the_line_cap(self) -> None:
+        self._memory("word " * 300, pinned=True, importance=0.9)
+        for line in build(self.store, max_chars=2000).text.splitlines()[1:]:
+            self.assertLessEqual(len(line), MAX_LINE_CHARS + 40, line[:60])
+
+
 class DedupeTests(unittest.TestCase):
     def test_a_recalled_memory_is_not_repeated(self) -> None:
         text = "Core memory:\n- [M:aaaa1111 semantic] one\n- [M:bbbb2222 semantic] two"

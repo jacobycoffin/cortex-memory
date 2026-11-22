@@ -38,17 +38,40 @@ HEADER = "Core memory (always present, may be incomplete):"
 
 # Deliberately plain SQL: see the module docstring. No FTS, no vector search, no ranking
 # model — only the tables and their columns.
+# `verified_at` is what makes the block honest (#125): every line says when it was last
+# confirmed, used or re-stated, and a line that says so nowhere says `unverified`. The model
+# can then treat an unverified line as a claim rather than a fact.
+# The *latest* of the vouching events, not the first non-null: a fact used in January and
+# re-affirmed in November is verified in November, and COALESCE would report January.
+# Promotion is deliberately NOT one of these: a fact promoted by the use rule was verified
+# when it was last *used*, not when the rule fired, and showing "verified today" for a memory
+# that has been untouched for months would be the opposite of the honesty this exists for.
+_VERIFIED = (
+    "NULLIF(MAX(COALESCE(c.last_confirmed_at, ''), COALESCE(m.last_helpful_at, ''), "
+    "COALESCE(m.last_used_at, '')), '') AS verified_at"
+)
+_VERIFIED_NO_CORE = (
+    "NULLIF(MAX(COALESCE(m.last_helpful_at, ''), COALESCE(m.last_used_at, '')), '') "
+    "AS verified_at"
+)
+# `core_members` only exists once promotion (#122) has run, so the join is conditional: a
+# fresh store must still render a block.
+_CORE_JOIN = "LEFT JOIN core_members c ON c.memory_id = m.id"
+
 _PINNED_SQL = """
-    SELECT id, kind, content, pinned, importance, confirmed_count, used_count
-    FROM memories
-    WHERE state = 'active' AND pinned = 1
-    ORDER BY importance DESC, confirmed_count DESC, used_count DESC, id ASC
+    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count,
+           m.used_count, {verified}
+    FROM memories m
+    {core_join}
+    WHERE m.state = 'active' AND m.pinned = 1
+    ORDER BY m.importance DESC, m.confirmed_count DESC, m.used_count DESC, m.id ASC
 """
 
 # Promoted members (#122) ride ahead of the general importance fill: promotion is a recorded
 # decision, not a sort order, and the block should honour it even when importance is low.
-_CORE_SQL = """
-    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count, m.used_count
+_CORE_SQL = f"""
+    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count,
+           m.used_count, {_VERIFIED}
     FROM memories m
     JOIN core_members c ON c.memory_id = m.id
     WHERE m.state = 'active'
@@ -56,10 +79,12 @@ _CORE_SQL = """
 """
 
 _IMPORTANT_SQL = """
-    SELECT id, kind, content, pinned, importance, confirmed_count, used_count
-    FROM memories
-    WHERE state = 'active' AND pinned = 0
-    ORDER BY importance DESC, confirmed_count DESC, used_count DESC, id ASC
+    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count,
+           m.used_count, {verified}
+    FROM memories m
+    {core_join}
+    WHERE m.state = 'active' AND m.pinned = 0
+    ORDER BY m.importance DESC, m.confirmed_count DESC, m.used_count DESC, m.id ASC
 """
 
 # `prospective_items` keys on `memory_id` and carries no content of its own — the note lives
@@ -96,13 +121,27 @@ def enabled() -> bool:
     return os.environ.get("CORTEX_CORE_MEMORY", "0") != "0"
 
 
+def verified_label(row: dict[str, Any]) -> str:
+    """`[verified 2026-09-24]` or `[unverified]` — never silence.
+
+    A block where some lines say when they were last checked and others say nothing invites
+    the reader to assume the silent ones are equally fresh. They are not, so silence is made
+    explicit.
+    """
+    stamp = str(row.get("verified_at") or "").strip()
+    if not stamp:
+        return "[unverified]"
+    return f"[verified {stamp[:10]}]"
+
+
 def _line(row: dict[str, Any], *, suffix: str = "") -> str:
     body = " ".join(str(row.get("content") or "").split())
     room = MAX_LINE_CHARS - len(suffix)
     if len(body) > room:
         body = body[: max(0, room - 1)].rstrip() + "\u2026"
     label = f" [M:{str(row.get('id') or '')[:8]} {row.get('kind') or 'fact'}]"
-    return f"-{label} {body}{suffix}"
+    suffix = f"{suffix} {verified_label(row)}".strip()
+    return f"-{label} {body} {suffix}".strip()
 
 
 def build(
@@ -113,7 +152,16 @@ def build(
 ) -> CoreBlock:
     """Render the core block for this store. Cheap, deterministic, no ranking model."""
     conn = store._conn
-    pinned = [dict(row) for row in conn.execute(_PINNED_SQL).fetchall()]
+    has_core = bool(
+        conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='core_members'"
+        ).fetchone()
+    )
+    fill = {
+        "verified": _VERIFIED if has_core else _VERIFIED_NO_CORE,
+        "core_join": _CORE_JOIN if has_core else "",
+    }
+    pinned = [dict(row) for row in conn.execute(_PINNED_SQL.format(**fill)).fetchall()]
     commitments: list[dict[str, Any]] = []
     try:
         commitments = [dict(row) for row in conn.execute(_COMMITMENTS_SQL).fetchall()]
@@ -129,7 +177,9 @@ def build(
         core_members = [dict(row) for row in conn.execute(_CORE_SQL).fetchall()]
     except Exception:  # noqa: BLE001 - the table is absent until promotion first runs
         core_members = []
-    important = [dict(row) for row in conn.execute(_IMPORTANT_SQL).fetchall()]
+    important = [
+        dict(row) for row in conn.execute(_IMPORTANT_SQL.format(**fill)).fetchall()
+    ]
 
     lines = [HEADER]
     ids: list[str] = []
