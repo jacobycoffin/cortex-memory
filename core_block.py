@@ -87,7 +87,7 @@ _IMPORTANT_SQL = """
            m.used_count, {verified}
     FROM memories m
     {core_join}
-    WHERE m.state = 'active' AND m.pinned = 0
+    WHERE m.state = 'active' AND m.pinned = 0 {recent_exclusion}
     ORDER BY m.importance DESC, m.confirmed_count DESC, m.used_count DESC, m.id ASC
 """
 
@@ -112,6 +112,7 @@ class CoreBlock:
     pinned: int
     commitments: int
     chars: int
+    recent: int = 0
 
     @property
     def estimated_tokens(self) -> int:
@@ -173,6 +174,15 @@ SECTION_SHARES = {
     "constraints": 0.15,
     "general": 0.07,
 }
+# Warm vs cold (#129): the profile above is the *stable* part and changes slowly; the last
+# day of context is appended separately. Two reasons to keep them apart rather than mingling
+# them: the stable part is a promise (it should not churn), and the recent part is the one
+# that legitimately changes hour to hour — mixing them makes every change look like the
+# profile changed.
+RECENT_SHARE = 0.25
+RECENT_DAYS = 1
+RECENT_TITLE = "Recent (last 24h)"
+
 KIND_SECTIONS = {
     "prospective": "commitments",
     "commitment": "commitments",
@@ -187,6 +197,17 @@ _PEOPLE = re.compile(r"\b(?:jamie|jarvis|ledger|coby|wife|husband|partner|mother
 _PREFERENCES = re.compile(r"\b(?:prefers?|likes?|wants?|favou?rite|rather|would prefer|style)\b", re.I)
 _CONSTRAINTS = re.compile(r"\b(?:never|must not|do not|don't|avoid|only|always|constraint|required)\b", re.I)
 _PROJECTS = re.compile(r"\b(?:project|repo|branch|deploy|release|build|codebase)\b", re.I)
+
+_RECENT_SQL = """
+    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count,
+           m.used_count, {verified}
+    FROM memories m
+    {core_join}
+    WHERE m.state = 'active'
+      AND COALESCE(m.last_used_at, m.created_at) >= ?
+      AND m.pinned = 0
+    ORDER BY COALESCE(m.last_used_at, m.created_at) DESC, m.id ASC
+"""
 
 
 def classify_section(row: dict[str, Any]) -> str:
@@ -241,8 +262,18 @@ def build(
     *,
     max_chars: int = MAX_CHARS,
     min_chars: int = MIN_CHARS,
+    include_recent: bool = True,
+    now: Any = None,
 ) -> CoreBlock:
-    """Render the core block for this store. Cheap, deterministic, no ranking model."""
+    """Render the core block for this store. Cheap, no ranking model.
+
+    Two parts (#129): the stable profile, and the last day's context. `now` exists so the
+    recent window can be pinned in tests — the rest of the block does not depend on the clock.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    reference = now or datetime.now(timezone.utc)
+    cutoff = (reference - timedelta(days=RECENT_DAYS)).isoformat()
     conn = store._conn
     has_core = bool(
         conn.execute(
@@ -268,7 +299,32 @@ def build(
         import warnings
 
         warnings.warn(f"core memory: commitments query failed: {error}", RuntimeWarning, stacklevel=2)
-    important = [dict(row) for row in conn.execute(_IMPORTANT_SQL.format(**fill)).fetchall()]
+    # A memory touched inside the recent window belongs in *that* section, not in the general
+    # fill: otherwise the fill swallows it first and the warm section renders empty.
+    fill_important = dict(fill)
+    fill_important["recent_exclusion"] = (
+        "AND (m.last_used_at IS NULL OR m.last_used_at < ?)" if include_recent else ""
+    )
+    important_params: tuple[Any, ...] = (cutoff,) if include_recent else ()
+    important = [
+        dict(row)
+        for row in conn.execute(
+            _IMPORTANT_SQL.format(**fill_important), important_params
+        ).fetchall()
+    ]
+
+    recent: list[dict[str, Any]] = []
+    if include_recent:
+        try:
+            recent = [
+                dict(row)
+                for row in conn.execute(_RECENT_SQL.format(**fill), (cutoff,)).fetchall()
+            ]
+        except Exception as error:  # noqa: BLE001 - a missing column must not break the block
+            import warnings
+
+            warnings.warn(f"core memory: recent query failed: {error}", RuntimeWarning, stacklevel=2)
+            recent = []
 
     # Priority inside a section: pinned, then promoted, then commitments, then importance.
     candidates = [*pinned, *core_members, *commitments, *important]
@@ -288,16 +344,19 @@ def build(
             suffix = f"[commitment, due {str(due)[:10]}]" if due else "[commitment]"
         return _line(row, suffix=suffix)
 
+    # The stable profile may not spend the recent window's share: the recent part is the only
+    # one that is allowed to churn, and it must not be crowded out by a fat profile.
+    stable_limit = int(max_chars * (1.0 - RECENT_SHARE)) if recent else max_chars
     rendered: dict[str, list[tuple[str, str]]] = {name: [] for name in SECTIONS}
     used = len(HEADER) + 1
     for name in SECTIONS:
-        slot = int(max_chars * SECTION_SHARES.get(name, 0.05))
+        slot = min(int(max_chars * SECTION_SHARES.get(name, 0.05)), max(0, stable_limit - used))
         spent = 0
         title = SECTION_TITLES[name]
         for row in buckets[name]:
             line = line_for(row)
             cost = len(line) + 1
-            if spent + cost > slot or used + cost > max_chars:
+            if spent + cost > slot or used + cost > stable_limit:
                 break
             rendered[name].append((line, str(row["id"])))
             spent += cost
@@ -308,7 +367,7 @@ def build(
     # Pass two: unused capacity goes to whatever still has candidates, in section order, so a
     # thin section never wastes the block while another overflows.
     for name in SECTIONS:
-        if used >= max_chars:
+        if used >= stable_limit:
             break
         taken = {memory_id for _, memory_id in rendered[name]}
         for row in buckets[name]:
@@ -317,7 +376,7 @@ def build(
                 continue
             line = line_for(row)
             cost = len(line) + 1
-            if used + cost > max_chars:
+            if used + cost > stable_limit:
                 break
             rendered[name].append((line, memory_id))
             used += cost
@@ -333,6 +392,24 @@ def build(
             lines.append(line)
             ids.append(memory_id)
 
+    # Warm appendage (#129), last so it never displaces the profile.
+    recent_lines: list[str] = []
+    rendered_ids = set(ids)
+    for row in recent:
+        memory_id = str(row.get("id") or "")
+        if not memory_id or memory_id in rendered_ids:
+            continue
+        line = line_for(row)
+        if used + len(line) + 1 > max_chars:
+            break
+        recent_lines.append(line)
+        ids.append(memory_id)
+        rendered_ids.add(memory_id)
+        used += len(line) + 1
+    if recent_lines:
+        lines.append(f"{RECENT_TITLE}:")
+        lines.extend(recent_lines)
+
     text = "\n".join(lines)
     return CoreBlock(
         text=text,
@@ -340,6 +417,7 @@ def build(
         pinned=len(pinned),
         commitments=len(commitments),
         chars=len(text),
+        recent=len(recent_lines),
     )
 
 
