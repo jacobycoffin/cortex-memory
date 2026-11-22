@@ -9,7 +9,7 @@ short-lived scratch space; Cortex is the durable store of record.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -124,10 +124,18 @@ class HarnessTurn:
     context: str
     reason: str
     batch: RecallBatch | None = None
+    # Memories written during this turn, so the turn can end with a receipt (#37).
+    writes: list[str] = field(default_factory=list)
 
     @property
     def memory_ids(self) -> list[str]:
         return [str(item["id"]) for item in self.batch.memories] if self.batch else []
+
+    def receipt(self, store: Any, *, verb: str = "remembered") -> str:
+        """One line naming what this turn wrote, with a short id per entry (#37)."""
+        from . import write_receipts
+
+        return write_receipts.build(store, self.writes, verb=verb).text
 
     def finish(
         self,
@@ -158,6 +166,7 @@ class CortexHarnessAdapter:
         self.top_k = max(1, min(20, int(top_k)))
         self.token_budget = max(120, min(4000, int(token_budget)))
         self.memory_receipt_url = memory_receipt_url
+        self._open_turn: HarnessTurn | None = None
 
     def system_prompt_block(self, *, tool_name: str = "cortex_memory") -> str:
         stats = self.memory.stats()
@@ -208,7 +217,10 @@ class CortexHarnessAdapter:
             applicable_systems=applicable_systems,
             applicable_versions=applicable_versions,
         )
-        return HarnessTurn(query=query, context=batch.context(), reason=plan.reason, batch=batch)
+        turn = HarnessTurn(query=query, context=batch.context(), reason=plan.reason, batch=batch)
+        # Kept so writes made during the turn can be named in a receipt at its end (#37).
+        self._open_turn = turn
+        return turn
 
     def preload(
         self, query: str, *, force_recall: bool = False, **context: Any,
@@ -236,7 +248,19 @@ class CortexHarnessAdapter:
         own summary into recallable user truth.
         """
 
-        return self.memory.remember(content, **metadata)
+        memory_id, created = self.memory.remember(content, **metadata)
+        if created and self._open_turn is not None:
+            self._open_turn.writes.append(str(memory_id))
+        return memory_id, created
+
+    def apply_write_edits(self, text: str) -> str:
+        """Interpret "fix <id> …" / "forget <id>" in a message (#37). Returns a reply line."""
+        from . import write_receipts
+
+        edits = write_receipts.apply_edits(
+            self.memory.store, text, session_id=getattr(self, "session_id", None)
+        )
+        return write_receipts.summarise(edits)
 
     def propose(self, content: str, **metadata: Any) -> dict[str, Any]:
         """Stage an agent-generated candidate for human review.
