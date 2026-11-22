@@ -45,6 +45,16 @@ _PINNED_SQL = """
     ORDER BY importance DESC, confirmed_count DESC, used_count DESC, id ASC
 """
 
+# Promoted members (#122) ride ahead of the general importance fill: promotion is a recorded
+# decision, not a sort order, and the block should honour it even when importance is low.
+_CORE_SQL = """
+    SELECT m.id, m.kind, m.content, m.pinned, m.importance, m.confirmed_count, m.used_count
+    FROM memories m
+    JOIN core_members c ON c.memory_id = m.id
+    WHERE m.state = 'active'
+    ORDER BY COALESCE(c.last_confirmed_at, c.promoted_at) DESC, m.importance DESC, m.id ASC
+"""
+
 _IMPORTANT_SQL = """
     SELECT id, kind, content, pinned, importance, confirmed_count, used_count
     FROM memories
@@ -114,6 +124,11 @@ def build(
         import warnings
 
         warnings.warn(f"core memory: commitments query failed: {error}", RuntimeWarning, stacklevel=2)
+    core_members: list[dict[str, Any]] = []
+    try:
+        core_members = [dict(row) for row in conn.execute(_CORE_SQL).fetchall()]
+    except Exception:  # noqa: BLE001 - the table is absent until promotion first runs
+        core_members = []
     important = [dict(row) for row in conn.execute(_IMPORTANT_SQL).fetchall()]
 
     lines = [HEADER]
@@ -135,6 +150,18 @@ def build(
             continue
         lines.append(line)
         ids.append(str(row["id"]))
+        size += len(line) + 1
+
+    seen = {str(row["id"]) for row in pinned}
+    for row in core_members:
+        if str(row["id"]) in seen:
+            continue
+        line = _line(row, suffix=" [core]")
+        if size + len(line) + 1 > pinned_cap or not room(line):
+            continue
+        lines.append(line)
+        ids.append(str(row["id"]))
+        seen.add(str(row["id"]))
         size += len(line) + 1
 
     for row in commitments:
