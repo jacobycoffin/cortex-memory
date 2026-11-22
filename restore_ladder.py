@@ -93,10 +93,18 @@ def restore(
     # Compaction deletes the derived feature rows of retired memories (#98), and those rows are how
     # the retriever finds a memory at all. Restoring therefore re-indexes, or "restored" would mean
     # "present but invisible" — the worst of both states.
+    # Re-index through the derived-metadata guard (#69): only derived rows may be rebuilt, and the
+    # call verifies the content fingerprint is unchanged before it reports success. A re-index that
+    # edited the record would be a rewrite of what the user said, wearing a re-index label.
     try:
-        store._backfill_memory_features()
+        from . import derived_metadata
+
+        derived_metadata.regenerate(store, memory_id)
     except Exception:  # noqa: BLE001 - a restore must not fail on a re-index attempt
-        pass
+        try:
+            store._backfill_memory_features()
+        except Exception:  # noqa: BLE001
+            pass
     result.count = restore_count(store, memory_id)
     if protect_at > 0 and result.count >= protect_at and not is_protected(store, memory_id):
         store.set_pinned(memory_id, True)
