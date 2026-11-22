@@ -254,6 +254,13 @@ def protections(
     queries = (
         # (name, required table, sql). A table that does not exist yet is not a failure - the
         # store creates tables lazily - but a *present* table that errors is.
+        # Legal hold comes first: it is the strongest statement, and `setdefault` would otherwise
+        # report the "pinned" label that placing a hold also adds.
+        (
+            "legal_hold",
+            "legal_holds",
+            """SELECT memory_id AS id FROM legal_holds WHERE released_at IS NULL""",
+        ),
         ("pinned", "memories",
          "SELECT id FROM memories WHERE pinned = 1 AND state IN ('active','cold','archived')"),
         (
