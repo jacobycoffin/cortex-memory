@@ -47,8 +47,9 @@ class CoreActionTests(unittest.TestCase):
         reply = self._call(action="core")
         self.assertTrue(reply["success"], reply)
         self.assertGreater(reply["chars"], 0)
-        self.assertTrue(any("Pinned rule" in line for line in reply["entries"]))
-        self.assertTrue(any("[verified " in line or "[unverified]" in line for line in reply["entries"]))
+        lines = [line for entries in reply["sections"].values() for line in entries]
+        self.assertTrue(any("Pinned rule" in line for line in lines), lines)
+        self.assertTrue(any("[verified " in line or "[unverified]" in line for line in lines))
 
     def test_core_edit_rewrites_the_fact(self) -> None:
         memory_id = self._memory("The window is Sunday.", pinned=True, importance=0.9)
@@ -57,7 +58,9 @@ class CoreActionTests(unittest.TestCase):
         )
         self.assertTrue(reply["edited"], reply)
         self.assertIn("Tuesday", str(self.store.get_memory(memory_id)["content"]))
-        self.assertIn("Tuesday", self._call(action="core")["entries"][0])
+        reply = self._call(action="core")
+        lines = [line for entries in reply["sections"].values() for line in entries]
+        self.assertTrue(any("Tuesday" in line for line in lines), lines)
 
     def test_core_edit_keeps_the_memory_in_core(self) -> None:
         memory_id = self._memory("A rule that stays in core.", pinned=True, importance=0.9)

@@ -1504,15 +1504,20 @@ class CortexMemoryProvider(MemoryProvider):
                 from .core_block import build as build_core_block
 
                 block = build_core_block(self._store)
+                sections: dict[str, list[str]] = {}
+                current = ""
+                for line in block.text.splitlines()[1:]:
+                    if line.endswith(":") and not line.startswith("- "):
+                        current = line[:-1]
+                        sections.setdefault(current, [])
+                        continue
+                    sections.setdefault(current or "Other", []).append(line)
                 return _json_ok(
                     chars=block.chars,
                     estimated_tokens=block.estimated_tokens,
                     pinned=block.pinned,
                     commitments=block.commitments,
-                    entries=[
-                        line
-                        for line in block.text.splitlines()[1:]
-                    ],
+                    sections=sections,
                 )
 
             if action == "core_edit":
