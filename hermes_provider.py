@@ -70,6 +70,7 @@ from .hermes_hooks import (
 from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .confirmation import record_confirmation
+from .promotion import promote, touch_confirmations
 from .core_block import build as build_core
 from .core_block import dedupe_against, enabled as core_enabled
 from .continuity import build as build_continuity, first_turn
@@ -1361,6 +1362,7 @@ class CortexMemoryProvider(MemoryProvider):
                         kind=str(args.get("kind") or "") or None,
                     )
                     if confirmation is not None:
+                        touch_confirmations(self._store, [confirmation.memory_id])
                         return _json_ok(
                             memory_id=confirmation.memory_id,
                             created=False,
@@ -1494,6 +1496,11 @@ class CortexMemoryProvider(MemoryProvider):
             if action == "pin":
                 memory_id = self._resolve(args.get("memory_id"))
                 changed = bool(memory_id and self._store.set_pinned(memory_id, _as_bool(args.get("pinned", True))))
+                # Pinning is promotion (#122): the fact has been explicitly chosen for the
+                # always-present block, so record the membership rather than inferring it
+                # from the flag at render time.
+                if changed and memory_id and _as_bool(args.get("pinned", True)):
+                    promote(self._store, memory_id, by="pin", reason="pinned via cortex_memory")
                 self._queue_memory_action(
                     session_id=str(kwargs.get("session_id") or self._session_id or "default"),
                     action="updated" if changed else "ignored",
