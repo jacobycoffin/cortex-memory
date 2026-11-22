@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from . import splitting as _splitting
 from .security import normalize_text
 
 
@@ -101,7 +102,9 @@ def extract_candidates(text: str, *, role: str = "user") -> list[Candidate]:
 
     candidates: list[Candidate] = []
     seen: set[str] = set()
-    for raw in _SPLIT.split(text):
+    # A compound sentence can carry two independent facts (#34); splitting only happens where
+    # each side survives alone, so comma lists stay whole.
+    for raw in _splitting.split_facts(text, splitter=_SPLIT):
         sentence = normalize_text(raw)
         if len(sentence) < 16 or len(sentence) > 600:
             continue
