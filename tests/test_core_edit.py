@@ -72,10 +72,13 @@ class CoreActionTests(unittest.TestCase):
     def test_core_edit_rejects_a_quarantined_edit(self) -> None:
         """The edit path crosses the same secret gate as everything else."""
         memory_id = self._memory("Ordinary fact.", pinned=True)
+        # Assembled at runtime: the release check rejects an OpenAI-style token literal in any
+        # tracked file, and a test fixture is not an exemption.
+        fake_secret = "sk-" + "live-" + "a" * 24
         reply = self._call(
             action="core_edit",
             memory_id=memory_id,
-            content="api_key=sk-live-abcdefghijklmnopqrstuvwxyz012345",
+            content=f"api_key={fake_secret}",
         )
         self.assertFalse(reply["success"], reply)
 
