@@ -1,0 +1,302 @@
+"""The forget ladder: cool -> archive -> tombstone, keyed on last use and memory kind (#86).
+
+Existing pruning in this repo is **model-driven**: `relevance_pruning` asks a provider to judge
+each low-relevance memory and returns cool/archive/quarantine/keep. That is the right tool for
+"is this still true or useful", and the wrong tool for "nobody has touched this in eight
+months". This module is the deterministic half: a ladder that walks without a model, so it
+works on a host with no provider, in a cron job, and reproducibly.
+
+Three rules make it safe to run unattended:
+
+1. **Kind sets the clock.** An episode is a working note about Tuesday; a procedure is how the
+   release process works. Treating them the same is how a memory system forgets the thing it
+   most needed to keep, so each kind carries its own dwell times and unresolved commitments and
+   identity-shaped kinds never walk at all.
+2. **One rung per sweep.** A memory that has been quiet for a year moves to `cold` this run and
+   to `archived` the next. Skipping rungs would make a single bad sweep catastrophically
+   destructive instead of merely wrong for one cycle, and every rung is checked against
+   protection *again* on the way down.
+3. **Nothing is destroyed.** `tombstoned` means unreachable, not shredded: the content stays,
+   the id stays so edges do not dangle, and `restore()` walks it back up. Deletion already
+   exists in the store's lifecycle trash and is a human action.
+
+`last use` is `last_used_at`, falling back to `last_helpful_at` and then `created_at` — a fact
+that is still informing answers must never be demoted for want of a new restatement.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+LADDER = ("active", "cold", "archived", "tombstoned")
+_NEXT = {state: LADDER[index + 1] for index, state in enumerate(LADDER[:-1])}
+
+# (days quiet before cool, before archive, before tombstone). Measured from last use.
+DWELL_DAYS: dict[str, tuple[int, int, int]] = {
+    "episode": (7, 30, 120),
+    "episodic": (7, 30, 120),
+    "semantic": (120, 240, 540),
+    "procedural": (240, 480, 900),
+    "preference": (365, 730, 1825),
+    "identity": (365, 730, 1825),
+}
+# Kinds whose whole purpose is to be recalled later, or that describe who the user is: the
+# ladder never touches them. A commitment ends by being done, not by going quiet.
+NEVER_WALK = frozenset({"prospective", "commitment", "tool", "correction"})
+DEFAULT_DWELL = (180, 365, 730)
+
+
+def _utc(text: Any) -> datetime | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
+
+
+def last_use(row: dict[str, Any]) -> datetime | None:
+    for key in ("last_used_at", "last_helpful_at", "last_confirmed_at", "created_at"):
+        stamp = _utc(row.get(key))
+        if stamp:
+            return stamp
+    return None
+
+
+@dataclass(frozen=True)
+class Step:
+    memory_id: str
+    kind: str
+    from_state: str
+    to_state: str
+    quiet_days: float
+    reason: str
+
+    def describe(self, prefix: int = 8) -> str:
+        return (
+            f"{self.memory_id[:prefix]} {self.kind} {self.from_state}->{self.to_state} "
+            f"({self.quiet_days:.0f}d quiet)"
+        )
+
+
+@dataclass
+class Sweep:
+    steps: list[Step] = field(default_factory=list)
+    protected: dict[str, int] = field(default_factory=dict)
+    skipped: dict[str, int] = field(default_factory=dict)
+
+    def counts(self) -> dict[str, int]:
+        out: dict[str, int] = {}
+        for step in self.steps:
+            out[f"{step.from_state}->{step.to_state}"] = out.get(
+                f"{step.from_state}->{step.to_state}", 0
+            ) + 1
+        return out
+
+    @property
+    def summary(self) -> str:
+        moves = ", ".join(f"{key} {value}" for key, value in sorted(self.counts().items()))
+        return moves or "no memory qualified to move"
+
+
+def _dwell_for(kind: str) -> tuple[int, int, int]:
+    return DWELL_DAYS.get(str(kind or "").strip().lower(), DEFAULT_DWELL)
+
+
+def _threshold(state: str, dwell: tuple[int, int, int]) -> int | None:
+    index = LADDER.index(state) if state in LADDER else None
+    if index is None or index >= len(LADDER) - 1:
+        return None
+    return dwell[index]
+
+
+def _has_table(store: Any, name: str) -> bool:
+    try:
+        row = store._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (name,)
+        ).fetchone()
+    except Exception:  # noqa: BLE001
+        return False
+    return row is not None
+
+
+def protections(store: Any) -> dict[str, str]:
+    """Memory id -> why it must not walk. One query per protection, not one per memory."""
+    held: dict[str, str] = {}
+    queries = (
+        ("pinned", "SELECT id FROM memories WHERE pinned = 1 AND state IN ('active','cold','archived')"),
+        (
+            "open_commitment",
+            """SELECT DISTINCT p.memory_id AS id FROM prospective_items p
+               JOIN memories m ON m.id = p.memory_id
+               WHERE p.status IN ('open','due')""",
+        ),
+        (
+            "core_member",
+            """SELECT DISTINCT c.memory_id AS id FROM core_members c
+               JOIN memories m ON m.id = c.memory_id""",
+        ),
+        (
+            "use_evidence",
+            """SELECT DISTINCT memory_id AS id FROM access_log
+               WHERE event IN ('used','helpful','confirmed','validated')
+                 AND created_at >= ?""",
+        ),
+        (
+            "corroborated_edge",
+            """SELECT DISTINCT src_id AS id FROM edges WHERE evidence_count >= 2
+               UNION SELECT DISTINCT dst_id FROM edges WHERE evidence_count >= 2""",
+        ),
+    )
+    recent = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+    for label, query in queries:
+        try:
+            rows = store._conn.execute(
+                query, (recent,) if "?" in query else ()
+            ).fetchall()
+        except Exception:  # noqa: BLE001 - a missing table must not block the sweep
+            continue
+        for row in rows:
+            held.setdefault(str(row["id"]), label)
+    return held
+
+
+def plan(
+    store: Any,
+    *,
+    at: datetime | None = None,
+    limit: int = 500,
+    hold: dict[str, str] | None = None,
+    max_per_transition: int = 100,
+) -> Sweep:
+    """Which memories move this sweep, at most one rung each.
+
+    `max_per_transition` exists because a sweep is not a verdict: on a store where thousands of
+    memories went quiet at once (an import, a years-old backlog), a single run would tombstone
+    four hundred of them. Bounded, the same decision is made over several cycles, and anything
+    that becomes used in between is spared.
+    """
+    now = at or datetime.now(timezone.utc)
+    has_core = _has_table(store, "core_members")
+    held = protections(store) if hold is None else hold
+    sweep = Sweep()
+    skipped: dict[str, int] = {}
+
+    rows = store._conn.execute(
+        # `last_confirmed_at` lives on core_members, not memories: joining it keeps "still
+        # confirmed but unused" from reading as "quiet". The table only exists once something
+        # has been promoted, so the join is conditional rather than assumed.
+        (
+            """SELECT m.id, m.kind, m.state, m.pinned, m.importance, m.last_used_at,
+                      m.last_helpful_at, c.last_confirmed_at, m.created_at
+               FROM memories m
+               LEFT JOIN core_members c ON c.memory_id = m.id
+               WHERE m.state IN ('active','cold','archived')
+               ORDER BY COALESCE(m.last_used_at, m.last_helpful_at, m.created_at) ASC
+               LIMIT ?"""
+            if has_core
+            else """SELECT m.id, m.kind, m.state, m.pinned, m.importance, m.last_used_at,
+                           m.last_helpful_at, NULL AS last_confirmed_at, m.created_at
+                    FROM memories m
+                    WHERE m.state IN ('active','cold','archived')
+                    ORDER BY COALESCE(m.last_used_at, m.last_helpful_at, m.created_at) ASC
+                    LIMIT ?"""
+        ),
+        (max(limit * 4, 2000),),
+    ).fetchall()
+
+    per_transition: dict[str, int] = {}
+    for raw in rows:
+        if len(sweep.steps) >= limit:
+            break
+        row = dict(raw)
+        memory_id = str(row["id"])
+        kind = str(row.get("kind") or "").strip().lower()
+        if kind in NEVER_WALK:
+            skipped["kind_never_walks"] = skipped.get("kind_never_walks", 0) + 1
+            continue
+        if memory_id in held:
+            label = held[memory_id]
+            sweep.protected[label] = sweep.protected.get(label, 0) + 1
+            continue
+        state = str(row.get("state") or "active")
+        next_state = _NEXT.get(state)
+        if next_state is None:
+            continue
+        threshold = _threshold(state, _dwell_for(kind))
+        used = last_use(row)
+        if threshold is None or used is None:
+            skipped["no_usable_timestamp"] = skipped.get("no_usable_timestamp", 0) + 1
+            continue
+        quiet_days = (now - used).total_seconds() / 86400.0
+        if quiet_days < threshold:
+            skipped["still_warm"] = skipped.get("still_warm", 0) + 1
+            continue
+        transition = f"{state}->{next_state}"
+        if per_transition.get(transition, 0) >= max_per_transition:
+            skipped[f"capped:{transition}"] = skipped.get(f"capped:{transition}", 0) + 1
+            continue
+        per_transition[transition] = per_transition.get(transition, 0) + 1
+        sweep.steps.append(
+            Step(
+                memory_id=memory_id,
+                kind=kind or "unknown",
+                from_state=state,
+                to_state=next_state,
+                quiet_days=quiet_days,
+                reason=(
+                    f"{kind or 'unknown'} quiet {quiet_days:.0f}d at or past the "
+                    f"{threshold}d {state}->{next_state} threshold"
+                ),
+            )
+        )
+    sweep.skipped = skipped
+    return sweep
+
+
+def apply(store: Any, sweep: Sweep) -> dict[str, int]:
+    """Move one rung per planned memory. Returns per-transition counts."""
+    applied: dict[str, int] = {}
+    for step in sweep.steps:
+        try:
+            store.set_state(
+                step.memory_id,
+                step.to_state,
+                reason=f"forget ladder: {step.reason}",
+            )
+        except Exception:  # noqa: BLE001 - one failed move must not stop the sweep
+            continue
+        key = f"{step.from_state}->{step.to_state}"
+        applied[key] = applied.get(key, 0) + 1
+    return applied
+
+
+def sweep(store: Any, *, at: datetime | None = None, apply_steps: bool = False,
+          limit: int = 500) -> tuple[Sweep, dict[str, int]]:
+    planned = plan(store, at=at, limit=limit)
+    applied = apply(store, planned) if apply_steps else {}
+    return planned, applied
+
+
+def restore(store: Any, memory_id: str, *, to: str = "active") -> bool:
+    """Walk a memory back up the ladder. Tombstone is not a shredder."""
+    return bool(store.set_state(memory_id, to, reason="forget ladder: restored"))
+
+
+def state_counts(store: Any) -> dict[str, int]:
+    rows = store._conn.execute(
+        "SELECT state, COUNT(*) AS n FROM memories GROUP BY state ORDER BY state"
+    ).fetchall()
+    return {str(row["state"]): int(row["n"]) for row in rows}
+
+
+def kind_counts(store: Any) -> dict[tuple[str, str], int]:
+    rows = store._conn.execute(
+        """SELECT COALESCE(kind,'') AS kind, state, COUNT(*) AS n FROM memories
+           GROUP BY COALESCE(kind,''), state"""
+    ).fetchall()
+    return {(str(row["kind"]), str(row["state"])): int(row["n"]) for row in rows}
