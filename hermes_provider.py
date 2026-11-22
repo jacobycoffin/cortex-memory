@@ -83,7 +83,8 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import constraints, dry_run, entity_timeline  # (#46, #50, #60)
+from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
+from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
 from .recall_explain import record_breakdown
@@ -162,6 +163,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "negation",
                     "preferences",
                     "constraints",
+                    "reviews",
                 ],
             },
             "content": {
@@ -1530,6 +1532,13 @@ class CortexMemoryProvider(MemoryProvider):
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
+            if action == "reviews":
+                # Which facts are due a second look? A question, never a deletion (#64).
+                return _json_ok(
+                    counts=expiry_classes.report(self._store),
+                    due=expiry_classes.due(self._store, limit=20),
+                )
+
             if action == "constraints":
                 # Budgets, allergies and hard nos: always in view, never similarity-gated (#60).
                 return _json_ok(
@@ -2076,6 +2085,14 @@ class CortexMemoryProvider(MemoryProvider):
                 # Constraints are always-on (#60), so they are promoted at write rather than
                 # discovered later by a query that happens to resemble them.
                 constraints.promote_from_strength(self._store, proposal_id, candidate.content)
+                # Bake the review class into the record while its kind and volatility are known
+                # (#64): a later sweep should not have to re-derive policy from text.
+                expiry_classes.assign(
+                    self._store,
+                    proposal_id,
+                    kind=candidate.kind,
+                    volatility_class=_volatility.lookup(self._store, proposal_id),
+                )
             except Exception:  # noqa: BLE001 - strength is metadata, never a reason to lose a write
                 pass
             try:
