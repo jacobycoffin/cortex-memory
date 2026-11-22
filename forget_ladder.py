@@ -443,8 +443,14 @@ def sweep(store: Any, *, at: datetime | None = None, apply_steps: bool = False,
 
 
 def restore(store: Any, memory_id: str, *, to: str = "active") -> bool:
-    """Walk a memory back up the ladder. Tombstone is not a shredder."""
-    return bool(store.set_state(memory_id, to, reason="forget ladder: restored"))
+    """Walk a memory back up the ladder. Tombstone is not a shredder.
+
+    Delegates to `restore_ladder`, which counts restores and pins a memory that has come back
+    twice — one implementation, so a caller cannot restore without the counting (#99).
+    """
+    from .restore_ladder import restore as restore_and_count
+
+    return restore_and_count(store, memory_id, to=to).restored
 
 
 def explain(store: Any, memory_id: str, *, at: datetime | None = None) -> dict[str, Any]:
