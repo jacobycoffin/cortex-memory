@@ -83,7 +83,8 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import dry_run, entity_timeline, negative_facts, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
+from . import dry_run, entity_timeline, negative_facts, preference_strength  # (#46, #50, #58, #59)
+from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -158,6 +159,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "dry_run",
                     "timeline",
                     "negation",
+                    "preferences",
                 ],
             },
             "content": {
@@ -1526,6 +1528,14 @@ class CortexMemoryProvider(MemoryProvider):
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
+            if action == "preferences":
+                # How hard is each preference, and which ones may not be deviated from? (#59)
+                return _json_ok(
+                    counts=preference_strength.report(self._store),
+                    hard_rules=preference_strength.hard_rules(self._store, limit=20),
+                    guidance=preference_strength.GUIDANCE,
+                )
+
             if action == "negation":
                 # Is this statement believed, denied, contradictory, or unknown? (#58)
                 statement = str(args.get("content") or args.get("query") or "").strip()
@@ -2046,6 +2056,11 @@ class CortexMemoryProvider(MemoryProvider):
             proposal_id = str(proposal["proposal_id"])
             # Record polarity while the wording is in hand (#58), so a later reader does not have
             # to re-parse English to know whether this row said "not".
+            try:
+                if candidate.kind in {"preference", "procedure", "procedural"}:
+                    preference_strength.record(self._store, proposal_id, candidate.content)
+            except Exception:  # noqa: BLE001 - strength is metadata, never a reason to lose a write
+                pass
             try:
                 negative_facts.record(self._store, proposal_id, candidate.content)
             except Exception:  # noqa: BLE001 - polarity is metadata, never a reason to lose a write
