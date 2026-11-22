@@ -1317,6 +1317,40 @@ class MemoryRetriever:
             semantic_rank[memory_id] = rank
         return semantic_rank
 
+    def _with_volatility(self, memory: dict[str, Any]) -> dict[str, Any]:
+        """Attach the volatility class so decay can use it (#54). One cheap lookup per memory.
+
+        Decay is off by default, so this costs nothing on the normal path, and a missing table or a
+        reader error leaves the memory exactly as it was: a scoring hint must never change a result
+        by raising.
+        """
+        if not decay.enabled():
+            return memory
+        if "volatility" in memory:
+            return memory
+        memory_id = str(memory.get("id") or "")
+        if not memory_id:
+            return memory
+        cache = getattr(self, "_volatility_class_cache", None)
+        if cache is None:
+            cache = {}
+            self._volatility_class_cache = cache
+        if memory_id not in cache:
+            try:
+                row = self.store._conn.execute(
+                    "SELECT volatility FROM memory_volatility WHERE memory_id = ?",
+                    (memory_id,),
+                ).fetchone()
+                cache[memory_id] = str(row["volatility"]) if row else None
+            except Exception:  # noqa: BLE001 - no table means no class
+                cache[memory_id] = None
+        assigned = cache[memory_id]
+        if not assigned:
+            return memory
+        enriched = dict(memory)
+        enriched["volatility"] = assigned
+        return enriched
+
     def _score(
         self,
         query: str,
@@ -1446,8 +1480,9 @@ class MemoryRetriever:
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "context_gate": float(context_components["context_gate"]),
             # Off unless CORTEX_DECAY is set (#93): episodic retention decays exponentially,
-            # everything else reports 0.0 here and scoring is untouched.
-            "decay": decay.penalty(memory),
+            # everything else reports 0.0 here and scoring is untouched. When on, a memory that
+            # knows how fast it goes stale decays on that schedule instead of on its kind (#54).
+            "decay": decay.penalty(self._with_volatility(memory)),
         }
         score = _weighted_score(
             score_signals,
