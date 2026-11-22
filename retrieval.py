@@ -672,10 +672,18 @@ class MemoryRetriever:
             graph_scores = self.store.association_scores(
                 {str(result.memory["id"]): result.score for result in seeds}, depth=graph_depth
             )
+            # Same cached edge sets the selection pass uses: these are per-turn queries
+            # over a handful of ids, but they were two of them (#219).
             graph_superseded = (
-                self.store.superseded_ids(list(graph_scores)) if temporal_mode == "current" else set()
+                {mid for mid in graph_scores if mid in self._edge_sets("supersedes")[1]}
+                if temporal_mode == "current"
+                else set()
             )
-            graph_contradicted = self.store.contradicted_ids(list(graph_scores))
+            graph_contradicts = self._edge_sets("contradicts")
+            graph_contradicted = {
+                mid for mid in graph_scores
+                if mid in graph_contradicts[0] or mid in graph_contradicts[1]
+            }
             new_neighbors = [memory_id for memory_id in graph_scores if memory_id not in scored]
             graph_feedback = self.store.context_feedback_many(new_neighbors, retrieval_context.as_record())
             neighbor_memories = {str(memory["id"]): memory for memory in self.store.get_memories(new_neighbors)}
@@ -720,6 +728,16 @@ class MemoryRetriever:
         stage_ms["graph"] = (time.perf_counter() - stage_start) * 1000
         stage_start = time.perf_counter()
 
+        def _mark(label: str) -> None:
+            """Record one sub-stage's elapsed time and restart the clock.
+
+            `select` used to be a single number covering nine passes, so a 33ms reading could
+            not say which pass owned it. Every pass now reports itself (#219).
+            """
+            nonlocal stage_start
+            stage_ms[label] = (time.perf_counter() - stage_start) * 1000
+            stage_start = time.perf_counter()
+
         # Optional semantic fusion. This AUGMENTS the candidate pool rather than
         # merely re-ranking it: the measured gain comes from embeddings finding
         # memories the lexical signals never surfaced, which re-ranking alone
@@ -739,7 +757,7 @@ class MemoryRetriever:
         else:
             if self.semantic_weight > 0.0 and budget.expired():
                 stage_ms["semantic_skipped"] = 1.0
-        stage_ms["semantic"] = (time.perf_counter() - stage_start) * 1000
+        _mark("semantic")
 
         # Entity evidence: a memory reachable *only* because the query named an entity is
         # relevant by association, and no lexical signal will ever speak for it.
@@ -759,6 +777,7 @@ class MemoryRetriever:
                 entity_boosted += 1
             if entity_boosted:
                 stage_ms["entity_boosted_count"] = float(entity_boosted)
+        _mark("entity")
 
         # Stage two: rerank the top slice with BM25 over the actual contents, so a memory
         # that contains the query's exact terms beats one that merely shares a category.
@@ -771,25 +790,39 @@ class MemoryRetriever:
                 # candidate pool is never silently shrunk to the rerank window.
                 scored = {r.memory["id"]: r for r in [*reranked_head, *tail]}
                 stage_ms["reranked"] = float(reranked)
+        _mark("rerank")
 
         # A memory that something else supersedes is history: reachable, never winning a
         # tie against its replacement.
         # Historical recall wants the old value — that is the question being asked. Demote
         # superseded memories only when the turn is about what is true now.
+        # `superseded_ids(store)` is the whole superseded set and costs ~12ms per turn; it
+        # only changes when an edge changes, so it is cached per store revision (#219).
+        all_superseded = (
+            self.precompute.get(
+                "superseded_all",
+                lambda: superseded_ids(self.store),
+                revision=revision_of(self.store),
+            )
+            if temporal_mode != "historical"
+            else set()
+        )
         scored_list, superseded_demoted = (
-            apply_validity_penalty(scored.values(), superseded_ids(self.store))
+            apply_validity_penalty(scored.values(), all_superseded)
             if temporal_mode != "historical"
             else (list(scored.values()), 0)
         )
         if superseded_demoted:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["superseded_demoted"] = float(superseded_demoted)
+        _mark("validity")
 
         # A fact restated over months should settle near-ties against one fresh sentence.
         scored_list, stability_boosted = apply_stability_blend(scored.values())
         if stability_boosted:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["stability_boosted"] = float(stability_boosted)
+        _mark("stability")
 
         # If the query said what it does not want, do not return it confidently.
         if getattr(self, "negative_cues_enabled", True):
@@ -801,6 +834,7 @@ class MemoryRetriever:
         if negative_cue_suppressed:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["negative_cue_suppressed"] = float(negative_cue_suppressed)
+        _mark("negative_cues")
 
         # Rank on use, not on retrieval count: a memory that informed an answer is worth
         # more than one that merely matched a query.
