@@ -491,6 +491,7 @@ class AutoJudge:
 
         candidate_records: list[dict[str, Any]] = []
         provider_candidates: list[dict[str, Any]] = []
+        provider_candidates_learned: list[str] = []
         for proposal in candidates:
             record = _provider_candidate(proposal)
             # Attach related memories for connection-aware judging
@@ -512,6 +513,58 @@ class AutoJudge:
 
         # Idempotency: if a completed review already exists for this exact
         # proposal and candidate hash, skip the provider call entirely.
+        # Learned rejections (#35): a proposal covered by a rule from an earlier rejection is
+        # dismissed without a model call. Only agent proposals reach here, and a rule never
+        # matches user-stated material, so this cannot bury something the user said.
+        from . import reject_learn
+
+        learned_out: list[dict[str, Any]] = []
+        kept: list[dict[str, Any]] = []
+        for proposal in provider_candidates:
+            covered = reject_learn.check(
+                store,
+                str(proposal.get("content") or ""),
+                source_category=str(proposal.get("source_category") or ""),
+            )
+            if covered is None:
+                kept.append(proposal)
+                continue
+            learned_out.append(
+                {
+                    "proposal_id": str(proposal["proposal_id"]),
+                    "rule_id": covered.rule_id,
+                    "reason": covered.describe(),
+                    "revision": creation_proposal_revision(proposal),
+                }
+            )
+            if str(proposal["proposal_id"]) not in provider_candidates_learned:
+                provider_candidates_learned.append(str(proposal["proposal_id"]))
+        if learned_out:
+            provider_candidates = kept
+            report["rejected_by_rule"] = len(learned_out)
+            report.setdefault("withheld", []).extend(learned_out[:20])
+            for item in learned_out:
+                reject_learn.note_hit(store, item["rule_id"])
+                # Dismiss it in the store too: a learned rejection that leaves the proposal
+                # pending would stall the backlog, which is the opposite of the point.
+                try:
+                    store.review_memory_creation(
+                        item["proposal_id"],
+                        "reject",
+                        reason_text=item["reason"],
+                        actor="autojudge-learned-rule",
+                        approval_authority="automatic",
+                        # Automatic review needs the revision it is acting on, so a stale
+                        # worker cannot overwrite a decision a human made in the meantime.
+                        expected_revision=str(item.get("revision") or ""),
+                    )
+                except Exception:  # noqa: BLE001 - a failed dismissal is retried next run
+                    pass
+            if not provider_candidates:
+                # Everything offered was already covered by a learned rule; nothing to send.
+                report["selected"] = len(learned_out)
+                return report
+
         duplicates = _find_already_reviewed_candidates(store, provider_candidates)
         if duplicates:
             for proposal in provider_candidates:
@@ -780,6 +833,17 @@ class AutoJudge:
                 report["evidence_only"] += 1
             elif status == "rejected":
                 report["rejected"] += 1
+                # Teach the next run (#35): the reason, not just the verdict.
+                try:
+                    reject_learn.record(
+                        store,
+                        str(proposal.get("content") or decision.get("content") or ""),
+                        reason_code=str(decision.get("reason_code") or "low_confidence"),
+                        reason_text=str(decision.get("reason") or ""),
+                        source="autojudge",
+                    )
+                except Exception:  # noqa: BLE001 - learning must never break a decision that stuck
+                    pass
             elif status == "needs_context":
                 report["needs_context"] += 1
 

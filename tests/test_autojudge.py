@@ -635,13 +635,20 @@ class AutoJudgeTests(unittest.TestCase):
         # Newest-first: the freshest pending proposal is judged before older ones.
         self.assertEqual(seen, [proposals[-1]["proposal_id"]])
 
-        # Anti-starvation: the newest is now decided and out of the pending pool,
-        # so the next run walks back to the next newly-pending candidate.
-        judge.run(self.store)
-        self.assertEqual(
-            seen,
-            [proposals[-1]["proposal_id"], proposals[-2]["proposal_id"]],
-        )
+        # Anti-starvation: the newest is now decided and out of the pending pool. The next
+        # run finds a candidate that its own rejection now covers, so it is dismissed by the
+        # learned rule without a model call (#35) and the window keeps walking backwards.
+        second = judge.run(self.store)
+        self.assertEqual(seen, [proposals[-1]["proposal_id"]])
+        self.assertGreaterEqual(second["rejected_by_rule"], 1)
+
+        # The backlog still drains: repeated runs keep dismissing covered candidates and the
+        # pending pool shrinks without paying for a model call each time.
+        before = len(self.store.list_memory_creation_proposals(status="pending", limit=500))
+        for _ in range(3):
+            judge.run(self.store)
+        after = len(self.store.list_memory_creation_proposals(status="pending", limit=500))
+        self.assertLess(after, before)
 
     def test_provider_receives_nested_candidate_scope_and_context(self) -> None:
         proposal = self.store.propose_memory_creation(
