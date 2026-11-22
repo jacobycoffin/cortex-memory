@@ -60,6 +60,7 @@ def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
     precisions: list[float] = []
     reciprocal_ranks: list[float] = []
     selections: list[tuple[str, ...]] = []
+    warm_timeouts: dict[int, bool] = {}
     useful_hits = 0
     cpu_started = time.process_time_ns()
     try:
@@ -70,6 +71,13 @@ def _condition(path: Path, labels: Sequence[RetrievalLabel], *, preload: bool,
                 if not provider._preloader.wait_idle(timeout=30):
                     raise ValueError('oracle warming did not finish')
             time.sleep(lead_ms / 1000)
+            # Determinism, not politeness: the claim under test is "preloading does not change the
+            # selection". With a cold or half-warm queue that claim is being tested against a race,
+            # and on a loaded runner it fails for a reason that has nothing to do with the design.
+            # Join the queued warm before asking the question; a slow warm is recorded, not hidden.
+            if preload and provider._preloader and not warm_timeouts.get(len(selections), False):
+                if not provider._preloader.wait_idle(timeout=30):
+                    warm_timeouts[len(selections)] = True
             hits_before = provider.preload_stats()['cache']['preload_hits']
             started = time.perf_counter_ns()
             provider.prefetch(label.query, session_id='preload-evaluation')
@@ -155,8 +163,18 @@ def evaluate_preload(db: Path, labels: Sequence[RetrievalLabel], *,
         'added_process_cpu_ms': added_cpu(old['process_cpu_ms'], new['process_cpu_ms'], len(labels)),
         'p95_latency_delta_ms': round(new['foreground_latency_ms']['p95_ms'] -
                                     old['foreground_latency_ms']['p95_ms'], 6),
-        'correctness': {'selection_matches_control': selections['control'] == selections['preload'],
-                        'worker_failed_jobs': new['worker'].get('failed', 0)},
+        'correctness': {
+            'selection_matches_control': selections['control'] == selections['preload'],
+            'worker_failed_jobs': new['worker'].get('failed', 0),
+            # Which cases disagreed, by index only - never the query, the memory or the text. A bare
+            # False on a loaded runner is undiagnosable; an index and a hit count are not.
+            'mismatch_case_indices': [
+                index for index, (left, right) in enumerate(
+                    zip(selections['control'], selections['preload'])) if left != right
+            ],
+            'control_cases': len(selections['control']),
+            'preload_cases': len(selections['preload']),
+        },
         'privacy': {'raw_private_text_omitted': True, 'per_case_rows_omitted': True},
         'claim_boundary': (
             'Offline Hermes-adapter label replay, not live traffic or model task success. '
