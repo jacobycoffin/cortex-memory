@@ -83,7 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import dry_run, entity_timeline, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
+from . import dry_run, entity_timeline, negative_facts, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -157,6 +157,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "undo_consolidation",
                     "dry_run",
                     "timeline",
+                    "negation",
                 ],
             },
             "content": {
@@ -1525,6 +1526,17 @@ class CortexMemoryProvider(MemoryProvider):
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
+            if action == "negation":
+                # Is this statement believed, denied, contradictory, or unknown? (#58)
+                statement = str(args.get("content") or args.get("query") or "").strip()
+                if not statement:
+                    return _json_error("content is required")
+                return _json_ok(
+                    answer=negative_facts.answer(self._store, statement),
+                    negatives=negative_facts.negatives(self._store)[:10],
+                    recorded=negative_facts.report(self._store),
+                )
+
             if action == "timeline":
                 # What changed about this thing, in order (#50). Read-only.
                 entity = str(args.get("entity") or args.get("query") or "").strip()
@@ -2032,6 +2044,12 @@ class CortexMemoryProvider(MemoryProvider):
                 assessment=assessment,
             )
             proposal_id = str(proposal["proposal_id"])
+            # Record polarity while the wording is in hand (#58), so a later reader does not have
+            # to re-parse English to know whether this row said "not".
+            try:
+                negative_facts.record(self._store, proposal_id, candidate.content)
+            except Exception:  # noqa: BLE001 - polarity is metadata, never a reason to lose a write
+                pass
             # Keep the sentence this candidate came from (#42), against the proposal — a fact
             # often waits in review, and the audit trail must not start at promotion.
             try:
