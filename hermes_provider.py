@@ -83,7 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
+from . import dry_run, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -155,6 +155,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "repair",
                     "consolidate",
                     "undo_consolidation",
+                    "dry_run",
                 ],
             },
             "content": {
@@ -1521,6 +1522,27 @@ class CortexMemoryProvider(MemoryProvider):
                     redacted=sanitized.redacted,
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
+                )
+
+            if action == "dry_run":
+                # "What would you remember from this?" — answered without writing (#46).
+                text = str(args.get("content") or "").strip()
+                if not text:
+                    return _json_error("content is required")
+                projected = dry_run.project(
+                    self._store,
+                    text,
+                    role=str(args.get("role") or "user"),
+                    source_category=str(args.get("source_category") or "USER_EXPLICIT"),
+                    session_id=self._session_id,
+                )
+                return _json_ok(
+                    summary=dry_run.summarise(projected),
+                    rendered=dry_run.render(projected),
+                    counts=projected["counts"],
+                    facts=projected["facts"],
+                    written=0,
+                    message="Dry run only: nothing was stored.",
                 )
 
             if action == "search":
