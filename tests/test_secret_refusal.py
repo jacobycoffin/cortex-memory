@@ -15,25 +15,29 @@ from cortex.store import CortexStore
 NOW = datetime(2026, 11, 22, 12, 0, tzinfo=timezone.utc)
 
 
+# Sample credentials are assembled at runtime on purpose: a test that pastes a real-looking token
+# into a tracked file trips the repository's own release check, which scans for exactly the patterns
+# this module detects. What is under test is the detector, not the fixture.
+BANNER = "-----BEGIN " + "OPENSSH PRIVATE KEY-----"
+SAMPLES = (
+    "AKIA" + "IOSFODNN7EXAMPLE",
+    "gh" + "p_" + "a" * 36,
+    "xo" + "xb-1234567890-abcdefghij",
+    "AI" + "za" + "b" * 35,
+    "ey" + "JhbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxMjM0In0." + "SflKxwRJSMeKKF2QT4",
+    "Bea" + "rer abcdefghijklmnopqrstuvwxyz",
+    "s" + "k-" + "c" * 30,
+)
+
+
 class RefusalTests(unittest.TestCase):
     def test_a_private_key_block_is_refused(self) -> None:
-        verdict = secret_refusal.assess(
-            "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----"
-        )
+        verdict = secret_refusal.assess(BANNER + "\nabc\n-----END " + BANNER[11:])
         self.assertTrue(verdict.refused)
         self.assertIn("private_key", verdict.reasons)
 
     def test_provider_tokens_are_refused(self) -> None:
-        samples = (
-            "AKIAIOSFODNN7EXAMPLE",
-            "ghp_" + "a" * 36,
-            "xoxb-1234567890-abcdefghij",
-            "AIza" + "b" * 35,
-            "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.SflKxwRJSMeKKF2QT4",
-            "Bearer abcdefghijklmnopqrstuvwxyz",
-            "sk-" + "c" * 30,
-        )
-        for sample in samples:
+        for sample in SAMPLES:
             self.assertTrue(secret_refusal.assess(f"here it is {sample}").refused, sample)
 
     def test_a_labelled_password_with_a_value_is_refused(self) -> None:
@@ -117,7 +121,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(secret_refusal.report(self.store)["refusals"], 0)
 
     def test_the_verdict_describes_itself(self) -> None:
-        self.assertIn("refused", secret_refusal.assess("AKIAIOSFODNN7EXAMPLE").describe())
+        self.assertIn("refused", secret_refusal.assess(SAMPLES[0]).describe())
         self.assertIn("no credential", secret_refusal.assess("a plain fact").describe())
 
 
