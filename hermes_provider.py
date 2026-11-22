@@ -83,7 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import quotes, secret_refusal  # (#42, #43)
+from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -1501,6 +1501,13 @@ class CortexMemoryProvider(MemoryProvider):
                         else "repeated candidate added evidence to an existing review proposal"
                     ),
                 )
+                if sanitized.redacted:
+                    try:
+                        redaction_receipt.record_sanitized(
+                            self._store, proposal_id, sanitized, kind="proposal"
+                        )
+                    except Exception:  # noqa: BLE001 - a receipt never blocks a capture
+                        pass
                 return _json_ok(
                     proposal_id=proposal_id,
                     created=created,
@@ -1512,6 +1519,8 @@ class CortexMemoryProvider(MemoryProvider):
                         else "Candidate matched an existing review proposal; recurrence evidence was updated."
                     ),
                     redacted=sanitized.redacted,
+                    # A redaction leaves a receipt naming the pattern, never the value (#44).
+                    redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
             if action == "search":

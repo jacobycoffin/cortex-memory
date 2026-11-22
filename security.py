@@ -63,11 +63,31 @@ _INJECTION_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+
+def _secret_label(replacement: str) -> str:
+    """Turn a replacement template into a short, value-free label ("api key", "private key").
+
+    The templates are either constant ("[REDACTED AWS KEY]") or carry a backreference to the matched
+    label ("\\1=[REDACTED]", "\\1 is [REDACTED]"). A backreference means "a labelled credential",
+    which for every such pattern in this table is a password-shaped secret.
+    """
+    raw = str(replacement)
+    if "\\1" in raw:
+        return "password"
+    text = re.sub(r"[\[\]]", "", raw)
+    text = re.sub(r"REDACTED", "", text, flags=re.IGNORECASE)
+    text = _WHITESPACE.sub(" ", text).strip().lower()
+    return text or "credential"
+
+
 @dataclass(frozen=True)
 class SanitizedMemory:
     text: str
     quarantine_reason: str | None = None
     redacted: bool = False
+    # What kind of secret was replaced (#44). Labels describe the pattern, never the value, so a
+    # receipt can say "api key" without the receipt becoming the leak.
+    redactions: tuple[str, ...] = ()
 
 
 def normalize_text(text: str) -> str:
@@ -79,17 +99,20 @@ def sanitize_memory(text: str) -> SanitizedMemory:
     """Redact secrets and identify content that must not enter prompt recall."""
     cleaned = normalize_text(text)
     redacted = False
+    labels: list[str] = []
     for pattern, replacement in _SECRET_PATTERNS:
         updated, count = pattern.subn(replacement, cleaned)
         if count:
             redacted = True
             cleaned = updated
+            labels.extend([_secret_label(replacement)] * count)
 
     reasons = [reason for pattern, reason in _INJECTION_PATTERNS if pattern.search(cleaned)]
     return SanitizedMemory(
         text=cleaned,
         quarantine_reason=", ".join(sorted(set(reasons))) or None,
         redacted=redacted,
+        redactions=tuple(sorted(set(labels))),
     )
 
 
