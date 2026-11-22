@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import path_query  # (#75)
+from . import cross_project, path_query  # (#75, #78)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -166,6 +166,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "constraints",
                     "reviews",
                     "path",
+                    "bridges",
                 ],
             },
             "content": {
@@ -1532,6 +1533,20 @@ class CortexMemoryProvider(MemoryProvider):
                     redacted=sanitized.redacted,
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
+                )
+
+            if action == "bridges":
+                # A memory from another project, only when the match is strong, always labelled
+                # (#78). Off by default: the measurement decides (CORTEX_CROSS_PROJECT=1).
+                query = str(args.get("query") or args.get("content") or "").strip()
+                if not query:
+                    return _json_error("query is required")
+                project = str(args.get("project") or "").strip()
+                found = cross_project.find(self._store, query, active_project=project)
+                return _json_ok(
+                    enabled=cross_project.enabled(),
+                    bridges=[bridge.as_dict() for bridge in found],
+                    rendered=cross_project.render(found),
                 )
 
             if action == "path":
