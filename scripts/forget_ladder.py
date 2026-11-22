@@ -34,6 +34,15 @@ def main() -> int:
 
     store = CortexStore(Path(args.db))
     try:
+        described = ladder.policy()
+        print("policy:", described["version"], "| never walks:", ", ".join(described["never_walk"]))
+        print(
+            "windows:",
+            ", ".join(
+                f"{kind} {'/'.join(str(day) for day in dwell)}d"
+                for kind, dwell in described["dwell_days"].items()
+            ),
+        )
         print("states:", ladder.state_counts(store))
         sweep = ladder.plan(store, limit=args.limit, max_per_transition=args.per_transition)
         print("planned:", sweep.summary)

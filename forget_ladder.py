@@ -26,6 +26,7 @@ that is still informing answers must never be demoted for want of a new restatem
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -33,19 +34,61 @@ from typing import Any
 LADDER = ("active", "cold", "archived", "tombstoned")
 _NEXT = {state: LADDER[index + 1] for index, state in enumerate(LADDER[:-1])}
 
+POLICY_VERSION = "forget-ladder-v2"
+
 # (days quiet before cool, before archive, before tombstone). Measured from last use.
+#
+# The windows are the declared policy, not a guess: episodes are working notes and go first
+# (30/90/180d), semantic facts follow (90/180/365d), and the kinds that describe how things are
+# done or who the user is are never walked automatically at all — a stale procedure is still
+# the procedure, and losing it is the failure this whole ladder is supposed to avoid.
 DWELL_DAYS: dict[str, tuple[int, int, int]] = {
-    "episode": (7, 30, 120),
-    "episodic": (7, 30, 120),
-    "semantic": (120, 240, 540),
-    "procedural": (240, 480, 900),
-    "preference": (365, 730, 1825),
-    "identity": (365, 730, 1825),
+    "episode": (30, 90, 180),
+    "episodic": (30, 90, 180),
+    "semantic": (90, 180, 365),
 }
-# Kinds whose whole purpose is to be recalled later, or that describe who the user is: the
-# ladder never touches them. A commitment ends by being done, not by going quiet.
-NEVER_WALK = frozenset({"prospective", "commitment", "tool", "correction"})
+# Never walked automatically: preferences and procedures (declared policy), plus the kinds whose
+# purpose is to be recalled later or that report a state of the world. Those end by being
+# resolved or corrected, never by going quiet.
+NEVER_WALK = frozenset(
+    {
+        "preference",
+        "procedural",
+        "procedure",
+        "identity",
+        "prospective",
+        "commitment",
+        "tool",
+        "correction",
+    }
+)
 DEFAULT_DWELL = (180, 365, 730)
+# environment overrides, e.g. CORTEX_FORGET_EPISODE_DAYS="45,120,240"
+_ENV_PREFIX = "CORTEX_FORGET_"
+
+
+def policy() -> dict[str, Any]:
+    """The effective windows, so a run can say which policy it used."""
+    return {
+        "version": POLICY_VERSION,
+        "dwell_days": {kind: list(dwell) for kind, dwell in DWELL_DAYS.items()},
+        "default_dwell": list(DEFAULT_DWELL),
+        "never_walk": sorted(NEVER_WALK),
+    }
+
+
+def _env_dwell(kind: str) -> tuple[int, int, int] | None:
+    raw = os.environ.get(f"{_ENV_PREFIX}{kind.upper()}_DAYS", "").strip()
+    if not raw:
+        return None
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    try:
+        values = tuple(int(float(part)) for part in parts)
+    except ValueError:
+        return None
+    if len(values) != 3 or any(value < 0 for value in values):
+        return None
+    return values  # type: ignore[return-value]
 
 
 def _utc(text: Any) -> datetime | None:
@@ -104,7 +147,16 @@ class Sweep:
 
 
 def _dwell_for(kind: str) -> tuple[int, int, int]:
-    return DWELL_DAYS.get(str(kind or "").strip().lower(), DEFAULT_DWELL)
+    name = str(kind or "").strip().lower()
+    override = _env_dwell(name)
+    if override is not None:
+        return override
+    return DWELL_DAYS.get(name, DEFAULT_DWELL)
+
+
+def walks(kind: str) -> bool:
+    """Whether this kind may ever be moved automatically."""
+    return str(kind or "").strip().lower() not in NEVER_WALK
 
 
 def _threshold(state: str, dwell: tuple[int, int, int]) -> int | None:
