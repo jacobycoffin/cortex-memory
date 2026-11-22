@@ -137,6 +137,8 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "remember",
                     "search",
                     "correct",
+                    "core",
+                    "core_edit",
                     "pin",
                     "archive",
                     "forget",
@@ -153,7 +155,10 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
             },
             "content": {
                 "type": "string",
-                "description": "Candidate memory text for remember, or replacement text for correct.",
+                "description": (
+                    "Candidate memory text for remember, or replacement text for correct "
+                    "and core_edit."
+                ),
             },
             "query": {"type": "string", "description": "Search query."},
             "memory_id": {"type": "string", "description": "Full Cortex ID or unique displayed prefix."},
@@ -1492,6 +1497,52 @@ class CortexMemoryProvider(MemoryProvider):
                     reason="explicit correction preserved prior version" if changed else "correction target was unchanged",
                 )
                 return _json_ok(memory_id=memory_id, corrected=changed)
+
+            if action == "core":
+                # What is in the always-on block right now, read from the same queries that
+                # render it — from any channel (#126).
+                from .core_block import build as build_core_block
+
+                block = build_core_block(self._store)
+                return _json_ok(
+                    chars=block.chars,
+                    estimated_tokens=block.estimated_tokens,
+                    pinned=block.pinned,
+                    commitments=block.commitments,
+                    entries=[
+                        line
+                        for line in block.text.splitlines()[1:]
+                    ],
+                )
+
+            if action == "core_edit":
+                # Editing the block from chat means editing the *fact*, not the rendering:
+                # `correct_memory` versions the change, and membership is re-asserted so the
+                # new text stays in core.
+                memory_id = self._resolve(args.get("memory_id"))
+                content = str(args.get("content") or "").strip()
+                if not memory_id or not content:
+                    return _json_error("an unambiguous memory_id and content are required")
+                sanitized = sanitize_memory(content)
+                if sanitized.quarantine_reason:
+                    return _json_error(f"edited content quarantined: {sanitized.quarantine_reason}")
+                if sanitized.redacted:
+                    # A redacted edit is a secret the user tried to store in the block; the
+                    # correction path quarantines these, so this one refuses them outright.
+                    return _json_error(
+                        "edited content contained a secret and was not stored; "
+                        "reference an approved secret manager instead"
+                    )
+                changed = self._store.correct_memory(
+                    memory_id,
+                    sanitized.text,
+                    reason=str(args.get("reason") or "edited from chat"),
+                )
+                if changed:
+                    promote(
+                        self._store, memory_id, by="edit", reason="edited while in core"
+                    )
+                return _json_ok(memory_id=memory_id, edited=bool(changed))
 
             if action == "pin":
                 memory_id = self._resolve(args.get("memory_id"))
