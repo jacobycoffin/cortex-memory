@@ -83,7 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import quotes  # (#42)
+from . import quotes, secret_refusal  # (#42, #43)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -1386,6 +1386,20 @@ class CortexMemoryProvider(MemoryProvider):
                     quota.ensure(self._store)
                 except Exception:  # noqa: BLE001 - a guard must never block a capture
                     pass
+                # A credential is refused, not scrubbed (#43): a row saying "password =
+                # [REDACTED]" claims the store knows the value. Assessed on the raw text,
+                # before redaction can hide what was there.
+                verdict = secret_refusal.assess(content)
+                if verdict.refused:
+                    secret_refusal.note_refusal(self._store, verdict)
+                    return _json_ok(
+                        refused=True,
+                        reason=verdict.describe(),
+                        message=(
+                            "This looks like a credential, so nothing was stored. Keep secrets in "
+                            "the vault and store a pointer instead."
+                        ),
+                    )
                 sanitized = sanitize_memory(content)
                 # A restatement of something already held is evidence, not a new memory
                 # (#216): it confirms the existing row instead of adding a near-duplicate.
@@ -1887,6 +1901,26 @@ class CortexMemoryProvider(MemoryProvider):
             return []
         proposal_ids: list[str] = []
         for candidate in extract_candidates(text, role=role):
+            # A credential anywhere in a candidate refuses that candidate (#43). The rest of the
+            # turn is still captured: one pasted key must not cost the user their other facts.
+            verdict = secret_refusal.assess(candidate.content)
+            if verdict.refused:
+                try:
+                    secret_refusal.note_refusal(self._store, verdict)
+                except Exception:  # noqa: BLE001
+                    pass
+                if action_sink is not None:
+                    action_sink.append(
+                        {
+                            "action": "refused",
+                            "memory_id": None,
+                            "proposal_id": None,
+                            "kind": candidate.kind,
+                            "state": "refused",
+                            "reason": verdict.describe(),
+                        }
+                    )
+                continue
             sanitized = sanitize_memory(candidate.content)
             scoped_to_project = bool(
                 self._active_project
