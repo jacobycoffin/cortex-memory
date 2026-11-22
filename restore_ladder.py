@@ -90,6 +90,13 @@ def restore(
             conn.execute("DELETE FROM suppressions WHERE memory_id = ?", (memory_id,))
     except Exception:  # noqa: BLE001 - table only exists once suppression has been used
         pass
+    # Compaction deletes the derived feature rows of retired memories (#98), and those rows are how
+    # the retriever finds a memory at all. Restoring therefore re-indexes, or "restored" would mean
+    # "present but invisible" — the worst of both states.
+    try:
+        store._backfill_memory_features()
+    except Exception:  # noqa: BLE001 - a restore must not fail on a re-index attempt
+        pass
     result.count = restore_count(store, memory_id)
     if protect_at > 0 and result.count >= protect_at and not is_protected(store, memory_id):
         store.set_pinned(memory_id, True)
