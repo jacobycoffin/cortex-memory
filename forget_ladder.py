@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import dormancy
+
 LADDER = ("active", "cold", "archived", "tombstoned")
 _NEXT = {state: LADDER[index + 1] for index, state in enumerate(LADDER[:-1])}
 
@@ -338,7 +340,8 @@ def plan(
         # has been promoted, so the join is conditional rather than assumed.
         (
             """SELECT m.id, m.kind, m.state, m.pinned, m.importance, m.last_used_at,
-                      m.last_helpful_at, c.last_confirmed_at, m.created_at
+                      m.last_helpful_at, c.last_confirmed_at, m.created_at,
+                      m.retrieved_count, m.injected_count, m.used_count
                FROM memories m
                LEFT JOIN core_members c ON c.memory_id = m.id
                WHERE m.state IN ('active','cold','archived')
@@ -346,7 +349,8 @@ def plan(
                LIMIT ?"""
             if has_core
             else """SELECT m.id, m.kind, m.state, m.pinned, m.importance, m.last_used_at,
-                           m.last_helpful_at, NULL AS last_confirmed_at, m.created_at
+                           m.last_helpful_at, NULL AS last_confirmed_at, m.created_at,
+                           m.retrieved_count, m.injected_count, m.used_count
                     FROM memories m
                     WHERE m.state IN ('active','cold','archived')
                     ORDER BY COALESCE(m.last_used_at, m.last_helpful_at, m.created_at) ASC
@@ -373,7 +377,11 @@ def plan(
         next_state = _NEXT.get(state)
         if next_state is None:
             continue
-        threshold = _threshold(state, _dwell_for(kind, store, regrets=regrets))
+        # Dormancy narrows the window for memories that were offered many times and never used
+        # (#94). It runs after regret, so a kind that has been forgotten wrongly widens first.
+        assessment = dormancy.assess(row)
+        dwell = dormancy.apply_to(_dwell_for(kind, store, regrets=regrets), row)
+        threshold = _threshold(state, dwell)
         used = last_use(row)
         if threshold is None or used is None:
             skipped["no_usable_timestamp"] = skipped.get("no_usable_timestamp", 0) + 1
@@ -397,6 +405,12 @@ def plan(
                 reason=(
                     f"{kind or 'unknown'} quiet {quiet_days:.0f}d at or past the "
                     f"{threshold}d {state}->{next_state} threshold"
+                    + (
+                        f" (window halved by dormancy: {assessment.retrieved} offers, "
+                        f"{assessment.used} uses)"
+                        if dormancy.scale(row) != 1.0
+                        else ""
+                    )
                 ),
             )
         )
