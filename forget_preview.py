@@ -147,6 +147,26 @@ def preview(
     )
 
 
+def record_envelope(
+    store: Any, ids: list[str], query: str, *, at: datetime | None = None
+) -> str:
+    """Create an envelope for an explicit id set (#95 uses this for entity matches).
+
+    Same contract as `preview`: the envelope names exactly these ids, expires, and can only be
+    applied once — so an entity forget is auditable by the mechanism that already exists.
+    """
+    _ensure(store)
+    stamp = (at or _utc_now()).isoformat()
+    envelope = envelope_for([str(item) for item in ids], query, stamp)
+    with store.transaction() as conn:
+        conn.execute(
+            f"INSERT OR REPLACE INTO {_TABLE}(envelope, query, ids_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (envelope, query, json.dumps([str(item) for item in ids]), stamp),
+        )
+    return envelope
+
+
 def _expiry(created_at: str) -> datetime | None:
     try:
         stamp = datetime.fromisoformat(created_at)
