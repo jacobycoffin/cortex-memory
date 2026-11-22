@@ -1474,6 +1474,9 @@ class MemoryRetriever:
             "contradiction_risk": float(contradicted),
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "prospective_due": float(memory.get("prospective_due_score") or 0.0),
+            # Reported, not scored (#48): a dispute says the store has not resolved which source
+            # is right, which is not evidence that this memory is worse.
+            "disputed": float(bool(memory.get("disputed"))),
             "context_candidate": min(1.0, float(memory.get("context_candidate_score", 0.0)) / 4.0),
             "context_historical_usefulness": float(context_feedback["usefulness"]),
             "context_feedback_observations": min(
