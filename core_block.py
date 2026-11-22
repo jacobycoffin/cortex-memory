@@ -89,6 +89,7 @@ _IMPORTANT_SQL = """
     {core_join}
     WHERE m.state = 'active' AND m.pinned = 0 {recent_exclusion}
     ORDER BY m.importance DESC, m.confirmed_count DESC, m.used_count DESC, m.id ASC
+    LIMIT 200
 """
 
 # `prospective_items` keys on `memory_id` and carries no content of its own — the note lives
@@ -207,6 +208,7 @@ _RECENT_SQL = """
       AND COALESCE(m.last_used_at, m.created_at) >= ?
       AND m.pinned = 0
     ORDER BY COALESCE(m.last_used_at, m.created_at) DESC, m.id ASC
+    LIMIT 50
 """
 
 
@@ -245,6 +247,12 @@ def classify_section(row: dict[str, Any]) -> str:
     return "general"
 
 
+# A section never renders more than a few lines, so classifying more than this many
+# candidates for one section is wasted work — and classification is the expensive part
+# (seven regexes per memory), not the SQL: 200 rows cost ~24ms of Python.
+PER_SECTION_SHORTLIST = 8
+
+
 def _bucket(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     buckets: dict[str, list[dict[str, Any]]] = {name: [] for name in SECTIONS}
     seen: set[str] = set()
@@ -253,7 +261,18 @@ def _bucket(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
         if not memory_id or memory_id in seen:
             continue
         seen.add(memory_id)
-        buckets["commitments" if row.get("__commitment") else classify_section(row)].append(row)
+        if row.get("__commitment"):
+            section = "commitments"
+        else:
+            # Cheap check first: if the kind maps to a section that is already full, skip the
+            # regex chain entirely.
+            kind_section = KIND_SECTIONS.get(str(row.get("kind") or "").strip().lower())
+            if kind_section and len(buckets[kind_section]) >= PER_SECTION_SHORTLIST:
+                continue
+            section = classify_section(row)
+        if len(buckets[section]) >= PER_SECTION_SHORTLIST:
+            continue
+        buckets[section].append(row)
     return buckets
 
 
