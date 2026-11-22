@@ -153,11 +153,22 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
     reinforced = 0
     skipped = 0
     capped = 0
+    vetoed = 0
     for gate in plan(store, at=at, limit=limit):
         if not gate.eligible:
             skipped += 1
             continue
         left, right = gate.pair
+        # A person's "these are unrelated" outranks any amount of co-occurrence (#79): a veto that
+        # only nudged the weight would be undone by the next sweep.
+        try:
+            from . import assoc_feedback
+
+            if assoc_feedback.veto(store, left, right):
+                vetoed += 1
+                continue
+        except Exception:  # noqa: BLE001 - feedback must never stop the pass
+            pass
         # Degree cap (#73): a memory that co-occurs with everything is a routing problem, not a
         # fact. Past the cap the edge is recorded as overflow for a future topic node, so the
         # refusal is a row rather than a silent drop.
@@ -196,7 +207,7 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
         except Exception:  # noqa: BLE001 - one pair must not abort the batch
             skipped += 1
     return {"created": created, "reinforced": reinforced, "skipped": skipped,
-            "capped": capped}
+            "capped": capped, "vetoed": vetoed}
 
 
 def report(store: Any, *, at: datetime | None = None) -> dict[str, Any]:
