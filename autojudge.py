@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
-from . import jev, write_throttle
+from . import jev, quotes, write_throttle
 from .retrieval import MemoryRetriever
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
@@ -852,6 +852,15 @@ class AutoJudge:
             status = str(result["status"])
             if status == "remembered":
                 report["remembered"] += 1
+                # The sentence this proposal came from now belongs to its memory (#42).
+                try:
+                    quotes.adopt(
+                        store,
+                        str(proposal["proposal_id"]),
+                        str(result.get("memory_id") or ""),
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
             elif status == "evidence_only":
                 report["evidence_only"] += 1
             elif status == "rejected":

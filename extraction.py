@@ -92,6 +92,9 @@ class Candidate:
     importance: float
     confidence: float
     volatility: float
+    # The sentence as it was actually written, before any anchoring (#40/#42). Kept so a stored
+    # fact can always be traced back to what was said rather than to how it was normalised.
+    source_text: str = ""
 
 
 
@@ -168,6 +171,13 @@ def extract_candidates(text: str, *, role: str = "user") -> list[Candidate]:
         # Anchor relative time while the reference frame is still known (#40): "yesterday" is
         # a different date in a week, and the phrase alone cannot be resolved later.
         candidates.append(
-            Candidate(_anchor(sentence), kind, importance, confidence, volatility)
+            Candidate(
+                content=_anchor(sentence),
+                kind=kind,
+                importance=importance,
+                confidence=confidence,
+                volatility=volatility,
+                source_text=sentence,
+            )
         )
     return candidates
