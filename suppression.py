@@ -184,6 +184,14 @@ def delete(
     row = store.get_memory(resolved)
     if not row:
         raise DeleteRefused("no such memory")
+    # Checked before the pin check on purpose: a held record is also pinned, and "pass
+    # allow_protected to override" must never be the answer for a legal hold (#103).
+    from . import legal_hold
+
+    if legal_hold.is_held(store, resolved):
+        raise DeleteRefused(
+            "memory is on legal hold; release the hold before deleting it"
+        )
     if not allow_protected:
         from .forget_ladder import protections
 
