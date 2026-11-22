@@ -152,11 +152,24 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
     created = 0
     reinforced = 0
     skipped = 0
+    capped = 0
     for gate in plan(store, at=at, limit=limit):
         if not gate.eligible:
             skipped += 1
             continue
         left, right = gate.pair
+        # Degree cap (#73): a memory that co-occurs with everything is a routing problem, not a
+        # fact. Past the cap the edge is recorded as overflow for a future topic node, so the
+        # refusal is a row rather than a silent drop.
+        try:
+            from . import degree_caps
+
+            if not degree_caps.admit(store, left, right, RELATION,
+                                     weight=gate.weight, at=at).admitted:
+                capped += 1
+                continue
+        except Exception:  # noqa: BLE001 - a cap must never stop the pass
+            pass
         try:
             existed = bool(
                 store._conn.execute(
@@ -182,7 +195,8 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
                 created += 1
         except Exception:  # noqa: BLE001 - one pair must not abort the batch
             skipped += 1
-    return {"created": created, "reinforced": reinforced, "skipped": skipped}
+    return {"created": created, "reinforced": reinforced, "skipped": skipped,
+            "capped": capped}
 
 
 def report(store: Any, *, at: datetime | None = None) -> dict[str, Any]:
