@@ -132,7 +132,9 @@ def promote(
     return Promotion(memory_id=str(memory_id), promoted_by=by, reason=reason)
 
 
-def demote(store: Any, memory_id: str, *, reason: str = "") -> bool:
+def demote(
+    store: Any, memory_id: str, *, reason: str = "", at: str | None = None
+) -> bool:
     """Remove a memory from core. Returns whether anything changed.
 
     Demotion never touches the memory itself — only its membership. A demoted fact is still
@@ -144,7 +146,7 @@ def demote(store: Any, memory_id: str, *, reason: str = "") -> bool:
     with store.transaction() as conn:
         cursor = conn.execute(f"DELETE FROM {TABLE} WHERE memory_id = ?", (str(memory_id),))
         if cursor.rowcount:
-            _history(conn, memory_id, "demote", utc_now(), reason or "manual demotion")
+            _history(conn, memory_id, "demote", at or utc_now(), reason or "manual demotion")
         return bool(cursor.rowcount)
 
 
@@ -292,8 +294,9 @@ def demote_stale(
     stale = stale_members(store, days=days, now=now)
     if not apply:
         return stale
+    stamp = now.isoformat() if now is not None else None
     for memory_id, reason in stale:
-        demote(store, memory_id, reason=reason)
+        demote(store, memory_id, reason=reason, at=stamp)
     return stale
 
 
@@ -302,13 +305,16 @@ def history(store: Any, memory_id: str | None = None, *, limit: int = 50) -> lis
     _ensure(store)
     if memory_id:
         rows = store._conn.execute(
+            # `rowid DESC` breaks timestamp ties: two events in the same microsecond used to
+            # come back in insertion order on a fast machine and reversed on a slow one.
             f"SELECT memory_id, action, at, reason FROM {HISTORY_TABLE} "
-            "WHERE memory_id = ? ORDER BY at DESC LIMIT ?",
+            "WHERE memory_id = ? ORDER BY at DESC, rowid DESC LIMIT ?",
             (str(memory_id), limit),
         ).fetchall()
     else:
         rows = store._conn.execute(
-            f"SELECT memory_id, action, at, reason FROM {HISTORY_TABLE} ORDER BY at DESC LIMIT ?",
+            f"SELECT memory_id, action, at, reason FROM {HISTORY_TABLE} "
+            "ORDER BY at DESC, rowid DESC LIMIT ?",
             (limit,),
         ).fetchall()
     return [dict(row) for row in rows]

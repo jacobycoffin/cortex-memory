@@ -148,6 +148,27 @@ class HistoryTests(unittest.TestCase):
         self.assertEqual([event["action"] for event in events], ["demote", "promote"])
         self.assertIn("pin", events[1]["reason"])
 
+    def test_tied_timestamps_order_by_insertion(self) -> None:
+        """Two events in the same instant must not depend on machine speed.
+
+        CI caught this: `ORDER BY at DESC` alone returned promote-then-demote on a fast box
+        and the reverse on a slow one, because both events landed in the same microsecond.
+        """
+        from cortex.promotion import demote
+
+        memory_id = self.store.add_memory(
+            content="A fact with two events in one instant.",
+            kind="semantic",
+            source_type="user_turn",
+            source_category="USER_EXPLICIT",
+        )[0]
+        stamp = "2026-01-01T00:00:00+00:00"
+        promote(self.store, memory_id, at=stamp)
+        demote(self.store, memory_id, at=stamp, reason="same instant")
+        self.assertEqual(
+            [event["action"] for event in history(self.store, memory_id)], ["demote", "promote"]
+        )
+
     def test_history_is_filterable_by_memory(self) -> None:
         first = self.store.add_memory(
             content="First fact.", kind="semantic", source_type="user_turn",
