@@ -220,6 +220,13 @@ def apply(
             f"UPDATE {_TABLE} SET applied_at = ?, applied_ids_json = ? WHERE envelope = ?",
             (now.isoformat(), json.dumps(forgotten), envelope),
         )
+    if forgotten:
+        from . import prune_receipts
+
+        prune_receipts.record(
+            store, "semantic_forget", "tombstone", forgotten,
+            summary=f"envelope {envelope[:12]} for {str(row['query'])[:60]}",
+        )
     return Applied(envelope=envelope, forgotten=forgotten)
 
 

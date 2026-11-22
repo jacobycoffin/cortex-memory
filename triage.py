@@ -193,6 +193,13 @@ def apply(store: Any, batch: Batch | str, *, at: datetime | None = None) -> list
             f"UPDATE {_BATCHES} SET applied_at = ? WHERE batch_id = ?",
             ((at or _utc_now()).isoformat(), record["batch_id"]),
         )
+    if moved:
+        from . import prune_receipts
+
+        prune_receipts.record(
+            store, "triage", record["action"], moved,
+            summary=f"batch {record['batch_id']}",
+        )
     return moved
 
 

@@ -421,6 +421,7 @@ def plan(
 def apply(store: Any, sweep: Sweep) -> dict[str, int]:
     """Move one rung per planned memory. Returns per-transition counts."""
     applied: dict[str, int] = {}
+    moved_ids: list[str] = []
     for step in sweep.steps:
         try:
             store.set_state(
@@ -432,6 +433,14 @@ def apply(store: Any, sweep: Sweep) -> dict[str, int]:
             continue
         key = f"{step.from_state}->{step.to_state}"
         applied[key] = applied.get(key, 0) + 1
+        moved_ids.append(step.memory_id)
+    if moved_ids:
+        from . import prune_receipts
+
+        prune_receipts.record(
+            store, "forget_ladder", "walk", moved_ids,
+            summary=", ".join(f"{key} {value}" for key, value in sorted(applied.items())),
+        )
     return applied
 
 
