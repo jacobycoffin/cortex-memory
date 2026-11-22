@@ -75,6 +75,7 @@ from .rewrite import recent_queries, rewrite
 from .session_scope import apply_session_boost, is_elliptical, recent_memory_ids
 from .task_budget import plan_for
 from .namespace import channel_namespaces
+from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
@@ -1365,7 +1366,19 @@ class CortexMemoryProvider(MemoryProvider):
                     source_category="AGENT_PROPOSED",
                     session_id=self._session_id,
                     context_mode=str(args.get("context_mode") or "standalone"),
-                    scope=dict(args.get("scope") or {}),
+                    # Record the project while the evidence is at hand (#217): without it,
+                    # project-scoped memories could never exist and detection had nothing to
+                    # choose between. The caller's explicit scope always wins.
+                    scope=scope_for_capture(
+                        self._store,
+                        sanitized.text,
+                        scope=dict(args.get("scope") or {}),
+                        messages=recent_queries(
+                            self._store,
+                            str(kwargs.get("session_id") or self._session_id or ""),
+                        ),
+                        configured=self._config.get("projects") or (),
+                    )[0],
                     entities=[str(item) for item in args.get("entities") or []],
                     preconditions=dict(args.get("preconditions") or {}),
                     source_context=str(args.get("source_context") or "explicit cortex tool write")[:1000],
