@@ -582,7 +582,9 @@ def set_state(
 ) -> bool:
     from .store import utc_now
 
-    if state not in {"active", "cold", "archived", "quarantine", "tombstoned"}:
+    # `suppressed` is a first-class state (#91): suppression must be honoured by every recall
+    # path, and the recall paths filter on state, not on a side table.
+    if state not in {"active", "cold", "archived", "quarantine", "tombstoned", "suppressed"}:
         raise ValueError(f"invalid state: {state}")
     now = utc_now()
     with self.transaction() as conn:
