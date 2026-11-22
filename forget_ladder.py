@@ -67,10 +67,23 @@ DEFAULT_DWELL = (180, 365, 730)
 _ENV_PREFIX = "CORTEX_FORGET_"
 
 
+def _regret_policy() -> dict[str, Any]:
+    from . import regret as _regret
+
+    return {
+        "enabled": _regret.enabled(),
+        "step": _regret.STEP,
+        "cap": _regret.CAP,
+        "window_days": _regret.REGRET_WINDOW_DAYS,
+        "note": "a kind that was forgotten and came back widens its own windows",
+    }
+
+
 def policy() -> dict[str, Any]:
     """The effective windows, so a run can say which policy it used."""
     return {
         "version": POLICY_VERSION,
+        "regret_guard": _regret_policy(),
         "dwell_days": {kind: list(dwell) for kind, dwell in DWELL_DAYS.items()},
         "default_dwell": list(DEFAULT_DWELL),
         "never_walk": sorted(NEVER_WALK),
@@ -147,12 +160,35 @@ class Sweep:
         return moves or "no memory qualified to move"
 
 
-def _dwell_for(kind: str) -> tuple[int, int, int]:
+def _declared_dwell(kind: str) -> tuple[int, int, int]:
     name = str(kind or "").strip().lower()
     override = _env_dwell(name)
     if override is not None:
         return override
     return DWELL_DAYS.get(name, DEFAULT_DWELL)
+
+
+def _dwell_for(
+    kind: str, store: Any = None, *, regrets: dict[str, int] | None = None
+) -> tuple[int, int, int]:
+    """Declared windows, widened by measured regret (#90).
+
+    `store` is optional so the pure policy stays testable without one; when it is passed, a kind
+    that has been walked down and come back gets wider windows and the guard is visible in
+    `policy()`/`explain()` rather than being an invisible adjustment.
+    """
+    declared = _declared_dwell(kind)
+    if store is None:
+        return declared
+    from . import regret as _regret
+
+    if not _regret.enabled():
+        return declared
+    counts = regrets if regrets is not None else _regret.revivals(store)
+    multiplier = _regret.factor(store, kind, revivals_by_kind=counts)
+    if multiplier <= 1.0:
+        return declared
+    return _regret.windows(declared, multiplier, floors=declared)
 
 
 def walks(kind: str) -> bool:
@@ -288,6 +324,9 @@ def plan(
     """
     now = at or datetime.now(timezone.utc)
     has_core = _has_table(store, "core_members")
+    from . import regret as _regret
+
+    regrets = _regret.revivals(store) if _regret.enabled() else {}
     failures: dict[str, str] = {}
     held = protections(store, failures=failures) if hold is None else hold
     sweep = Sweep(protection_failures=failures)
@@ -334,7 +373,7 @@ def plan(
         next_state = _NEXT.get(state)
         if next_state is None:
             continue
-        threshold = _threshold(state, _dwell_for(kind))
+        threshold = _threshold(state, _dwell_for(kind, store, regrets=regrets))
         used = last_use(row)
         if threshold is None or used is None:
             skipped["no_usable_timestamp"] = skipped.get("no_usable_timestamp", 0) + 1
@@ -404,7 +443,7 @@ def explain(store: Any, memory_id: str, *, at: datetime | None = None) -> dict[s
     held = protections(store, failures=failures)
     kind = str(row.get("kind") or "").strip().lower()
     state = str(row.get("state") or "active")
-    dwell = _dwell_for(kind)
+    dwell = _dwell_for(kind, store)
     threshold = _threshold(state, dwell)
     used = last_use(row)
     now = at or datetime.now(timezone.utc)

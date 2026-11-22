@@ -50,6 +50,9 @@ def main() -> int:
                 for kind, dwell in described["dwell_days"].items()
             ),
         )
+        from cortex import regret as _regret
+
+        print("regret guard:", _regret.revivals(store) or "no revivals recorded")
         print("states:", ladder.state_counts(store))
         sweep = ladder.plan(store, limit=args.limit, max_per_transition=args.per_transition)
         print("planned:", sweep.summary)
