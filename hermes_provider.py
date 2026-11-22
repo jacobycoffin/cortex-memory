@@ -51,6 +51,7 @@ from .security import (
     safe_prompt_text,
     sanitize_memory,
 )
+from .source_weight import confidence as source_weight_confidence  # (#41)
 from .store import CortexStore
 from .tooling import build_tool_workflow, classify_task, extract_tool_executions, task_fingerprint
 
@@ -1438,7 +1439,13 @@ class CortexMemoryProvider(MemoryProvider):
                     source_context=str(args.get("source_context") or "explicit cortex tool write")[:1000],
                     applicable_systems=[str(item) for item in args.get("applicable_systems") or []],
                     applicable_versions=[str(item) for item in args.get("applicable_versions") or []],
-                    confidence=float(args.get("confidence", 0.88)),
+                    # A source's authority is a ceiling on the confidence it can carry (#41):
+                    # an agent tool proposal cannot store 0.88 confidence about the world.
+                    confidence=source_weight_confidence(
+                        float(args.get("confidence", 0.88)),
+                        "AGENT_PROPOSED",
+                        source_type="agent_tool_proposal",
+                    ),
                     # No magic number (#32): an unstated importance comes from the rubric, so a
                     # decision outranks an episode instead of every capture landing on 0.78.
                     importance=float(
