@@ -29,8 +29,9 @@ from .harness import (
     cortex_primary_system_prompt,
     harness_contract_manifest,
 )
-from .preload import BackgroundPreloader
+from .importance_rubric import score as _importance_score  # (#32)
 from .metacognition import MetacognitiveAssessment, assess_retrieval
+from .preload import BackgroundPreloader
 from .retrieval import (
     LIVE_SCORING_POLICY_VERSION,
     SHADOW_SCORING_POLICY_VERSION,
@@ -1438,7 +1439,16 @@ class CortexMemoryProvider(MemoryProvider):
                     applicable_systems=[str(item) for item in args.get("applicable_systems") or []],
                     applicable_versions=[str(item) for item in args.get("applicable_versions") or []],
                     confidence=float(args.get("confidence", 0.88)),
-                    importance=float(args.get("importance", 0.78)),
+                    # No magic number (#32): an unstated importance comes from the rubric, so a
+                    # decision outranks an episode instead of every capture landing on 0.78.
+                    importance=float(
+                        args.get("importance")
+                        or _importance_score(
+                            sanitized.text,
+                            str(args.get("kind") or "semantic"),
+                            source_category="AGENT_PROPOSED",
+                        ).importance
+                    ),
                     trust=0.55,
                     quarantine_reason=sanitized.quarantine_reason,
                     subject=str(args.get("subject") or "") or None,
