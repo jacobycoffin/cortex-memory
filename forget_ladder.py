@@ -193,6 +193,25 @@ def _dwell_for(
     return _regret.windows(declared, multiplier, floors=declared)
 
 
+
+def _volatility_apply(
+    store: Any, memory_id: str, dwell: tuple[int, int, int]
+) -> tuple[int, int, int]:
+    """Scale the window by how fast this fact goes stale (#31).
+
+    Durable facts get a longer window, ephemeral ones a shorter one. A missing class or a broken
+    lookup leaves the declared policy alone - tuning must never be able to disable forgetting.
+    """
+    try:
+        from . import volatility
+
+        assigned = volatility.lookup(store, memory_id)
+        if not assigned:
+            return dwell
+        return volatility.apply_to(dwell, assigned)
+    except Exception:  # noqa: BLE001 - the ladder must run without the volatility table
+        return dwell
+
 def walks(kind: str) -> bool:
     """Whether this kind may ever be moved automatically."""
     return str(kind or "").strip().lower() not in NEVER_WALK
@@ -387,7 +406,8 @@ def plan(
         # Dormancy narrows the window for memories that were offered many times and never used
         # (#94). It runs after regret, so a kind that has been forgotten wrongly widens first.
         assessment = dormancy.assess(row)
-        dwell = dormancy.apply_to(_dwell_for(kind, store, regrets=regrets), row)
+        dwell = _volatility_apply(store, memory_id, _dwell_for(kind, store, regrets=regrets))
+        dwell = dormancy.apply_to(dwell, row)
         threshold = _threshold(state, dwell)
         used = last_use(row)
         if threshold is None or used is None:
