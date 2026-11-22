@@ -5,6 +5,7 @@ from __future__ import annotations
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 from pathlib import Path
 
 from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
@@ -58,21 +59,60 @@ class KindSetsTheClockTests(LadderTestCase):
         self.assertEqual([s.to_state for s in self.plan().steps], ["cold"])
 
     def test_the_same_age_is_not_enough_for_a_semantic_fact(self) -> None:
-        self.memory("semantic fact", kind="semantic", quiet_days=100)
+        self.memory("semantic fact", kind="semantic", quiet_days=80)
         self.assertEqual(self.plan().steps, [])
         self.assertEqual(self.plan().skipped.get("still_warm"), 1)
 
     def test_an_episode_goes_cold_far_sooner(self) -> None:
-        self.memory("episode note", kind="episode", quiet_days=10)
+        self.memory("episode note", kind="episode", quiet_days=35)
         self.assertEqual([s.to_state for s in self.plan().steps], ["cold"])
 
-    def test_a_procedure_outlives_both(self) -> None:
-        self.memory("release procedure", kind="procedural", quiet_days=200)
-        self.assertEqual(self.plan().steps, [])
+    def test_a_procedure_never_walks_at_all(self) -> None:
+        self.memory("release procedure", kind="procedural", quiet_days=5000)
+        sweep = self.plan()
+        self.assertEqual(sweep.steps, [])
+        self.assertFalse(ladder.walks("procedural"))
 
     def test_an_unknown_kind_gets_the_default_window(self) -> None:
         self.memory("mystery", kind="", quiet_days=200)
         self.assertEqual([s.to_state for s in self.plan().steps], ["cold"])
+
+
+class DeclaredPolicyTests(LadderTestCase):
+    """#87: the windows are a declared policy, not whatever the code happened to pick."""
+
+    def test_the_documented_windows_are_the_effective_windows(self) -> None:
+        self.assertEqual(ladder.DWELL_DAYS["episode"], (30, 90, 180))
+        self.assertEqual(ladder.DWELL_DAYS["semantic"], (90, 180, 365))
+
+    def test_preferences_and_procedures_never_walk(self) -> None:
+        for kind in ("preference", "procedural"):
+            self.assertTrue(self.memory(f"{kind} fact", kind=kind, quiet_days=9000) or True)
+            self.assertFalse(ladder.walks(kind), kind)
+        sweep = self.plan()
+        self.assertEqual(sweep.steps, [])
+        self.assertGreaterEqual(sweep.skipped.get("kind_never_walks"), 2)
+
+    def test_the_policy_is_reportable(self) -> None:
+        described = ladder.policy()
+        self.assertEqual(described["version"], "forget-ladder-v2")
+        self.assertIn("preference", described["never_walk"])
+        self.assertEqual(described["dwell_days"]["semantic"], [90, 180, 365])
+
+    def test_the_environment_can_override_a_window(self) -> None:
+        import os
+
+        self.memory("semantic fact", kind="semantic", quiet_days=100)
+        self.assertEqual(len(self.plan().steps), 1)
+        with mock.patch.dict(os.environ, {"CORTEX_FORGET_SEMANTIC_DAYS": "400,800,1600"}):
+            self.assertEqual(self.plan().steps, [])
+
+    def test_a_malformed_override_is_ignored_rather_than_crashing(self) -> None:
+        import os
+
+        for bad in ("", "nonsense", "1,2", "-5,10,20"):
+            with mock.patch.dict(os.environ, {"CORTEX_FORGET_SEMANTIC_DAYS": bad}):
+                self.assertEqual(ladder._dwell_for("semantic"), (90, 180, 365), bad)
 
 
 class OneRungPerSweepTests(LadderTestCase):
@@ -181,15 +221,17 @@ class ApplyTests(LadderTestCase):
         self.assertTrue(ladder.restore(self.store, memory_id))
         self.assertEqual(self.store.get_memory(memory_id)["state"], "active")
 
-    def test_a_sweep_is_idempotent_within_the_same_instant(self) -> None:
+    def test_a_sweep_never_repeats_the_same_rung(self) -> None:
+        """Idempotent per rung: the second sweep may climb, but never re-does a move."""
         self.memory("once", kind="semantic", quiet_days=200)
-        ladder.sweep(self.store, at=NOW, apply_steps=True)
+        first, _ = ladder.sweep(self.store, at=NOW, apply_steps=True)
+        self.assertEqual(first.counts(), {"active->cold": 1})
         second, _ = ladder.sweep(self.store, at=NOW, apply_steps=False)
-        self.assertEqual(second.steps, [])
+        self.assertEqual(second.counts().get("active->cold"), None, second.summary)
 
     def test_counts_are_reported_per_transition(self) -> None:
         for index in range(3):
-            self.memory(f"a{index}", kind="episode", quiet_days=10 + index)
+            self.memory(f"a{index}", kind="episode", quiet_days=35 + index)
         planned, applied = ladder.sweep(self.store, at=NOW, apply_steps=True)
         self.assertEqual(planned.counts(), {"active->cold": 3})
         self.assertEqual(applied, {"active->cold": 3})
