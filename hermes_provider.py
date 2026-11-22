@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import cross_project, path_query  # (#75, #78)
+from . import assoc_feedback, cross_project, path_query  # (#75, #78, #79)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -167,6 +167,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "reviews",
                     "path",
                     "bridges",
+                    "related",
                 ],
             },
             "content": {
@@ -1534,6 +1535,27 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "related":
+                # "those two aren't related" -> the edge learns (#79). Accepts ids or phrases,
+                # and a whole sentence when the two ends are readable from it.
+                statement = str(args.get("statement") or "").strip()
+                if statement:
+                    applied = assoc_feedback.apply_statement(self._store, statement)
+                else:
+                    sense = "related" if args.get("related") in (True, "true", "yes", 1) else "unrelated"
+                    if str(args.get("polarity") or "").strip() in ("related", "unrelated"):
+                        sense = str(args["polarity"]).strip()
+                    applied = assoc_feedback.apply(
+                        self._store,
+                        str(args.get("left") or "").strip(),
+                        str(args.get("right") or "").strip(),
+                        sense,
+                        note=str(args.get("note") or ""),
+                    )
+                return _json_ok(applied=applied.ok, polarity=applied.polarity,
+                                weight=applied.weight, description=applied.describe(),
+                                reason=applied.reason)
 
             if action == "bridges":
                 # A memory from another project, only when the match is strong, always labelled
