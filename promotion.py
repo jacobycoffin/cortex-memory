@@ -83,6 +83,22 @@ def _history(conn: Any, memory_id: str, action: str, at: str, reason: str) -> No
     )
 
 
+def _snapshot(store: Any, why: str) -> None:
+    """Record what the rendered block looks like after a membership change (#124).
+
+    Imported lazily: `core_diff` imports `core_block`, and a module-level import here would
+    make the promotion module depend on the renderer at import time.
+    """
+    try:
+        from .core_diff import record
+
+        record(store)
+    except Exception as error:  # noqa: BLE001 - a snapshot must never block promotion
+        import warnings
+
+        warnings.warn(f"core snapshot after {why} failed: {error}", RuntimeWarning, stacklevel=2)
+
+
 def window_days(default: int = DEFAULT_WINDOW_DAYS) -> int:
     try:
         return max(1, int(os.environ.get("CORTEX_CORE_WINDOW_DAYS", default)))
@@ -129,11 +145,17 @@ def promote(
         if not cursor.rowcount:
             return None
         _history(conn, memory_id, "promote", stamp, f"{by}: {reason}")
+    _snapshot(store, f"promote {memory_id[:8]}")
     return Promotion(memory_id=str(memory_id), promoted_by=by, reason=reason)
 
 
 def demote(
-    store: Any, memory_id: str, *, reason: str = "", at: str | None = None
+    store: Any,
+    memory_id: str,
+    *,
+    reason: str = "",
+    at: str | None = None,
+    snapshot: bool = True,
 ) -> bool:
     """Remove a memory from core. Returns whether anything changed.
 
@@ -147,7 +169,10 @@ def demote(
         cursor = conn.execute(f"DELETE FROM {TABLE} WHERE memory_id = ?", (str(memory_id),))
         if cursor.rowcount:
             _history(conn, memory_id, "demote", at or utc_now(), reason or "manual demotion")
-        return bool(cursor.rowcount)
+    changed = bool(cursor.rowcount)
+    if changed and snapshot:
+        _snapshot(store, f"demote {memory_id[:8]}")
+    return changed
 
 
 def touch_confirmations(store: Any, memory_ids: Iterable[str], *, at: str | None = None) -> int:
@@ -295,8 +320,12 @@ def demote_stale(
     if not apply:
         return stale
     stamp = now.isoformat() if now is not None else None
+    # One snapshot for the whole pass: a bulk demotion is one change to the block, not one
+    # change per memory, and fifty near-identical snapshots would bury the history.
     for memory_id, reason in stale:
-        demote(store, memory_id, reason=reason, at=stamp)
+        demote(store, memory_id, reason=reason, at=stamp, snapshot=False)
+    if stale:
+        _snapshot(store, f"demote pass ({len(stale)})")
     return stale
 
 
