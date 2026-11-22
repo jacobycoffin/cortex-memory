@@ -83,7 +83,7 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import dry_run, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
+from . import dry_run, entity_timeline, quotes, redaction_receipt, secret_refusal  # (#42, #43, #44, #46)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
 from .hermes_receipts import (
@@ -156,6 +156,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "consolidate",
                     "undo_consolidation",
                     "dry_run",
+                    "timeline",
                 ],
             },
             "content": {
@@ -1522,6 +1523,18 @@ class CortexMemoryProvider(MemoryProvider):
                     redacted=sanitized.redacted,
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
+                )
+
+            if action == "timeline":
+                # What changed about this thing, in order (#50). Read-only.
+                entity = str(args.get("entity") or args.get("query") or "").strip()
+                if not entity:
+                    return _json_error("entity is required")
+                return _json_ok(
+                    entity=entity,
+                    summary=entity_timeline.summarise(self._store, entity),
+                    rendered=entity_timeline.render(self._store, entity),
+                    changes=entity_timeline.changes(self._store, entity)[:10],
                 )
 
             if action == "dry_run":
