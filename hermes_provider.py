@@ -83,7 +83,8 @@ from .task_budget import plan_for
 from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
-from . import dry_run, entity_timeline, negative_facts, preference_strength  # (#46, #50, #58, #59)
+from . import constraints, dry_run, entity_timeline  # (#46, #50, #60)
+from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
 from .recall_explain import record_breakdown
 from .recall_replay import record as record_replay
@@ -160,6 +161,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "timeline",
                     "negation",
                     "preferences",
+                    "constraints",
                 ],
             },
             "content": {
@@ -1528,6 +1530,18 @@ class CortexMemoryProvider(MemoryProvider):
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
+            if action == "constraints":
+                # Budgets, allergies and hard nos: always in view, never similarity-gated (#60).
+                return _json_ok(
+                    counts=constraints.report(self._store),
+                    items=[
+                        {"memory_id": item.memory_id, "kind": item.kind,
+                         "content": item.content}
+                        for item in constraints.all(self._store)
+                    ],
+                    block=constraints.context_block(self._store),
+                )
+
             if action == "preferences":
                 # How hard is each preference, and which ones may not be deviated from? (#59)
                 return _json_ok(
@@ -2059,6 +2073,9 @@ class CortexMemoryProvider(MemoryProvider):
             try:
                 if candidate.kind in {"preference", "procedure", "procedural"}:
                     preference_strength.record(self._store, proposal_id, candidate.content)
+                # Constraints are always-on (#60), so they are promoted at write rather than
+                # discovered later by a query that happens to resemble them.
+                constraints.promote_from_strength(self._store, proposal_id, candidate.content)
             except Exception:  # noqa: BLE001 - strength is metadata, never a reason to lose a write
                 pass
             try:

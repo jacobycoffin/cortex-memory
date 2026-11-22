@@ -116,6 +116,16 @@ def harness_contract_manifest(*, tool_name: str = "cortex_memory") -> dict[str, 
     }
 
 
+
+def _constraint_block(store: Any) -> str:
+    """The always-on constraints block, or empty. Never raises into a turn."""
+    try:
+        from . import constraints
+
+        return constraints.context_block(store)
+    except Exception:  # noqa: BLE001 - a missing table must not break recall
+        return ""
+
 @dataclass
 class HarnessTurn:
     """One harness-neutral recall lifecycle awaiting outcome resolution."""
@@ -208,8 +218,11 @@ class CortexHarnessAdapter:
             max_limit=self.top_k,
             max_token_budget=self.token_budget,
         )
+        # Constraints are not fetched by similarity: their job is to stop something that would
+        # otherwise look reasonable, so they ride along whatever the question is (#60).
+        constraint_block = _constraint_block(self.memory.store)
         if not force_recall and not plan.needs_memory:
-            return HarnessTurn(query=query, context="", reason=plan.reason)
+            return HarnessTurn(query=query, context=constraint_block, reason=plan.reason)
         batch = self.memory.recall(
             query,
             session_id=session_id,
@@ -227,7 +240,10 @@ class CortexHarnessAdapter:
             applicable_systems=applicable_systems,
             applicable_versions=applicable_versions,
         )
-        turn = HarnessTurn(query=query, context=batch.context(), reason=plan.reason, batch=batch)
+        context = batch.context()
+        if constraint_block:
+            context = f"{context}\n\n{constraint_block}".strip() if context else constraint_block
+        turn = HarnessTurn(query=query, context=context, reason=plan.reason, batch=batch)
         # Kept so writes made during the turn can be named in a receipt at its end (#37).
         self._open_turn = turn
         return turn
