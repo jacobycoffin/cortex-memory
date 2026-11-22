@@ -719,6 +719,23 @@ class AutoJudge:
                 deferred_for_rotation.append(str(proposal["proposal_id"]))
                 continue
 
+            # A cheap model's "yes" is not enough to write a memory (#26): its write becomes a
+            # deferral, while its "no" passes through — refusing is always safe.
+            from . import model_gate
+
+            if model_gate.enabled():
+                gated, gate_reason = model_gate.gate_action(self.config.model, action)
+                if gated != action:
+                    report["deferred"] += 1
+                    deferred_for_rotation.append(str(proposal["proposal_id"]))
+                    withheld = report.setdefault("withheld", [])
+                    if isinstance(withheld, list) and len(withheld) < 20:
+                        withheld.append(
+                            {"proposal_id": str(proposal["proposal_id"]), "reason": gate_reason}
+                        )
+                    continue
+                action = gated if gated else action
+
             if gate_applied:
                 # The Jev engine already applied its calibrated thresholds
                 # (feedback boost included); only guards can override them.
