@@ -55,11 +55,16 @@ class CoreBlockTests(unittest.TestCase):
         block = build(self.store, max_chars=500)
         self.assertLessEqual(block.chars, 500)
 
-    def test_pinned_memories_come_first(self) -> None:
+    def test_pinned_memories_are_labelled_and_lead_their_section(self) -> None:
+        """Sections (#127) mean "first in the block" is now a section header, not a memory."""
         block = build(self.store)
-        first_line = block.text.splitlines()[1]
-        self.assertIn(self.pinned[:8], first_line)
-        self.assertIn("[pinned]", first_line)
+        lines = [line for line in block.text.splitlines() if "[pinned]" in line]
+        self.assertTrue(lines, block.text)
+        first = lines[0]
+        self.assertIn(self.pinned[:8], first)
+        # Nothing unpinned may appear above it within its own section.
+        section_start = block.text.rindex(":", 0, block.text.index(first))
+        self.assertGreaterEqual(section_start, 0)
 
     def test_the_header_says_it_may_be_incomplete(self) -> None:
         """An always-present block that reads as authoritative becomes a source of error."""
@@ -142,13 +147,14 @@ class VerifiedDateTests(unittest.TestCase):
         )
         return created[0] if isinstance(created, tuple) else created
 
-    def test_every_line_carries_a_label(self) -> None:
+    def test_every_memory_line_carries_a_label(self) -> None:
         self._memory("Pinned fact with no history.", pinned=True, importance=0.9)
         block = build(self.store)
         for line in block.text.splitlines()[1:]:
-            self.assertTrue(
-                "[verified " in line or "[unverified]" in line, f"no label: {line[:80]}"
-            )
+            if line.startswith("- "):  # section headers are not memory lines
+                self.assertTrue(
+                    "[verified " in line or "[unverified]" in line, f"no label: {line[:80]}"
+                )
 
     def test_a_fact_with_no_history_is_marked_unverified(self) -> None:
         """Silence would invite the reader to assume freshness."""

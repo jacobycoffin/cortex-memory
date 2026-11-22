@@ -26,6 +26,7 @@ not something to slip in behind an optimisation.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -144,6 +145,94 @@ def _line(row: dict[str, Any], *, suffix: str = "") -> str:
     return f"-{label} {body} {suffix}".strip()
 
 
+SECTIONS = ("commitments", "identity", "people", "projects", "preferences", "constraints", "general")
+SECTION_TITLES = {
+    "commitments": "Open commitments",
+    "identity": "Identity",
+    "people": "People",
+    "projects": "Projects",
+    "preferences": "Preferences",
+    "constraints": "Constraints",
+    "general": "Other",
+}
+# Fixed slots (#127): one topic cannot crowd the others out. They sum above 1.0 so the block
+# can still fill up when a section is thin — pass two hands unused capacity to whoever has
+# more to say, but nobody's *guaranteed* slot is spent on a single topic.
+SECTION_SHARES = {
+    # Commitments lead here only because they are time-sensitive; they get 15% rather than 25%
+    # after the live store showed 52 "prospective" rows (many of them project notes wearing a
+    # commitment's kind) taking a quarter of the block ahead of pinned rules.
+    "commitments": 0.15,
+    "identity": 0.15,
+    "people": 0.10,
+    "projects": 0.18,
+    "preferences": 0.20,
+    "constraints": 0.15,
+    "general": 0.07,
+}
+KIND_SECTIONS = {
+    "prospective": "commitments",
+    "commitment": "commitments",
+    "preference": "preferences",
+    "identity": "identity",
+    "constraint": "constraints",
+    "person": "people",
+    "project": "projects",
+}
+_IDENTITY = re.compile(r"\b(?:jacoby|i am|my name|birthday|timezone|lives? in|works? as|pronouns?)\b", re.I)
+_PEOPLE = re.compile(r"\b(?:jamie|jarvis|ledger|coby|wife|husband|partner|mother|father|sister|brother|boss|colleague|friend)\b", re.I)
+_PREFERENCES = re.compile(r"\b(?:prefers?|likes?|wants?|favou?rite|rather|would prefer|style)\b", re.I)
+_CONSTRAINTS = re.compile(r"\b(?:never|must not|do not|don't|avoid|only|always|constraint|required)\b", re.I)
+_PROJECTS = re.compile(r"\b(?:project|repo|branch|deploy|release|build|codebase)\b", re.I)
+
+
+def classify_section(row: dict[str, Any]) -> str:
+    """Which slot a memory belongs to.
+
+    Deliberately a keyword classifier over metadata plus content: the block is the memory of
+    last resort and must render with no model available (#120). A wrong bucket costs a line's
+    placement, not its content, so cheap and inspectable beats clever.
+    """
+    # The memory's own `kind` is the strongest signal and it is already curated: a memory
+    # captured as a preference is one, whatever words it happens to use. The store's kind
+    # vocabulary is singular ("preference", "prospective") while the sections are plural, so
+    # the mapping is explicit rather than a string match.
+    kind = str(row.get("kind") or "").strip().lower()
+    if kind in KIND_SECTIONS:
+        return KIND_SECTIONS[kind]
+    if kind in SECTIONS:
+        return kind
+    scope = row.get("scope_json") or row.get("scope")
+    if isinstance(scope, str) and "active_project" in scope:
+        return "projects"
+    if isinstance(scope, dict) and scope.get("active_project"):
+        return "projects"
+    content = str(row.get("content") or "")
+    if _CONSTRAINTS.search(content):
+        return "constraints"
+    if _PREFERENCES.search(content):
+        return "preferences"
+    if _IDENTITY.search(content):
+        return "identity"
+    if _PEOPLE.search(content):
+        return "people"
+    if _PROJECTS.search(content):
+        return "projects"
+    return "general"
+
+
+def _bucket(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[str, list[dict[str, Any]]] = {name: [] for name in SECTIONS}
+    seen: set[str] = set()
+    for row in rows:
+        memory_id = str(row.get("id") or "")
+        if not memory_id or memory_id in seen:
+            continue
+        seen.add(memory_id)
+        buckets["commitments" if row.get("__commitment") else classify_section(row)].append(row)
+    return buckets
+
+
 def build(
     store: Any,
     *,
@@ -162,80 +251,80 @@ def build(
         "core_join": _CORE_JOIN if has_core else "",
     }
     pinned = [dict(row) for row in conn.execute(_PINNED_SQL.format(**fill)).fetchall()]
-    commitments: list[dict[str, Any]] = []
-    try:
-        commitments = [dict(row) for row in conn.execute(_COMMITMENTS_SQL).fetchall()]
-    except Exception as error:  # noqa: BLE001 - a missing table must not break the block
-        # Loud rather than silent: a swallowed schema error is how the block "worked" while
-        # containing none of the 52 open commitments.
-        commitments = []
-        import warnings
-
-        warnings.warn(f"core memory: commitments query failed: {error}", RuntimeWarning, stacklevel=2)
     core_members: list[dict[str, Any]] = []
     try:
         core_members = [dict(row) for row in conn.execute(_CORE_SQL).fetchall()]
     except Exception:  # noqa: BLE001 - the table is absent until promotion first runs
         core_members = []
-    important = [
-        dict(row) for row in conn.execute(_IMPORTANT_SQL.format(**fill)).fetchall()
-    ]
+    commitments: list[dict[str, Any]] = []
+    try:
+        commitments = [dict(row) for row in conn.execute(_COMMITMENTS_SQL).fetchall()]
+        for row in commitments:
+            row["__commitment"] = True
+    except Exception as error:  # noqa: BLE001 - a missing table must not break the block
+        import warnings
 
-    lines = [HEADER]
-    ids: list[str] = []
-    size = len(HEADER) + 1
+        warnings.warn(f"core memory: commitments query failed: {error}", RuntimeWarning, stacklevel=2)
+    important = [dict(row) for row in conn.execute(_IMPORTANT_SQL.format(**fill)).fetchall()]
 
-    def room(line: str) -> bool:
-        return size + len(line) + 1 <= max_chars
-
-    # Section budgets, not first-come-first-served. The first live run let nine pinned notes
-    # take the whole block and rendered **one** of the 52 open commitments; a block that drops
-    # every commitment is worse than a smaller block carrying some of each.
-    pinned_cap = int(max_chars * 0.50)
-    commitment_cap = int(max_chars * 0.85)
-
-    for row in pinned:
-        line = _line(row, suffix=" [pinned]")
-        if size + len(line) + 1 > pinned_cap or not room(line):
-            continue
-        lines.append(line)
-        ids.append(str(row["id"]))
-        size += len(line) + 1
-
-    seen = {str(row["id"]) for row in pinned}
+    # Priority inside a section: pinned, then promoted, then commitments, then importance.
+    candidates = [*pinned, *core_members, *commitments, *important]
+    buckets = _bucket(candidates)
+    tags = {str(row["id"]): "[pinned]" for row in pinned}
     for row in core_members:
-        if str(row["id"]) in seen:
-            continue
-        line = _line(row, suffix=" [core]")
-        if size + len(line) + 1 > pinned_cap or not room(line):
-            continue
-        lines.append(line)
-        ids.append(str(row["id"]))
-        seen.add(str(row["id"]))
-        size += len(line) + 1
+        tags.setdefault(str(row["id"]), "[core]")
 
-    for row in commitments:
-        due = row.get("due_at")
-        suffix = f" [commitment, due {str(due)[:10]}]" if due else " [commitment]"
-        line = _line(row, suffix=suffix)
-        if size + len(line) + 1 > commitment_cap or not room(line):
-            continue
-        lines.append(line)
-        ids.append(str(row["id"]))
-        size += len(line) + 1
+    def line_for(row: dict[str, Any]) -> str:
+        suffix = tags.get(str(row.get("id")), "")
+        if row.get("__commitment"):
+            due = row.get("due_at")
+            suffix = f"[commitment, due {str(due)[:10]}]" if due else "[commitment]"
+        return _line(row, suffix=suffix)
 
-    # The band is a floor as well as a ceiling: a block that renders 200 characters is not
-    # doing the job it exists for, so keep adding the next most load-bearing fact until the
-    # minimum is met or there is nothing left worth adding.
-    for row in important:
-        if size >= min_chars and size >= max_chars * 0.9:
+    rendered: dict[str, list[tuple[str, str]]] = {name: [] for name in SECTIONS}
+    used = len(HEADER) + 1
+    for name in SECTIONS:
+        slot = int(max_chars * SECTION_SHARES.get(name, 0.05))
+        spent = 0
+        title = SECTION_TITLES[name]
+        for row in buckets[name]:
+            line = line_for(row)
+            cost = len(line) + 1
+            if spent + cost > slot or used + cost > max_chars:
+                break
+            rendered[name].append((line, str(row["id"])))
+            spent += cost
+            used += cost
+        if rendered[name]:
+            used += len(title) + 1  # the header itself
+
+    # Pass two: unused capacity goes to whatever still has candidates, in section order, so a
+    # thin section never wastes the block while another overflows.
+    for name in SECTIONS:
+        if used >= max_chars:
             break
-        line = _line(row)
-        if not room(line):
+        taken = {memory_id for _, memory_id in rendered[name]}
+        for row in buckets[name]:
+            memory_id = str(row.get("id"))
+            if memory_id in taken:
+                continue
+            line = line_for(row)
+            cost = len(line) + 1
+            if used + cost > max_chars:
+                break
+            rendered[name].append((line, memory_id))
+            used += cost
+
+    lines: list[str] = [HEADER]
+    ids: list[str] = []
+    for name in SECTIONS:
+        entries = rendered.get(name) or []
+        if not entries:
             continue
-        lines.append(line)
-        ids.append(str(row["id"]))
-        size += len(line) + 1
+        lines.append(f"{SECTION_TITLES[name]}:")
+        for line, memory_id in entries:
+            lines.append(line)
+            ids.append(memory_id)
 
     text = "\n".join(lines)
     return CoreBlock(
