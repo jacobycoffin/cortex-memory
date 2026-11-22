@@ -71,6 +71,7 @@ from .floor_context import build_floor
 from .abstention_ledger import record as record_abstention_shadow
 from .confirmation import record_confirmation
 from .promotion import ContradictionError, promote, touch_confirmations
+from . import quota
 from .core_block import build as build_core
 from .core_block import dedupe_against, enabled as core_enabled
 from .continuity import build as build_continuity, first_turn
@@ -1376,6 +1377,12 @@ class CortexMemoryProvider(MemoryProvider):
                 content = str(args.get("content") or "").strip()
                 if not content:
                     return _json_error("content is required")
+                # The quota is a signal to tidy, never a reason to refuse (#101): sweeping here
+                # keeps a full store from silently stopping the assistant from learning.
+                try:
+                    quota.ensure(self._store)
+                except Exception:  # noqa: BLE001 - a guard must never block a capture
+                    pass
                 sanitized = sanitize_memory(content)
                 # A restatement of something already held is evidence, not a new memory
                 # (#216): it confirms the existing row instead of adding a near-duplicate.
