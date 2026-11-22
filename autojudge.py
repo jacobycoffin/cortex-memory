@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 from urllib.parse import urlparse
 
-from . import jev
+from . import jev, write_throttle
 from .retrieval import MemoryRetriever
 from .store import CortexStore, StaleCreationProposalError, creation_proposal_revision
 
@@ -803,6 +803,29 @@ class AutoJudge:
                     f"positive feedback {positive_count}, strong feedback {strong_count}. "
                     + (guarded_reason or decision["reason"])
                 )
+            # Rate limit before writing (#36). A throttled write is deferred, never dropped: the
+            # proposal stays staged so a later turn can take it. User-stated material is exempt —
+            # the user asking is the strongest evidence the store will ever get.
+            if action in {"remember", "evidence_only"} and write_throttle.is_automatic(
+                proposal.get("source_category")
+            ):
+                admitted = write_throttle.admit(
+                    store,
+                    str(proposal.get("session_id") or "unknown"),
+                    turn_id=str(report.get("run_id") or ""),
+                )
+                if not admitted.allowed:
+                    report["throttled"] = report.get("throttled", 0) + 1
+                    withheld = report.setdefault("withheld", [])
+                    if isinstance(withheld, list) and len(withheld) < 20:
+                        withheld.append(
+                            {
+                                "proposal_id": str(proposal["proposal_id"]),
+                                "reason": admitted.describe(),
+                            }
+                        )
+                    continue
+
             try:
                 result = store.review_memory_creation(
                     proposal["proposal_id"],
