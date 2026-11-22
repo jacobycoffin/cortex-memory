@@ -94,6 +94,16 @@ class Candidate:
     volatility: float
 
 
+
+def _anchor(sentence: str) -> str:
+    """Pin relative time to a date. A failure here must never drop a candidate."""
+    try:
+        from . import anchoring
+
+        return anchoring.anchored(sentence)
+    except Exception:  # noqa: BLE001
+        return sentence
+
 def extract_candidates(text: str, *, role: str = "user") -> list[Candidate]:
     """Extract conservative durable-memory candidates from a turn."""
     text = normalize_text(text)
@@ -155,5 +165,9 @@ def extract_candidates(text: str, *, role: str = "user") -> list[Candidate]:
         if key in seen:
             continue
         seen.add(key)
-        candidates.append(Candidate(sentence, kind, importance, confidence, volatility))
+        # Anchor relative time while the reference frame is still known (#40): "yesterday" is
+        # a different date in a week, and the phrase alone cannot be resolved later.
+        candidates.append(
+            Candidate(_anchor(sentence), kind, importance, confidence, volatility)
+        )
     return candidates
