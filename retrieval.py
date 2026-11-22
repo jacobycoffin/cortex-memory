@@ -37,6 +37,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
+from . import decay
 from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
@@ -1444,6 +1445,9 @@ class MemoryRetriever:
             "specificity_request": prepared.specificity,
             "operator_policy": float(operator_policy.get("score_adjustment") or 0.0),
             "context_gate": float(context_components["context_gate"]),
+            # Off unless CORTEX_DECAY is set (#93): episodic retention decays exponentially,
+            # everything else reports 0.0 here and scoring is untouched.
+            "decay": decay.penalty(memory),
         }
         score = _weighted_score(
             score_signals,
@@ -1601,6 +1605,7 @@ def _weighted_score(
     if float(adjustments.get("schema_example", 0.0)) > 0.0:
         score -= 0.10 * (1.0 - float(adjustments.get("specificity_request", 0.0)))
     score += float(adjustments.get("operator_policy", 0.0))
+    score -= decay.WEIGHT * float(adjustments.get("decay", 0.0))
     if float(adjustments.get("context_gate", 1.0)) < 1.0:
         score = min(score, 0.01)
     return max(0.0, min(1.0, score))
