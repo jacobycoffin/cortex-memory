@@ -213,6 +213,12 @@ def delete(
             except Exception:  # noqa: BLE001 - table may not exist
                 continue
         conn.execute("DELETE FROM memories WHERE id = ?", (resolved,))
+    from . import prune_receipts
+
+    prune_receipts.record(
+        store, "deletion", "delete", [resolved],
+        summary=f"{row.get('kind') or 'unknown'}, {int(edges_removed or 0)} edges, {reason}",
+    )
     return {
         "deleted": resolved,
         "kind": row.get("kind"),

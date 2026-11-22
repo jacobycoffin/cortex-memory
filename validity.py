@@ -32,9 +32,20 @@ def superseded_ids(store: Any) -> set[str]:
             "SELECT DISTINCT supersedes_id FROM memories "
             "WHERE supersedes_id IS NOT NULL AND supersedes_id != ''"
         ).fetchall()
-    except sqlite3.Error:
+    except Exception:  # noqa: BLE001 - the docstring is a contract: this must never raise
         return set()
-    return {str(row[0]) for row in rows if row[0]}
+    # A row that cannot be read is skipped rather than fatal: this runs on every turn, and a
+    # degraded penalty is always better than a failed recall. (CI on Python 3.13 once surfaced
+    # an IndexError here from rows the local interpreter never produced.)
+    superseded: set[str] = set()
+    for row in rows:
+        try:
+            value = row[0]
+        except (IndexError, KeyError, TypeError):
+            continue
+        if value:
+            superseded.add(str(value))
+    return superseded
 
 
 def apply_validity_penalty(
