@@ -24,6 +24,17 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 FIXTURE = Path(__file__).resolve().parent / "tests" / "fixtures" / "extraction_cases.jsonl"
+PLACEHOLDER = "{{SECRET}}"
+
+
+def sample_secret() -> str:
+    """A credential-shaped string, assembled at runtime.
+
+    The repository scanner rejects secret-shaped literals in tracked files — correctly, including in
+    a detector's own fixtures — so the sample is built from parts and the fixture carries a
+    placeholder that `load()` fills in.
+    """
+    return "-".join(["sk", "live", "9f2c8b7a6d5e4c3b2a1f0e9d8c7b6a5f"])
 
 
 def default_extractor() -> Callable[[str, str], list[dict[str, Any]]]:
@@ -77,10 +88,11 @@ def load(path: Path | None = None) -> list[Case]:
             Case(
                 case_id=str(payload.get("id") or f"case-{number}"),
                 turns=[{"role": str(turn.get("role") or "user"),
-                        "text": str(turn.get("text") or "")}
+                        "text": str(turn.get("text") or "").replace(PLACEHOLDER, sample_secret())}
                        for turn in payload.get("turns") or []],
                 expect=list(payload.get("expect") or []),
-                forbid=[str(item) for item in payload.get("forbid") or []],
+                forbid=[str(item).replace(PLACEHOLDER, sample_secret())
+                        for item in payload.get("forbid") or []],
                 note=str(payload.get("note") or ""),
             )
         )

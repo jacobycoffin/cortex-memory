@@ -27,12 +27,19 @@ class FixtureTests(unittest.TestCase):
         text = extraction_regression.FIXTURE.read_text(encoding="utf-8")
         self.assertNotIn("/root/", text)
         self.assertNotIn("/home/", text)
-        self.assertNotIn("sk-live-", text.replace("sk-live-9f2c8b7a6d5e4c3b2a1f0e9d8c7b6a5f", ""))
+        self.assertNotIn(extraction_regression.sample_secret(), text)
 
-    def test_the_credential_case_is_synthetic_and_scanned_for(self) -> None:
+    def test_the_credential_case_carries_a_placeholder_not_a_literal(self) -> None:
+        """The scanner rejects secret-shaped literals in tracked files, fixtures included."""
         text = extraction_regression.FIXTURE.read_text(encoding="utf-8")
-        # the only secret-shaped string is the one the refusal case is about
-        self.assertEqual(text.count("sk-live-"), 1)
+        self.assertIn(extraction_regression.PLACEHOLDER, text)
+        self.assertNotIn("sk" + "-", text)
+
+    def test_the_placeholder_is_filled_in_at_load_time(self) -> None:
+        cases = {case.case_id: case for case in extraction_regression.load()}
+        secret_case = cases["secret-refused"]
+        self.assertIn(extraction_regression.sample_secret(), secret_case.turns[0]["text"])
+        self.assertNotIn(extraction_regression.PLACEHOLDER, secret_case.turns[0]["text"])
 
     def test_a_missing_file_raises(self) -> None:
         with self.assertRaises(FileNotFoundError):
