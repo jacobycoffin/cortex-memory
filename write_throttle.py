@@ -69,7 +69,11 @@ def caps() -> tuple[int, int, int]:
 
 def _bucket(scope: str, session_id: str, turn_id: str | None, at: datetime) -> str:
     if scope == "turn":
-        return f"turn:{session_id}:{turn_id or at.strftime('%Y%m%dT%H%M%S')}"
+        # No wall clock here. Keying an unidentified turn on the current second means a long turn
+        # crosses a boundary and silently gets a second budget — which is how a slow extraction
+        # storm walks past the per-turn cap. An unknown turn is stricter, not looser.
+        key = str(turn_id or "").strip() or "unidentified"
+        return f"turn:{session_id}:{key}"
     if scope == "hour":
         return f"hour:{session_id}:{at.strftime('%Y%m%dT%H')}"
     return f"session:{session_id}"

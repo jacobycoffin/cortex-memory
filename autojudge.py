@@ -806,13 +806,17 @@ class AutoJudge:
             # Rate limit before writing (#36). A throttled write is deferred, never dropped: the
             # proposal stays staged so a later turn can take it. User-stated material is exempt —
             # the user asking is the strongest evidence the store will ever get.
+            # One key for the whole run, computed once: a turn must not be re-derived per write,
+            # or a run that straddles a second gets a second budget (#215 family).
+            if "turn_key" not in report:
+                report["turn_key"] = str(report.get("run_id") or "") or _turn_key(report)
             if action in {"remember", "evidence_only"} and write_throttle.is_automatic(
                 proposal.get("source_category")
             ):
                 admitted = write_throttle.admit(
                     store,
                     str(proposal.get("session_id") or "unknown"),
-                    turn_id=str(report.get("run_id") or ""),
+                    turn_id=str(report["turn_key"]),
                 )
                 if not admitted.allowed:
                     report["throttled"] = report.get("throttled", 0) + 1
@@ -1155,6 +1159,17 @@ def _bounded_provider_list(value: Any) -> tuple[list[str], bool]:
             continue
         bounded.append(item)
     return bounded, guarded
+
+
+def _turn_key(report: dict[str, Any]) -> str:
+    """A stable identifier for this judging run, used as the throttle's turn key."""
+    import uuid
+
+    key = report.get("_turn_key")
+    if not key:
+        key = f"judge-{uuid.uuid4().hex[:12]}"
+        report["_turn_key"] = key
+    return str(key)
 
 
 def _provider_candidate(proposal: dict[str, Any]) -> dict[str, Any]:
