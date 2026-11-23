@@ -37,7 +37,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
-from . import decay
+from . import decay, near_miss  # (#80)
 from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
@@ -993,6 +993,27 @@ class MemoryRetriever:
             stage_ms["abstained"] = 1.0
             stage_ms["abstained_top_score"] = round(float(selected[0].score), 6)
             selected = []
+
+        # A recorded near-miss pair must not surface together (#80): the weaker half is dropped and
+        # the reason reported. Neither memory is hidden from its own queries - the rule is about the
+        # pair, not about either memory. Empty by default: nothing is dropped until a pair is
+        # recorded, so this is inert until somebody judges two memories to be confusable.
+        try:
+            near_miss_drop = near_miss.demote(
+                self.store, selected,
+                score_of=lambda item: float(item.score),
+                id_of=lambda item: str(item.memory["id"]),
+            )
+        except Exception:  # noqa: BLE001 - a judgement about a pair must never break recall
+            near_miss_drop = []
+        if near_miss_drop:
+            for index in near_miss_drop:
+                rejection_reasons[str(selected[index].memory["id"])] = (
+                    "near-miss of a stronger selected memory (#80)"
+                )
+            dropped = set(near_miss_drop)
+            selected = [result for index, result in enumerate(selected) if index not in dropped]
+            stage_ms["near_miss_dropped_count"] = float(len(dropped))
 
         selected, duplicates_replaced = enforce_distinct(selected, remaining, limit=limit)
         if duplicates_replaced:

@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import assoc_feedback, cross_project, path_query  # (#75, #78, #79)
+from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -168,6 +168,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "path",
                     "bridges",
                     "related",
+                    "near_miss",
                 ],
             },
             "content": {
@@ -1535,6 +1536,21 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "near_miss":
+                # "those two aren't the same thing" -> a negative association, so they stop
+                # surfacing together (#80). Without left/right it reports and proposes only.
+                left = str(args.get("left") or "").strip()
+                right = str(args.get("right") or "").strip()
+                if left and right:
+                    recorded = near_miss.record(
+                        self._store,
+                        path_query.resolve(self._store, left) or left,
+                        path_query.resolve(self._store, right) or right,
+                        reason=str(args.get("reason") or ""),
+                    )
+                    return _json_ok(recorded=recorded, pair=near_miss.report(self._store))
+                return _json_ok(**near_miss.report(self._store))
 
             if action == "related":
                 # "those two aren't related" -> the edge learns (#79). Accepts ids or phrases,
