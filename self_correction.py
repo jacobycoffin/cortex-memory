@@ -239,6 +239,18 @@ def _supersede(store: Any, found: Any, target_id: str, at: datetime | None) -> d
             (uuid.uuid4().hex[:12], str(new_id), str(target_id) or None, statement,
              found.marker, moment.isoformat()),
         )
+    try:
+        from . import provenance
+
+        provenance.link(store, str(new_id), "corrected",
+                        detail=f"replaced {str(target_id)[:8]}" if target_id else "no target",
+                        source_id=str(target_id), at=moment)
+        if target_id:
+            provenance.link(store, str(target_id), "superseded",
+                            detail=f"replaced by {str(new_id)[:8]}",
+                            source_id=str(new_id), at=moment)
+    except Exception:  # noqa: BLE001 - provenance is evidence, never a reason a correction fails
+        pass
     return {
         "applied": True,
         "memory_id": str(new_id),
