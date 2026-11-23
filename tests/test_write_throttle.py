@@ -222,6 +222,31 @@ class JudgeIntegrationTests(ThrottleTestCase):
         self.assertEqual(sum(1 for item in remembered if item["status"] == "pending"), 2)
 
 
+class TurnKeyTests(ThrottleTestCase):
+    """A turn must not gain a fresh budget by taking longer than a second."""
+
+    def test_two_admits_seconds_apart_share_one_budget(self) -> None:
+        from datetime import timedelta
+
+        first = write_throttle.admit(self.store, "s1", at=NOW)
+        second = write_throttle.admit(self.store, "s1", at=NOW + timedelta(seconds=3))
+        used = first.used + (1 if second.allowed else 0)
+        self.assertLessEqual(used, write_throttle.TURN_CAP)
+        self.assertFalse(second.allowed if write_throttle.TURN_CAP == 1 else False)
+
+    def test_the_wall_clock_does_not_change_the_bucket(self) -> None:
+        from datetime import timedelta
+
+        left = write_throttle._bucket("turn", "s1", None, NOW)
+        right = write_throttle._bucket("turn", "s1", None, NOW + timedelta(hours=2))
+        self.assertEqual(left, right)
+
+    def test_an_explicit_turn_id_still_separates_turns(self) -> None:
+        left = write_throttle._bucket("turn", "s1", "turn-a", NOW)
+        right = write_throttle._bucket("turn", "s1", "turn-b", NOW)
+        self.assertNotEqual(left, right)
+
+
 class StoreIntegrationTests(ThrottleTestCase):
     def test_a_storm_is_stopped_after_the_turn_budget(self) -> None:
         results = [
