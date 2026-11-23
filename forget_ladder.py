@@ -410,6 +410,15 @@ def plan(
         dwell = dormancy.apply_to(dwell, row)
         threshold = _threshold(state, dwell)
         used = last_use(row)
+        # Variant phrasings of one fact age together (#56), when switched on: if a twin was useful
+        # last week the fact was useful last week, whichever words were in front of it. Off by
+        # default, and a failure returns the member's own date.
+        try:
+            from . import fact_families
+
+            used = fact_families.apply_to(store, memory_id, used)
+        except Exception:  # noqa: BLE001 - family ageing must never stop a sweep
+            pass
         if threshold is None or used is None:
             skipped["no_usable_timestamp"] = skipped.get("no_usable_timestamp", 0) + 1
             continue
