@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import edge_explain, two_pass, undo_learned  # (#27, #85, #213)
+from . import edge_explain, two_pass, undo_learned, write_dedup  # (#27, #28, #85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -173,6 +173,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "why",
                     "undo",
                     "disagreements",
+                    "dedupe_check",
                 ],
             },
             "content": {
@@ -1547,6 +1548,15 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "dedupe_check":
+                # Insert, merge or reject - decided against the nearest memories, before any
+                # write (#28). Read-only: it reports what the write path would do.
+                content = str(args.get("content") or args.get("query") or "").strip()
+                if not content:
+                    return _json_error("content is required")
+                verdict = write_dedup.decide(self._store, content)
+                return _json_ok(**verdict.as_dict())
 
             if action == "disagreements":
                 # What the cheap extraction pass got wrong, waiting for a person (#27). Listing is
