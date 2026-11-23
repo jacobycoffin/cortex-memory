@@ -37,7 +37,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
-from . import decay, near_miss  # (#80)
+from . import decay, near_miss, serial_position  # (#80, #82)
 from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
@@ -1014,6 +1014,20 @@ class MemoryRetriever:
             dropped = set(near_miss_drop)
             selected = [result for index, result in enumerate(selected) if index not in dropped]
             stage_ms["near_miss_dropped_count"] = float(len(dropped))
+
+        # Serial position (#82): where in the session a memory was last seen. Off by default -- the
+        # effect is measured from the access log (late use-rate 0.313 vs early 0.223), which is
+        # enough to build the weight and not enough to change every recall.
+        try:
+            if serial_position.enabled():
+                session = str((getattr(context, "scope", None) or {}).get("session_id") or "")
+                turns = serial_position.turn_index(self.store, session)
+                counters = serial_position.apply(self.store, selected, session_id=session,
+                                                 turns=turns)
+                for name, value in (counters or {}).items():
+                    stage_ms[name] = float(value)
+        except Exception:  # noqa: BLE001 - a weight must never break recall
+            pass
 
         selected, duplicates_replaced = enforce_distinct(selected, remaining, limit=limit)
         if duplicates_replaced:
