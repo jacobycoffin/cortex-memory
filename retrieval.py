@@ -37,7 +37,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
-from . import decay, edge_quarantine, near_miss, serial_position  # (#80, #82, #84)
+from . import boost_caps, decay, edge_quarantine, near_miss, serial_position  # (#80, #82, #84, #203)
 from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
@@ -786,6 +786,7 @@ class MemoryRetriever:
                     continue
                 components = dict(result.components or {})
                 components["entity_anchored"] = 1.0
+                components["entity_boost"] = float(ENTITY_BOOST)  # magnitude, for #203
                 scored[memory_id] = replace(
                     result, score=float(result.score) + ENTITY_BOOST, components=components
                 )
@@ -861,6 +862,15 @@ class MemoryRetriever:
         if usage_boosted:
             scored = {r.memory["id"]: r for r in scored_list}
             stage_ms["usage_boosted_count"] = float(usage_boosted)
+
+        # Popularity may break a tie; it may not become truth (#203). Every history boost above is
+        # capped on its own, which is not the same as a cap on their sum: one memory can be popular
+        # AND entity-anchored AND in today's working set, and that total is what competes with a
+        # merely relevant memory. The excess is removed from the score and noted on the result.
+        scored_list, boost_capped = boost_caps.enforce(scored.values())
+        if boost_capped:
+            scored = {r.memory["id"]: r for r in scored_list}
+            stage_ms["boost_capped_count"] = float(boost_capped)
 
         # A document must not outrank the user's own words on the same fact. Applied
         # before the sort, so it can only cap a competitor -- never lift anything.
