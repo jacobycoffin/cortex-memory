@@ -85,6 +85,7 @@ from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
 from . import (  # (#27-#30, #33, #38, #85, #213)
+    contradiction_cluster,
     edge_explain,
     entity_resolve,
     provenance,
@@ -187,6 +188,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "merge",
                     "correction",
                     "provenance",
+                    "contradictions",
                 ],
             },
             "content": {
@@ -1561,6 +1563,24 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "contradictions":
+                # Conflicts as review items, not pairwise rows (#52).
+                if args.get("resolve"):
+                    topic = str(args.get("topic") or args.get("cluster") or "").strip()
+                    winner = str(args.get("winner_id") or args.get("memory_id") or "").strip()
+                    by = str(args.get("by") or args.get("consent") or "").strip()
+                    match = [c for c in contradiction_cluster.clusters(self._store)
+                             if (not topic or c.topic == topic
+                                 or any(member.startswith(topic) for member in c.members))]
+                    if len(match) != 1:
+                        return _json_error("name one cluster by its topic or a member id")
+                    return _json_ok(**contradiction_cluster.resolve(
+                        self._store, match[0], winner, by=by
+                    ))
+                if args.get("stats"):
+                    return _json_ok(**contradiction_cluster.stats(self._store))
+                return _json_ok(clusters=contradiction_cluster.pending(self._store))
 
             if action == "provenance":
                 # The evidence behind one fact, oldest first (#51).
