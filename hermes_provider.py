@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import edge_explain, two_pass, undo_learned, write_dedup  # (#27, #28, #85, #213)
+from . import edge_explain, merge_review, two_pass, undo_learned, write_dedup  # (#27-#29, #85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -174,6 +174,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "undo",
                     "disagreements",
                     "dedupe_check",
+                    "merge",
                 ],
             },
             "content": {
@@ -1548,6 +1549,36 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "merge":
+                # Side by side, consent required, old record kept (#29). Without consent this
+                # action is a preview - which is the only safe default for a destructive step.
+                if args.get("undo"):
+                    return _json_ok(**merge_review.undo(
+                        self._store, args.get("merge_id") or None
+                    ))
+                left = str(args.get("left") or "").strip()
+                right = str(args.get("right") or "").strip()
+                if not left or not right:
+                    return _json_error("left and right are required")
+                left_id = path_query.resolve(self._store, left) or left
+                right_id = path_query.resolve(self._store, right) or right
+                proposal = merge_review.propose(
+                    self._store, left_id, right_id,
+                    merged_text=str(args.get("merged") or ""),
+                    reason=str(args.get("reason") or ""),
+                )
+                if proposal is None:
+                    return _json_error("one of the memories does not exist")
+                if not str(args.get("consent") or "").strip():
+                    return _json_ok(applied=False, needs_consent=True, **proposal.as_dict())
+                result = merge_review.apply(
+                    self._store, proposal, consent=True,
+                    consented_by=str(args["consent"]).strip(),
+                )
+                return _json_ok(applied=result.ok, sentence=result.describe(),
+                                merge_id=result.merge_id, diff=result.diff,
+                                refused=result.reason)
 
             if action == "dedupe_check":
                 # Insert, merge or reject - decided against the nearest memories, before any
