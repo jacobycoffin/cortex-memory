@@ -893,6 +893,7 @@ class CortexMemoryProvider(MemoryProvider):
             lines.append(line)
             included_results.append(result)
             ids.append(memory_id)
+        selected_before_fit = len(results)
         results = included_results
         included_tool_guidance: list[dict[str, Any]] = []
         if tool_guidance:
@@ -989,12 +990,18 @@ class CortexMemoryProvider(MemoryProvider):
                 requested_limit=plan.limit,
                 token_budget=plan.token_budget,
                 candidate_count=diagnostics.candidate_count,
-                selected_count=len(results),
+                # #215: `selected` is what the retriever chose; `rendered` is what survived the
+                # context budget. Recording only the second value made every run look like nothing
+                # was ever withheld, and left `rendered_tokens` at zero on every row.
+                selected_count=selected_before_fit,
                 estimated_tokens=(len(context) + 3) // 4,
                 prepare_ms=prepare_ms,
                 abstained=False,
                 task_id=task_id,
                 stage_ms=dict(diagnostics.stage_ms),
+                rendered_count=len(results),
+                withheld_count=max(0, selected_before_fit - len(results)),
+                rendered_tokens=(len(context) + 3) // 4,
             )
             # Keep the arithmetic, not just the answer: this is what makes a wrong
             # recall explainable after the fact instead of a mystery.
