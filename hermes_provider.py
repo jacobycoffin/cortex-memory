@@ -84,7 +84,14 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import edge_explain, merge_review, two_pass, undo_learned, write_dedup  # (#27-#29, #85, #213)
+from . import (  # (#27-#30, #85, #213)
+    edge_explain,
+    merge_review,
+    scope_capture,
+    two_pass,
+    undo_learned,
+    write_dedup,
+)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -2245,6 +2252,9 @@ class CortexMemoryProvider(MemoryProvider):
                     kind=candidate.kind,
                     volatility_class=_volatility.lookup(self._store, proposal_id),
                 )
+                # Who / where / when, captured while the sentence is in hand (#30). It fills only
+                # what is missing, so an explicit caller scope always wins.
+                scope_capture.capture(self._store, proposal_id, candidate.content)
             except Exception:  # noqa: BLE001 - strength is metadata, never a reason to lose a write
                 pass
             try:
