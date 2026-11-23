@@ -37,7 +37,7 @@ from .latency_budget import budget_from
 from .namespace import channel_namespaces, filter_results
 from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
-from . import decay, near_miss, serial_position  # (#80, #82)
+from . import decay, edge_quarantine, near_miss, serial_position  # (#80, #82, #84)
 from .rerank import DEFAULT_TOP_N, rerank
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
@@ -318,9 +318,22 @@ class MemoryRetriever:
 
         def compute() -> tuple[set[str], set[str]]:
             rows = select(
-                self.store, "SELECT src_id, dst_id FROM edges WHERE relation = ?", (relation,)
+                self.store,
+                "SELECT src_id, dst_id, relation, created_at FROM edges WHERE relation = ?",
+                (relation,),
             )
-            return ({str(row[0]) for row in rows}, {str(row[1]) for row in rows})
+            # A quarantined edge is recorded but does not score (#84). With no adoption epoch every
+            # edge is grandfathered, so this is inert until somebody adopts one - the rule is about
+            # the next thousand edges, not about rewriting the graph today.
+            trusted = edge_quarantine.scoring_edges(
+                self.store,
+                [
+                    {"src_id": str(row[0]), "dst_id": str(row[1]), "relation": str(row[2]),
+                     "created_at": str(row[3]) if len(row) > 3 else None}
+                    for row in rows
+                ],
+            )
+            return ({row["src_id"] for row in trusted}, {row["dst_id"] for row in trusted})
 
         return self.precompute.get(
             f"edges:{relation}", compute, revision=revision_of(self.store)
