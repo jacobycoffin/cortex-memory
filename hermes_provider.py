@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import edge_explain, undo_learned  # (#85, #213)
+from . import edge_explain, two_pass, undo_learned  # (#27, #85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -172,6 +172,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "near_miss",
                     "why",
                     "undo",
+                    "disagreements",
                 ],
             },
             "content": {
@@ -1545,6 +1546,21 @@ class CortexMemoryProvider(MemoryProvider):
                     redacted=sanitized.redacted,
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
+                )
+
+            if action == "disagreements":
+                # What the cheap extraction pass got wrong, waiting for a person (#27). Listing is
+                # free; `resolve` records a decision and leaves a history.
+                if args.get("resolve"):
+                    resolved = two_pass.resolve(
+                        self._store, str(args["resolve"]), str(args.get("resolution") or "accept")
+                    )
+                    return _json_ok(resolved=resolved, **two_pass.report(self._store))
+                return _json_ok(
+                    **two_pass.report(self._store),
+                    queue=[{"id": row["disagreement_id"], "kind": row["kind"],
+                            "text": row["text"][:160]}
+                           for row in two_pass.queue(self._store, limit=10)],
                 )
 
             if action == "undo":
