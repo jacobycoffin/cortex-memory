@@ -227,6 +227,25 @@ def merge(store: Any, source_entity: str, target_entity: str) -> dict[str, int]:
     return {"moved": moved, "dropped": dropped}
 
 
+_NOT_A_NAME = re.compile(
+    r"^(?:/|[A-Za-z]:\\|\d{4}-\d{2}-\d{2})|\s›\s|@\w+\.\w+$"
+)
+
+
+def looks_like_a_name(text: str) -> bool:
+    """Reject the values that reach `entities_json` without being entities.
+
+    The live store's entity lists carry vault paths ("/tank"), dates ("2026-07-15") and section
+    headings ("2026-07-17 › HomeBox asset ID structure"). Seeding the alias table from those teaches
+    resolution 811 "entities" that are not things, and every later write would attach a date to a
+    memory as if it were a machine.
+    """
+    value = str(text or "").strip()
+    if not value or len(value) > 60:
+        return False
+    return _NOT_A_NAME.search(value) is None
+
+
 def from_memories(store: Any, *, limit: int = 500) -> dict[str, int]:
     """Usage pass: every entity already attached to a memory becomes known to itself.
 
@@ -252,6 +271,8 @@ def from_memories(store: Any, *, limit: int = 500) -> dict[str, int]:
         for name in names if isinstance(names, list) else []:
             text = str(name).strip()
             if not (MIN_KEY_LEN <= len(key(text)) <= MAX_ALIAS_LEN):
+                continue
+            if not looks_like_a_name(text):
                 continue
             if add(store, text, text, source="memory_entity") is not None:
                 learned += 1

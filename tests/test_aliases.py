@@ -94,6 +94,27 @@ class LearnTests(AliasTestCase):
         aliases.add(self.store, "CT116", "the t3 box", at=NOW)
         self.assertEqual(aliases.expand(self.store, ["t3code", "t3 box"]), ["CT116"])
 
+    def test_from_memories_refuses_values_that_are_not_names(self) -> None:
+        """The live entity lists carry vault paths, dates and section headings (#38)."""
+        self.store.add_memory(
+            content="A memory whose entity list is polluted.",
+            kind="semantic",
+            source_type="user_turn",
+            source_category="USER_EXPLICIT",
+            entities=["/tank", "2026-07-15", "2026-07-17 › HomeBox asset ID structure", "CT116"],
+        )
+        aliases.from_memories(self.store)
+        self.assertIsNone(aliases.resolve(self.store, "/tank"))
+        self.assertIsNone(aliases.resolve(self.store, "2026-07-15"))
+        self.assertEqual(aliases.resolve(self.store, "CT116"), "CT116")
+
+    def test_looks_like_a_name_judges_the_shapes(self) -> None:
+        self.assertFalse(aliases.looks_like_a_name("/tank"))
+        self.assertFalse(aliases.looks_like_a_name("2026-07-15"))
+        self.assertFalse(aliases.looks_like_a_name("2026-07-17 › HomeBox asset ID structure"))
+        self.assertTrue(aliases.looks_like_a_name("CT116"))
+        self.assertTrue(aliases.looks_like_a_name("229 Scottwood Ave"))
+
     def test_from_memories_teaches_the_names_in_use(self) -> None:
         self.store.add_memory(
             content="The t3 box hosts the nightly build.",

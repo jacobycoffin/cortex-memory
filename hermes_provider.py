@@ -84,8 +84,9 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import (  # (#27-#30, #33, #85, #213)
+from . import (  # (#27-#30, #33, #38, #85, #213)
     edge_explain,
+    entity_resolve,
     merge_review,
     scope_capture,
     self_correction,
@@ -2291,6 +2292,9 @@ class CortexMemoryProvider(MemoryProvider):
                 # Who / where / when, captured while the sentence is in hand (#30). It fills only
                 # what is missing, so an explicit caller scope always wins.
                 scope_capture.capture(self._store, proposal_id, candidate.content)
+                # One identity per thing, decided before the row is stored (#38). Ambiguous names
+                # are left unresolved rather than merged into a stranger.
+                entity_resolve.attach(self._store, proposal_id, candidate.content)
             except Exception:  # noqa: BLE001 - strength is metadata, never a reason to lose a write
                 pass
             try:
