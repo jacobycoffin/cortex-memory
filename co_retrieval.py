@@ -154,11 +154,23 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
     skipped = 0
     capped = 0
     vetoed = 0
+    single_session = 0
     for gate in plan(store, at=at, limit=limit):
         if not gate.eligible:
             skipped += 1
             continue
         left, right = gate.pair
+        # The general rule, not just this caller's bar (#204): a pair vouched for by one session is
+        # repetition, however many turns it took. Checked here so any future writer that counts
+        # turns instead of sessions is refused at the same door.
+        try:
+            from . import session_dedupe
+
+            if not session_dedupe.admit(store, left, right).allowed:
+                single_session += 1
+                continue
+        except Exception:  # noqa: BLE001 - the guard must never stop the pass
+            pass
         # A person's "these are unrelated" outranks any amount of co-occurrence (#79): a veto that
         # only nudged the weight would be undone by the next sweep.
         try:
@@ -207,7 +219,7 @@ def materialize(store: Any, *, at: datetime | None = None, limit: int = 500) -> 
         except Exception:  # noqa: BLE001 - one pair must not abort the batch
             skipped += 1
     return {"created": created, "reinforced": reinforced, "skipped": skipped,
-            "capped": capped, "vetoed": vetoed}
+            "capped": capped, "vetoed": vetoed, "single_session_refused": single_session}
 
 
 def report(store: Any, *, at: datetime | None = None) -> dict[str, Any]:
