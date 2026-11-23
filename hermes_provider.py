@@ -84,10 +84,11 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import (  # (#27-#30, #85, #213)
+from . import (  # (#27-#30, #33, #85, #213)
     edge_explain,
     merge_review,
     scope_capture,
+    self_correction,
     two_pass,
     undo_learned,
     write_dedup,
@@ -182,6 +183,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "disagreements",
                     "dedupe_check",
                     "merge",
+                    "correction",
                 ],
             },
             "content": {
@@ -1557,6 +1559,19 @@ class CortexMemoryProvider(MemoryProvider):
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
 
+            if action == "correction":
+                if args.get("undo"):
+                    return _json_ok(**self_correction.undo(
+                        self._store, str(args.get("correction_id") or "")
+                    ))
+                message = str(args.get("message") or args.get("content") or "").strip()
+                if not message:
+                    return _json_error("message is required")
+                return _json_ok(**self_correction.intercept(
+                    self._store, message,
+                    target_id=str(args.get("target_id") or ""),
+                ))
+
             if action == "merge":
                 # Side by side, consent required, old record kept (#29). Without consent this
                 # action is a preview - which is the only safe default for a destructive step.
@@ -2148,6 +2163,27 @@ class CortexMemoryProvider(MemoryProvider):
         if not self._store:
             return []
         proposal_ids: list[str] = []
+        # A user correcting themselves supersedes now (#33). Waiting behind the judge means the
+        # store keeps serving the value they just replaced, and "should a machine write this" is
+        # not even the question - the person who owns the fact already answered it.
+        if role == "user":
+            try:
+                corrected = self_correction.intercept(self._store, text)
+            except Exception:  # noqa: BLE001 - never let the shortcut cost a normal capture
+                corrected = {"applied": False}
+            if corrected.get("applied"):
+                proposal_ids.append(str(corrected["memory_id"]))
+                if action_sink is not None:
+                    action_sink.append(
+                        {
+                            "action": "corrected",
+                            "memory_id": corrected["memory_id"],
+                            "proposal_id": None,
+                            "kind": "correction",
+                            "state": "remembered",
+                            "reason": corrected["sentence"],
+                        }
+                    )
         for candidate in extract_candidates(text, role=role):
             # A credential anywhere in a candidate refuses that candidate (#43). The rest of the
             # turn is still captured: one pasted key must not cost the user their other facts.
