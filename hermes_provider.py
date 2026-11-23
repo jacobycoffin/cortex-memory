@@ -84,6 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
+from . import edge_explain  # (#85)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -169,6 +170,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "bridges",
                     "related",
                     "near_miss",
+                    "why",
                 ],
             },
             "content": {
@@ -1536,6 +1538,17 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "why":
+                # "Why are these two connected?" - one sentence, with what it rests on (#85).
+                left = str(args.get("left") or args.get("source") or "").strip()
+                right = str(args.get("right") or args.get("target") or "").strip()
+                if not left or not right:
+                    return _json_error("left and right are required")
+                explained = edge_explain.explain(
+                    self._store, left, right, args.get("relation") or None
+                )
+                return _json_ok(**explained.as_dict())
 
             if action == "near_miss":
                 # "those two aren't the same thing" -> a negative association, so they stop
