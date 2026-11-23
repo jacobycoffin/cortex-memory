@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import edge_provenance  # (#206)
+
 CONTENT_CAP = 60
 
 # What each recorded evidence type actually means, in the reader's terms.
@@ -210,8 +212,10 @@ def explain(store: Any, left: str, right: str, relation: str | None = None) -> E
         status = "near-miss"
         sentence += " — recorded as a near-miss, so only the stronger of the two surfaces"
 
-    # The tail says how much to trust it and what kind of link it is, in that order.
-    sentence += f" — {strength_word(weight)} {relation_phrase}."
+    # Provenance (#206): a link the retriever inferred is never presented as something stated.
+    origin = edge_provenance.provenance(store, left_id, right_id, edge_relation)
+    sentence += f" — {strength_word(weight)} {relation_phrase}, "
+    sentence += f"{edge_provenance.CAVEAT.get(origin.origin, 'inferred')}."
     return Explanation(left_id, right_id, sentence, relation=edge_relation, weight=weight,
                        witnesses=counts, status=status)
 
