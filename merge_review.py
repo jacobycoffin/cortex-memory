@@ -180,6 +180,17 @@ def apply(store: Any, proposal: Proposal, *, consent: bool = False,
         conn.execute(
             "UPDATE memories SET state = 'superseded' WHERE id = ?", (proposal.source_id,)
         )
+    try:
+        from . import provenance
+
+        provenance.link(store, proposal.target_id, "merged",
+                        detail=f"absorbed {proposal.source_id[:8]}",
+                        source_id=merge_id, at=at)
+        provenance.link(store, proposal.source_id, "superseded",
+                        detail=f"merged into {proposal.target_id[:8]}",
+                        source_id=merge_id, at=at)
+    except Exception:  # noqa: BLE001 - provenance never blocks a merge that already happened
+        pass
     return Applied(True, merge_id, diff=diff(str(target["content"]), proposal.merged_text))
 
 

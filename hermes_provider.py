@@ -87,6 +87,7 @@ from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50
 from . import (  # (#27-#30, #33, #38, #85, #213)
     edge_explain,
     entity_resolve,
+    provenance,
     merge_review,
     scope_capture,
     self_correction,
@@ -185,6 +186,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "dedupe_check",
                     "merge",
                     "correction",
+                    "provenance",
                 ],
             },
             "content": {
@@ -1559,6 +1561,14 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "provenance":
+                # The evidence behind one fact, oldest first (#51).
+                target = str(args.get("memory_id") or args.get("query") or "").strip()
+                if not target:
+                    return _json_error("memory_id is required")
+                chain = provenance.chain(self._store, target)
+                return _json_ok(**chain.as_dict())
 
             if action == "correction":
                 if args.get("undo"):
