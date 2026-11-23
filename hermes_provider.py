@@ -85,6 +85,7 @@ from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
 from . import (  # (#27-#30, #33, #38, #85, #213)
+    as_of,
     contradiction_cluster,
     edge_explain,
     entity_resolve,
@@ -189,6 +190,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "correction",
                     "provenance",
                     "contradictions",
+                    "as_of",
                 ],
             },
             "content": {
@@ -1563,6 +1565,21 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "as_of":
+                # What the store held on a date, from the version log (#55).
+                when = args.get("when") or args.get("date") or args.get("query")
+                if not when:
+                    return _json_error("when is required (an ISO date or timestamp)")
+                if args.get("changes_from") or args.get("from"):
+                    return _json_ok(**as_of.changes(
+                        self._store,
+                        args.get("from") or args.get("changes_from"),
+                        when,
+                    ))
+                return _json_ok(**as_of.answer(
+                    self._store, when, query=str(args.get("about") or ""),
+                ))
 
             if action == "contradictions":
                 # Conflicts as review items, not pairwise rows (#52).
