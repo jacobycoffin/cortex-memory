@@ -65,6 +65,17 @@ class RankingDeterminismTests(unittest.TestCase):
         self.assertEqual([result.memory["id"] for result in ordered],
                          ["aaaa", "bbbb", "cccc"])
 
+    def test_ranking_does_not_depend_on_input_order(self) -> None:
+        """The same results in any order must rank identically — the property the flake broke."""
+        results = [
+            retrieval.RetrievalResult({"id": memory_id, "pinned": 0, "content": "same"}, 0.5, {}, 12)
+            for memory_id in ("d", "a", "c", "b")
+        ]
+        forward = [result.memory["id"] for result in retrieval.rank_by_score(results)]
+        backward = [result.memory["id"] for result in retrieval.rank_by_score(list(reversed(results)))]
+        self.assertEqual(forward, backward)
+        self.assertEqual(forward, ["a", "b", "c", "d"])
+
     def test_a_higher_score_still_wins_and_pins_still_break_ties(self) -> None:
         results = [
             retrieval.RetrievalResult({"id": "b", "pinned": 1, "content": "x"}, 0.5, {}, 12),
@@ -73,6 +84,45 @@ class RankingDeterminismTests(unittest.TestCase):
         ]
         ordered = [result.memory["id"] for result in retrieval.rank_by_score(results)]
         self.assertEqual(ordered, ["a", "b", "c"])
+
+
+class EqualScoreMembershipTests(unittest.TestCase):
+    """Two memories that score exactly equal may come back in either order.
+
+    Selection guarantees *which* memories, never the order of a tie: `rank_by_score` breaks ties on
+    memory id and ids are UUIDs generated per store. A test that compares selected contents in order
+    therefore fails once and passes on the re-run, which is the shape of the #220 report.
+    """
+
+    def store_with_tie(self):
+        tmp = tempfile.TemporaryDirectory()
+        store = CortexStore(Path(tmp.name) / "cortex.db")
+        for text in ("Amber release approval requires two reviewers.",
+                     "Amber release approval requires two approvers."):
+            store.add_memory(text, kind="semantic", confidence=0.85, importance=0.85)
+        return tmp, store
+
+    def test_a_tied_pair_is_returned_both_times_in_any_order(self) -> None:
+        memberships = set()
+        orders = set()
+        for _ in range(4):
+            tmp, store = self.store_with_tie()
+            try:
+                selected, _diagnostics = MemoryRetriever(store).search_detailed(
+                    "amber release approval two", limit=6, token_budget=700,
+                    threshold=0.0, graph_depth=0,
+                )
+                contents = [result.memory["content"] for result in selected]
+                self.assertEqual(len(contents), 2)
+                self.assertEqual(round(selected[0].score, 6), round(selected[1].score, 6))
+                memberships.add(frozenset(contents))
+                orders.add(tuple(contents))
+            finally:
+                store.close()
+                tmp.cleanup()
+        self.assertEqual(len(memberships), 1, "membership must not change between stores")
+        # order may vary; only membership is guaranteed
+        self.assertGreaterEqual(len(orders), 1)
 
 
 class SelectIncrementalSimilarityTests(unittest.TestCase):
@@ -157,8 +207,19 @@ class SelectIncrementalSimilarityTests(unittest.TestCase):
         return selected, diagnostics, calls["count"]
 
     def test_selection_output_is_unchanged(self) -> None:
+        """Membership, not order: an exact tie is decided by memory id, and ids are random.
+
+        This assertion compared the selected **contents in order** against a fixed list, which can
+        only hold while no two selected memories score exactly equal. When they do, `rank_by_score`
+        breaks the tie on memory id — a UUID generated per store — so the order changes between runs
+        and the test fails once and passes on the re-run. That is the whole flake (#220): the
+        guarantee is *which* memories are selected, never the order of two equal scores.
+        """
         selected, diagnostics, _calls = self._search(limit=6, token_budget=700, threshold=0.45)
-        self.assertEqual([result.memory["content"] for result in selected], EXPECTED_SELECTED)
+        self.assertEqual(
+            Counter(result.memory["content"] for result in selected),
+            Counter(EXPECTED_SELECTED),
+        )
         reasons = Counter(decision["reason"] for decision in diagnostics.candidate_decisions)
         self.assertEqual(dict(reasons), EXPECTED_REASONS)
 
