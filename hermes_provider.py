@@ -84,7 +84,7 @@ from .namespace import channel_namespaces
 from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
-from . import edge_explain  # (#85)
+from . import edge_explain, undo_learned  # (#85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
@@ -171,6 +171,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "related",
                     "near_miss",
                     "why",
+                    "undo",
                 ],
             },
             "content": {
@@ -1538,6 +1539,17 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "undo":
+                # One command to take back a learned change (#213): the latest consolidation step,
+                # or a specific one. Listing first is free; nothing moves until it is asked for.
+                if args.get("list") in (True, "true", 1, "1"):
+                    return _json_ok(**undo_learned.report(self._store),
+                                    steps=[row["module"] + " " + str(row["created_at"])
+                                           for row in undo_learned.steps(self._store, limit=5)])
+                result = undo_learned.undo(self._store, args.get("run_id") or None)
+                return _json_ok(**{key: value for key, value in result.items()
+                                   if key != "module"}, module=result.get("module", ""))
 
             if action == "why":
                 # "Why are these two connected?" - one sentence, with what it rests on (#85).
