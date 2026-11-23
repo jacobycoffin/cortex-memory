@@ -26,6 +26,7 @@ from .autojudge import (
 )
 from .cortex_trace import elapsed_ms, phase_start, record_phase, trace_enabled
 from .security import normalize_text
+from . import undo_learned  # (#213)
 from .store import CortexStore, utc_now
 
 
@@ -222,6 +223,24 @@ def _run_semantic_consolidation(
             recorded.append((decision_id, decision))
 
     report["judged"] = len(recorded)
+    # One reversible step for this run (#213): snapshot the rows an apply is allowed to move, so a
+    # wrong pass can be taken back without restoring yesterday's database and losing everything
+    # else that happened since.
+    undo_run_id = ""
+    if apply and recorded:
+        ids: set[str] = set()
+        for _decision_id, decision in recorded:
+            for key in ("left_id", "right_id", "target_id", "source_id"):
+                value = decision.get(key)
+                if value:
+                    ids.add(str(value))
+        for candidate in candidates:
+            for key in ("left_id", "right_id"):
+                value = candidate.get(key) if isinstance(candidate, dict) else None
+                if value:
+                    ids.add(str(value))
+        targets = sorted(ids)
+        undo_run_id = undo_learned.begin(store, "semantic_consolidation", targets)
     for _decision_id, decision in recorded:
         report[decision["action"]] += 1
     for decision_id, decision in recorded:
@@ -238,6 +257,11 @@ def _run_semantic_consolidation(
         result = store.apply_semantic_consolidation(decision_id, actor=actor)
         if result.get("status") in {"applied", "linked", "kept_separate"}:
             report["applied"] += 1
+
+    if undo_run_id:
+        committed = undo_learned.commit(store, undo_run_id)
+        report["undo_run_id"] = committed.get("run_id", "")
+        report["undoable_changes"] = len(committed.get("changed") or [])
 
     with store.transaction() as conn:
         conn.execute(
