@@ -112,6 +112,7 @@ from . import outcome_lessons  # (#208)
 from . import idle_window  # (#212)
 from . import citations  # (#201)
 from . import shadow_rank  # (#202)
+from . import counterfactuals  # (#77)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -210,6 +211,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "counterfactuals",
                     "shadow",
                     "citations",
                     "lessons",
@@ -1803,6 +1805,23 @@ class CortexMemoryProvider(MemoryProvider):
                         self._store, chosen, limit=int(args.get("limit") or 200)
                     ).as_dict())
                 return _json_ok(**shadow_rank.report(self._store, limit=int(args.get("limit") or 200)))
+
+            if action == "counterfactuals":
+                # What a memory was chosen over (#77). Recording is opt-in.
+                if args.get("record"):
+                    return _json_ok(**counterfactuals.record(
+                        self._store, limit=int(args.get("limit") or 200)
+                    ).as_dict())
+                memory_id = str(args.get("memory_id") or "")
+                if memory_id and args.get("beaten_by"):
+                    return _json_ok(beaten_by=counterfactuals.beaten_by(self._store, memory_id))
+                if memory_id:
+                    return _json_ok(alternatives=counterfactuals.alternatives(
+                        self._store, memory_id
+                    ))
+                if args.get("narrowest"):
+                    return _json_ok(narrowest=counterfactuals.narrowest(self._store))
+                return _json_ok(**counterfactuals.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
