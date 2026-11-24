@@ -29,6 +29,23 @@
   .day { padding: 10px 12px 4px; font-size: 12px; color: #7d8ea1; text-transform: uppercase;
          letter-spacing: .06em; }
   footer { padding: 14px 12px 22px; font-size: 12px; color: #7d8ea1; }
+  /* The sheet is a dialog that slides over the list, so the list keeps its scroll position. */
+  #backdrop { position: fixed; inset: 0; background: #0009; opacity: 0; pointer-events: none;
+              transition: opacity .18s ease; }
+  #backdrop.open { opacity: 1; pointer-events: auto; }
+  #sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; max-height: 80vh;
+           overflow-y: auto; background: #10141a; border-top: 1px solid #222b38;
+           border-radius: 16px 16px 0 0; transform: translateY(100%);
+           transition: transform .22s ease; padding-bottom: env(safe-area-inset-bottom); }
+  #sheet.open { transform: translateY(0); }
+  #sheet header { position: static; border: 0; display: flex; align-items: center; gap: 8px; }
+  #sheet h2 { font-size: 15px; margin: 0; flex: 1; color: #cbd6e2; font-weight: 600; }
+  #sheet .close { min-height: 44px; min-width: 44px; border: 0; border-radius: 10px;
+                  background: #1d2a3a; color: #e8ecf1; font: inherit; }
+  #sheet .body { padding: 0 12px 18px; }
+  #sheet .prov { font-size: 12px; color: #7d8ea1; margin: 6px 0 10px; }
+  #sheet .rel { display: block; min-height: 44px; padding: 10px 12px; margin: 0 -12px;
+                color: #9ecbff; text-decoration: none; border-top: 1px solid #161c25; }
   nav.detail { padding: 12px; }
   nav.detail a { display: block; min-height: 44px; padding: 10px 0; color: #9ecbff;
                  text-decoration: none; border-bottom: 1px solid #161c25; }
@@ -45,12 +62,80 @@
 </header>
 <main id="out" role="tabpanel"></main>
 <footer id="foot"></footer>
+<div id="backdrop"></div>
+<section id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-hidden="true">
+  <header>
+    <h2 id="sheet-title">Memory</h2>
+    <button class="close" id="sheet-close" aria-label="Close">✕</button>
+  </header>
+  <div class="body">
+    <div class="prov" id="sheet-prov"></div>
+    <div id="sheet-text"></div>
+    <div id="sheet-rel"></div>
+  </div>
+</section>
 <script>
 (() => {
   let view = "list";
   const out = document.getElementById("out");
   const foot = document.getElementById("foot");
   const q = document.getElementById("q");
+
+  const sheet = document.getElementById("sheet");
+  const backdrop = document.getElementById("backdrop");
+  const prov = document.getElementById("sheet-prov");
+  const sheetText = document.getElementById("sheet-text");
+  const sheetRel = document.getElementById("sheet-rel");
+  const sheetTitle = document.getElementById("sheet-title");
+
+  const closeSheet = () => {
+    sheet.classList.remove("open");
+    backdrop.classList.remove("open");
+    sheet.setAttribute("aria-hidden", "true");
+    document.getElementById("sheet-close").focus();
+  };
+
+  const openSheet = async (memoryId) => {
+    sheet.classList.add("open");
+    backdrop.classList.add("open");
+    sheet.setAttribute("aria-hidden", "false");
+    prov.textContent = "";
+    sheetText.textContent = "Loading…";
+    sheetRel.textContent = "";
+    document.getElementById("sheet-close").focus();
+    try {
+      const reply = await fetch("/api/phone?view=sheet&memory_id=" + encodeURIComponent(memoryId),
+                                { credentials: "same-origin" });
+      if (!reply.ok) { sheetText.textContent = "Not available (" + reply.status + ")"; return; }
+      const data = await reply.json();
+      if (!data.found) { sheetTitle.textContent = "Not found"; sheetText.textContent = ""; return; }
+      sheetTitle.textContent = data.memory.kind || "Memory";
+      const bits = [data.provenance.created_at, data.provenance.kind, data.provenance.state,
+                    "confidence " + data.provenance.confidence];
+      if (data.provenance.source_type) bits.push(data.provenance.source_type);
+      if (data.cited_by !== null && data.cited_by !== undefined) {
+        bits.push(data.cited_by ? "cited by " + data.cited_by + " answer(s)" : "never cited");
+      }
+      prov.textContent = bits.filter(Boolean).join(" · ");
+      sheetText.textContent = data.memory.text;
+      for (const n of data.neighbours) {
+        const link = document.createElement("a");
+        link.className = "rel";
+        link.href = "#";
+        link.textContent = n.id.slice(0, 8) + "  ↔  " + n.weight;
+        link.addEventListener("click", (event) => { event.preventDefault(); openSheet(n.id); });
+        sheetRel.append(link);
+      }
+    } catch (error) {
+      sheetText.textContent = "Offline.";
+    }
+  };
+
+  document.getElementById("sheet-close").addEventListener("click", closeSheet);
+  backdrop.addEventListener("click", closeSheet);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && sheet.classList.contains("open")) closeSheet();
+  });
 
   const row = (item) => {
     const li = document.createElement("li");
@@ -62,6 +147,7 @@
     const text = document.createElement("div");
     text.textContent = item.text;
     a.append(meta, text);
+    a.addEventListener("click", (event) => { event.preventDefault(); openSheet(item.id); });
     li.append(a);
     return li;
   };

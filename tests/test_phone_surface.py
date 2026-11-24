@@ -189,3 +189,88 @@ class AssetTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SheetTests(unittest.TestCase):
+    """A bottom sheet has one screen and no back button."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def memory(self, text: str, **kwargs) -> str:
+        return self.store.add_memory(
+            content=text, kind=kwargs.get("kind", "semantic"), source_type="vault",
+            source_category="USER_STATED", confidence=kwargs.get("confidence", 0.86),
+        )[0]
+
+    def test_the_sheet_carries_provenance(self) -> None:
+        memory_id = self.memory("The dashboard listens on 8100.")
+        found = phone_surface.sheet(self.store, memory_id)
+        self.assertEqual(found["view"], "sheet")
+        self.assertEqual(found["provenance"]["kind"], "semantic")
+        self.assertEqual(found["provenance"]["confidence"], 0.86)
+
+    def test_the_provenance_is_quoted_from_the_row(self) -> None:
+        memory_id = self.memory("A fact.")
+        found = phone_surface.sheet(self.store, memory_id)
+        row = self.store._conn.execute(
+            "SELECT source_type, created_at FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        self.assertEqual(found["provenance"]["source_type"], row["source_type"])
+        self.assertTrue(found["provenance"]["created_at"])
+
+    def test_a_missing_memory_is_reported(self) -> None:
+        found = phone_surface.sheet(self.store, "nope")
+        self.assertFalse(found["found"])
+
+    def test_neighbours_are_included(self) -> None:
+        first = self.memory("a")
+        second = self.memory("b")
+        self.store.add_edge(first, second, "co_retrieval", weight=0.7)
+        found = phone_surface.sheet(self.store, first)
+        self.assertEqual([item["id"] for item in found["neighbours"]], [second])
+
+    def test_cited_by_is_unknown_when_there_is_no_citation_table(self) -> None:
+        memory_id = self.memory("A fact.")
+        self.assertIsNone(phone_surface.sheet(self.store, memory_id)["cited_by"])
+
+    def test_the_router_serves_the_sheet_view(self) -> None:
+        memory_id = self.memory("A fact.")
+        found = phone_surface.payload(self.store, "sheet", memory_id=memory_id)
+        self.assertEqual(found["view"], "sheet")
+
+
+class SheetMarkupTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.html = (Path(phone_surface.__file__).with_name("phone.html")).read_text(
+            encoding="utf-8")
+
+    def test_the_sheet_is_a_modal_dialog(self) -> None:
+        self.assertIn('role="dialog"', self.html)
+        self.assertIn('aria-modal="true"', self.html)
+
+    def test_the_sheet_starts_hidden(self) -> None:
+        self.assertIn('aria-hidden="true"', self.html)
+
+    def test_there_is_a_close_control_big_enough_for_a_thumb(self) -> None:
+        self.assertIn('id="sheet-close"', self.html)
+        self.assertIn("min-height: 44px", self.html)
+
+    def test_tapping_a_row_opts_out_of_navigation(self) -> None:
+        """The list keeps its scroll position because the sheet is not a page."""
+        self.assertIn("preventDefault()", self.html)
+
+    def test_the_sheet_can_be_dismissed_three_ways(self) -> None:
+        self.assertIn("sheet-close", self.html)      # the button
+        self.assertIn("backdrop.addEventListener", self.html)  # the backdrop
+        self.assertIn('event.key === "Escape"', self.html)      # the keyboard
+
+    def test_the_sheet_asks_for_its_own_view(self) -> None:
+        self.assertIn("view=sheet", self.html)
+
+    def test_the_page_is_still_small(self) -> None:
+        self.assertLess(len(self.html.encode("utf-8")), 26000)
