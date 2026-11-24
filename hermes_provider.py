@@ -107,6 +107,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     write_dedup,
 )
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
+from . import sleep_proposals, two_pass  # (#27, #76)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -205,6 +206,8 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "two_pass",
+                    "edge_proposals",
                     "outcomes",
                     "archaeology",
                     "person",
@@ -1704,6 +1707,35 @@ class CortexMemoryProvider(MemoryProvider):
                         self._store, str(args["memory_id"])
                     ).as_dict())
                 return _json_ok(**outcomes.report(self._store))
+
+            if action == "two_pass":
+                # Cheap pass proposes, strong pass accepts, disagreements queue for review (#27).
+                text = str(args.get("content") or args.get("text") or "").strip()
+                if args.get("queue"):
+                    return _json_ok(queued=two_pass.queue(self._store))
+                if text:
+                    outcome = two_pass.run(self._store, text)
+                    return _json_ok(accepted=outcome.accepted, rejected=outcome.rejected,
+                                    missed=outcome.missed,
+                                    disagreements=outcome.disagreements,
+                                    sentence=outcome.describe())
+                return _json_ok(**two_pass.report(self._store))
+
+            if action == "edge_proposals":
+                # The nightly pass proposes, a person decides (#76).
+                if args.get("build") or args.get("persist"):
+                    return _json_ok(**sleep_proposals.propose(self._store))
+                if args.get("accept"):
+                    return _json_ok(**sleep_proposals.accept(
+                        self._store, str(args["accept"]), by=str(args.get("by") or "")
+                    ))
+                if args.get("reject"):
+                    return _json_ok(**sleep_proposals.reject(
+                        self._store, str(args["reject"]), by=str(args.get("by") or ""),
+                        reason=str(args.get("reason") or ""),
+                    ))
+                return _json_ok(proposals=sleep_proposals.proposals(self._store),
+                                **sleep_proposals.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).

@@ -59,7 +59,8 @@ def observations(store: Any, *, limit: int = 200) -> list[dict[str, Any]]:
     _ensure(store)
     rows = store._conn.execute(
         f"""SELECT left_id, right_id, COUNT(DISTINCT session_id) AS sessions,
-                   MAX(observed_at) AS last_seen
+                   MAX(observed_at) AS last_seen,
+                   GROUP_CONCAT(DISTINCT session_id) AS session_ids
             FROM {_OBSERVATIONS} GROUP BY left_id, right_id
             ORDER BY sessions DESC, last_seen DESC LIMIT ?""",
         (limit,),
@@ -70,6 +71,12 @@ def observations(store: Any, *, limit: int = 200) -> list[dict[str, Any]]:
             "right_id": str(row["right_id"]),
             "sessions": int(row["sessions"]),
             "last_seen": str(row["last_seen"]),
+            # Which sessions, not just how many: a proposal has to be reviewable, and "seen in two
+            # sessions" is not something a person can check. Bounded so one popular pair cannot
+            # return an unbounded list to a caller that only wants to show it.
+            "session_ids": sorted(
+                {item for item in str(row["session_ids"] or "").split(",") if item}
+            )[:10],
         }
         for row in rows
     ]
