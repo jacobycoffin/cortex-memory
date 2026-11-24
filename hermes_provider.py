@@ -114,6 +114,7 @@ from . import citations  # (#201)
 from . import shadow_rank  # (#202)
 from . import counterfactuals  # (#77)
 from . import summaries  # (#205)
+from . import consolidation_queue  # (#209)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -212,6 +213,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "consolidation",
                     "summaries",
                     "counterfactuals",
                     "shadow",
@@ -1842,6 +1844,21 @@ class CortexMemoryProvider(MemoryProvider):
                         staleness=summaries.stale(self._store, str(args["memory_id"])).as_dict(),
                     )
                 return _json_ok(**summaries.report(self._store))
+
+            if action == "consolidation":
+                # Two speeds: a bounded drain during turns, a full sweep when idle (#209).
+                if args.get("enqueue"):
+                    return _json_ok(added=consolidation_queue.enqueue(
+                        self._store, args.get("memory_ids") or [],
+                        reason=str(args.get("reason") or ""),
+                    ))
+                if args.get("sweep"):
+                    return _json_ok(**consolidation_queue.sweep(
+                        self._store, lambda memory_id: None,
+                        min_idle_seconds=int(args.get("min_idle_seconds") or 600),
+                    ))
+                return _json_ok(depth=consolidation_queue.depth(self._store),
+                                **consolidation_queue.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
