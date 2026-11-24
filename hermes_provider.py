@@ -109,6 +109,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import sleep_proposals, two_pass  # (#27, #76)
 from . import outcome_lessons  # (#208)
+from . import idle_window  # (#212)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -208,6 +209,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "relations",
                     "tool_use",
                     "lessons",
+                    "idle",
                     "two_pass",
                     "edge_proposals",
                     "outcomes",
@@ -1762,6 +1764,11 @@ class CortexMemoryProvider(MemoryProvider):
                 return _json_ok(open_questions=[lesson.as_dict()
                                                 for lesson in outcome_lessons.as_lessons(self._store)],
                                 **outcome_lessons.report(self._store))
+            if action == "idle":
+                # Is the box quiet enough for the expensive pass (#212)? Read-only.
+                return _json_ok(**idle_window.report(
+                    self._store, min_idle_seconds=int(args.get("min_idle_seconds") or 600)
+                ))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
