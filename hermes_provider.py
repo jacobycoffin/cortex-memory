@@ -85,6 +85,7 @@ from .project_scope import scope_for_capture
 from .project_detect import candidate_projects, detect
 from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50, #60, #64)
 from . import (  # (#27-#30, #33, #38, #85, #213)
+    archaeology,
     as_of,
     contradiction_cluster,
     derived_facts,
@@ -199,6 +200,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "relations",
                     "tool_use",
                     "outcomes",
+                    "archaeology",
                 ],
             },
             "content": {
@@ -1572,6 +1574,18 @@ class CortexMemoryProvider(MemoryProvider):
                     redacted=sanitized.redacted,
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
+                )
+
+            if action == "archaeology":
+                # What a memory actually changed (#81). Read-only.
+                days = int(args.get("days") or archaeology.DEFAULT_DAYS)
+                target = str(args.get("memory_id") or args.get("query") or "").strip()
+                if target:
+                    return _json_ok(**archaeology.digest(self._store, target, days=days))
+                return _json_ok(
+                    report=archaeology.report(self._store, days=days),
+                    influential=archaeology.most_influential(self._store, days=days, limit=5),
+                    useless=archaeology.silently_useless(self._store, days=days, limit=5),
                 )
 
             if action == "outcomes":
