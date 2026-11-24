@@ -148,6 +148,41 @@ def detail(store: Any, memory_id: str, *, neighbours: int = 5) -> dict[str, Any]
             "note": "the graph is this list, one memory at a time"}
 
 
+def sheet(store: Any, memory_id: str, *, neighbours: int = 5) -> dict[str, Any]:
+    """What a tap opens: one memory, its provenance, its neighbours and whether it was used.
+
+    A bottom sheet has one screen and no back button, so it has to answer the questions the list cannot
+    in the same glance: when was this written, how sure is the store, which project does it belong to,
+    and did an answer ever actually use it (#174). Provenance is **quoted from the row**, never inferred.
+    """
+    base = detail(store, str(memory_id), neighbours=neighbours)
+    if not base.get("found"):
+        return {**base, "view": "sheet"}
+    rows = _rows(store, "SELECT * FROM memories WHERE id = ?", (str(memory_id),))
+    row = rows[0] if rows else {}
+    provenance = {
+        "kind": str(row.get("kind") or ""),
+        "state": str(row.get("state") or ""),
+        "confidence": round(float(row.get("confidence") or 0.0), 2),
+        "created_at": str(row.get("created_at") or "")[:19],
+        "source_type": str(row.get("source_type") or ""),
+        "approval_state": str(row.get("approval_state") or ""),
+        "pinned": bool(row.get("pinned")),
+    }
+    used = None
+    try:
+        found = _rows(
+            store,
+            "SELECT COUNT(*) AS count FROM citations WHERE memory_id = ?",
+            (str(memory_id),),
+        )
+        if found:
+            used = int(found[0]["count"] or 0)
+    except Exception:  # noqa: BLE001 - a sheet without a citation count is still useful
+        used = None
+    return {**base, "view": "sheet", "provenance": provenance, "cited_by": used}
+
+
 def payload(store: Any, view: str = "list", *, query: str = "", limit: int = DEFAULT_LIMIT,
             kind: str = "", memory_id: str = "") -> dict[str, Any]:
     """One entry point for the router, so the served JSON always has the same shape."""
@@ -158,6 +193,8 @@ def payload(store: Any, view: str = "list", *, query: str = "", limit: int = DEF
         return timeline(store, limit=limit, kind=kind)
     if name == "detail":
         return detail(store, memory_id)
+    if name == "sheet":
+        return sheet(store, memory_id, neighbours=int(limit) or 5)
     return recent(store, limit=limit, kind=kind)
 
 
