@@ -92,6 +92,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     derived_facts,
     outcomes,
     person_profiles,
+    promotion_gate,
     relationship_edges,
     tool_links,
     edge_explain,
@@ -204,6 +205,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "outcomes",
                     "archaeology",
                     "person",
+                    "promotion_gate",
                     "entity_merge",
                 ],
             },
@@ -1579,6 +1581,19 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "promotion_gate":
+                # Would this generalisation be allowed (#105)? Read-only unless promote is set.
+                statement = str(args.get("statement") or args.get("content") or "").strip()
+                if not statement:
+                    return _json_ok(**promotion_gate.report(self._store))
+                if args.get("promote"):
+                    return _json_ok(**promotion_gate.promote(
+                        self._store, statement,
+                        kind=str(args.get("kind") or "semantic"),
+                        allow_unready=bool(args.get("allow_unready")),
+                    ))
+                return _json_ok(**promotion_gate.ready(self._store, statement).as_dict())
 
             if action == "person":
                 # A one-page profile assembled from the facts that mention someone (#61).
