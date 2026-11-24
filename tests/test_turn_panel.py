@@ -29,6 +29,9 @@ class StoreTests(unittest.TestCase):
         )[0]
 
     def trace(self, task_id: str, selected: list[str], *, query: str = "which port") -> None:
+        # Stamp an explicit timestamp: two traces written in the same second tie on created_at, and the
+        # "latest turn" assertion would then be measuring SQLite's tie-break rather than the panel.
+        self.stamp = getattr(self, "stamp", 0) + 1
         self.store.record_memory_trace_decision(
             task_id=task_id,
             session_id="s1",
@@ -45,6 +48,11 @@ class StoreTests(unittest.TestCase):
             ],
             retrieval_context={},
         )
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE memory_traces SET created_at = ? WHERE task_id = ?",
+                (f"2026-11-24T12:00:{self.stamp:02d}+00:00", task_id),
+            )
 
     def test_no_turn_at_all_says_so(self) -> None:
         panel = turn_panel.build(self.store)
