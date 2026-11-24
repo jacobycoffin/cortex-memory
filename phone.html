@@ -49,18 +49,29 @@
   nav.detail { padding: 12px; }
   nav.detail a { display: block; min-height: 44px; padding: 10px 0; color: #9ecbff;
                  text-decoration: none; border-bottom: 1px solid #161c25; }
+  /* A dark surface hides the default ring, so focus gets an explicit one. */
+  :focus-visible { outline: 2px solid #9ecbff; outline-offset: 2px; border-radius: 8px; }
+  .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+        clip-path: inset(50%); white-space: nowrap; border: 0; }
+  /* Motion is optional: the sheet still appears, it just stops sliding. */
+  @media (prefers-reduced-motion: reduce) {
+    #backdrop, #sheet { transition: none; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>Cortex — what I know</h1>
   <div class="tabs" role="tablist">
-    <button class="tab" role="tab" data-view="list" aria-selected="true">Recent</button>
-    <button class="tab" role="tab" data-view="timeline" aria-selected="false">Timeline</button>
+    <button class="tab" role="tab" data-view="list" aria-selected="true" aria-controls="out">Recent</button>
+    <button class="tab" role="tab" data-view="timeline" aria-selected="false" aria-controls="out">Timeline</button>
   </div>
-  <input id="q" type="search" inputmode="search" placeholder="Search memories" autocomplete="off">
+  <label class="sr" for="q">Search memories</label>
+  <input id="q" type="search" inputmode="search" placeholder="Search memories" autocomplete="off"
+         aria-describedby="q-hint">
+  <span class="sr" id="q-hint">Results update as you type.</span>
 </header>
-<main id="out" role="tabpanel"></main>
+<main id="out" role="tabpanel" aria-label="Memories" aria-live="polite" aria-busy="false"></main>
 <footer id="foot"></footer>
 <div id="backdrop"></div>
 <section id="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" aria-hidden="true">
