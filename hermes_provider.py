@@ -89,6 +89,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     contradiction_cluster,
     derived_facts,
     relationship_edges,
+    tool_links,
     edge_explain,
     entity_resolve,
     provenance,
@@ -195,6 +196,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "as_of",
                     "derived",
                     "relations",
+                    "tool_use",
                 ],
             },
             "content": {
@@ -1569,6 +1571,18 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "tool_use":
+                # Which memories informed which tool calls (#70).
+                if args.get("tool"):
+                    return _json_ok(memory_ids=tool_links.for_tool(
+                        self._store, str(args["tool"])
+                    ))
+                if args.get("memory_id"):
+                    return _json_ok(uses=[use.as_dict() for use in tool_links.for_memory(
+                        self._store, str(args["memory_id"])
+                    )])
+                return _json_ok(**tool_links.report(self._store))
 
             if action == "relations":
                 # Typed relations between entities (#62).
