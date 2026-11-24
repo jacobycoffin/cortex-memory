@@ -43,6 +43,14 @@ def added_cpu(control_ms: float, preload_ms: float, requests: int) -> dict[str, 
     return {'total_ms': round(delta, 6), 'per_request_ms': round(delta / requests, 6)}
 
 
+def _compared_cases(control: Sequence[tuple[str, ...]], preload: Sequence[tuple[str, ...]],
+                    warm_flags: Sequence[bool]) -> int:
+    """How many cases actually had a warm entry to compare, i.e. how much this run proved."""
+    if len(control) != len(preload):
+        return 0
+    return sum(1 for index in range(min(len(control), len(warm_flags))) if warm_flags[index])
+
+
 def _selections_match(control: Sequence[tuple[str, ...]], preload: Sequence[tuple[str, ...]],
                       warm_flags: Sequence[bool]) -> bool:
     """Every case whose warm entry was actually consumed must select exactly what control did.
@@ -196,6 +204,12 @@ def evaluate_preload(db: Path, labels: Sequence[RetrievalLabel], *,
             'worker_failed_jobs': new['worker'].get('failed', 0),
             # Which cases disagreed, by index only - never the query, the memory or the text. A bare
             # False on a loaded runner is undiagnosable; an index and a hit count are not.
+            # How much the verdict is worth. Zero means the comparison never happened -- a loaded
+            # runner that consumed no warm entry proved nothing, and "nothing proved" is not the same
+            # claim as "the selection changed". Conflating them is what made this exit 1 with no
+            # message and look like a code bug in three unrelated pull requests.
+            'compared_cases': _compared_cases(
+                selections['control'], selections['preload'], new.get('warm_flags') or []),
             'mismatch_case_indices': [
                 index for index, (left, right) in enumerate(
                     zip(selections['control'], selections['preload'])) if left != right
@@ -243,8 +257,19 @@ def main() -> int:
     except (OSError, ValueError, sqlite3.Error) as error:
         parser.error(f'Preload evaluation failed closed ({type(error).__name__}); inspect inputs locally')
     print('Wrote aggregate-only preload replay report; review locally before sharing')
-    return 0 if (report['correctness']['selection_matches_control'] and
-                 not report['correctness']['worker_failed_jobs']) else 1
+    correctness = report['correctness']
+    if not correctness.get('compared_cases'):
+        # Inconclusive, not failed: no warm entry was consumed, so the run never compared anything.
+        print('inconclusive: no warm entry was consumed, so nothing was compared', file=sys.stderr)
+        return 2
+    if correctness['selection_matches_control'] and not correctness['worker_failed_jobs']:
+        return 0
+    if correctness['worker_failed_jobs']:
+        print(f"worker failed {correctness['worker_failed_jobs']} job(s)", file=sys.stderr)
+    else:
+        print(f"selection did not match control on case(s) "
+              f"{correctness.get('mismatch_case_indices')}", file=sys.stderr)
+    return 1
 
 
 if __name__ == '__main__':
