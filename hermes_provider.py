@@ -92,6 +92,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     derived_facts,
     outcomes,
     person_profiles,
+    prediction_error,
     promotion_gate,
     relationship_edges,
     tool_links,
@@ -206,6 +207,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "archaeology",
                     "person",
                     "promotion_gate",
+                    "prediction_error",
                     "entity_merge",
                 ],
             },
@@ -1581,6 +1583,17 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "prediction_error":
+                # Should this observation touch anything (#68)? Read-only by default.
+                observation = str(args.get("content") or args.get("statement") or "").strip()
+                if not observation:
+                    return _json_ok(**prediction_error.report(self._store))
+                candidates = args.get("candidates") or None
+                return _json_ok(**prediction_error.gate(
+                    self._store, observation, candidates,
+                    limit=int(args.get("limit") or 20),
+                ))
 
             if action == "promotion_gate":
                 # Would this generalisation be allowed (#105)? Read-only unless promote is set.
