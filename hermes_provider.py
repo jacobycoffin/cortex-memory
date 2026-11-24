@@ -111,6 +111,7 @@ from . import sleep_proposals, two_pass  # (#27, #76)
 from . import outcome_lessons  # (#208)
 from . import idle_window  # (#212)
 from . import citations  # (#201)
+from . import shadow_rank  # (#202)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -209,6 +210,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "shadow",
                     "citations",
                     "lessons",
                     "idle",
@@ -1788,6 +1790,19 @@ class CortexMemoryProvider(MemoryProvider):
                         self._store, str(args["memory_id"])
                     ))
                 return _json_ok(**citations.report(self._store))
+
+            if action == "shadow":
+                # What a scoring change would have done, replayed on history (#202). Read-only.
+                name = str(args.get("policy") or "")
+                if name:
+                    chosen = next((item for item in shadow_rank.policies() if item.name == name),
+                                  None)
+                    if chosen is None:
+                        return _json_error(f"unknown policy {name}")
+                    return _json_ok(**shadow_rank.replay(
+                        self._store, chosen, limit=int(args.get("limit") or 200)
+                    ).as_dict())
+                return _json_ok(**shadow_rank.report(self._store, limit=int(args.get("limit") or 200)))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
