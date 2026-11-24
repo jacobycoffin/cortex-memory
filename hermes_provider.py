@@ -109,6 +109,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
+from . import outcome_lessons  # (#208)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -212,6 +213,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "prediction_error",
                     "context_tags",
                     "topics",
+                    "lessons",
                     "migrate",
                     "entity_merge",
                 ],
@@ -1588,6 +1590,30 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "lessons":
+                # Failures as questions, not rewrites (#208).
+                if args.get("correct"):
+                    return _json_ok(**outcome_lessons.propose_correction(
+                        self._store, str(args.get("memory_id") or ""),
+                        str(args.get("statement") or ""),
+                        by=str(args.get("by") or ""),
+                    ))
+                if args.get("close"):
+                    return _json_ok(**outcome_lessons.close(
+                        self._store, str(args["close"]), by=str(args.get("by") or ""),
+                        note=str(args.get("note") or ""),
+                    ))
+                if args.get("persist"):
+                    return _json_ok(recorded=outcome_lessons.persist(self._store),
+                                    **outcome_lessons.report(self._store))
+                if args.get("state"):
+                    return _json_ok(lessons=outcome_lessons.lessons(
+                        self._store, state=str(args["state"])
+                    ))
+                return _json_ok(open_questions=[lesson.as_dict()
+                                                for lesson in outcome_lessons.as_lessons(self._store)],
+                                **outcome_lessons.report(self._store))
 
             if action == "topics":
                 # Dense regions of the graph and their names (#74). Read-only unless create is set.
