@@ -87,6 +87,7 @@ from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50
 from . import (  # (#27-#30, #33, #38, #85, #213)
     as_of,
     contradiction_cluster,
+    derived_facts,
     edge_explain,
     entity_resolve,
     provenance,
@@ -191,6 +192,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "provenance",
                     "contradictions",
                     "as_of",
+                    "derived",
                 ],
             },
             "content": {
@@ -1565,6 +1567,23 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "derived":
+                # Inferences, and whether their sources have moved (#57).
+                if args.get("retract"):
+                    return _json_ok(**derived_facts.retract(
+                        self._store, str(args.get("memory_id") or ""),
+                        reason=str(args.get("reason") or ""),
+                    ))
+                if args.get("revalidate"):
+                    return _json_ok(**derived_facts.revalidate(
+                        self._store, str(args.get("memory_id") or ""),
+                        note=str(args.get("note") or ""),
+                    ))
+                if args.get("dirty"):
+                    return _json_ok(items=[item.as_dict()
+                                           for item in derived_facts.dirty(self._store)])
+                return _json_ok(**derived_facts.report(self._store))
 
             if action == "as_of":
                 # What the store held on a date, from the version log (#55).
