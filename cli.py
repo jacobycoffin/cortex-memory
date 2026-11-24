@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from . import turn_panel  # (#148) what the last turn injected
 from .retrieval import MemoryRetriever
 from .security import sanitize_memory
 from .store import CortexStore
@@ -48,6 +49,11 @@ def main() -> int:
     review.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
     review.add_argument("--limit", type=int, default=50)
     review.add_argument("--reason", default="local CLI review")
+    panel = sub.add_parser("panel", help="What the last turn injected, as terminal lines")
+    panel.add_argument("--task-id", default="", help="A specific turn (default: the latest)")
+    panel.add_argument("--limit", type=int, default=8)
+    panel.add_argument("--width", type=int, default=0, help="Characters (default: $COLUMNS)")
+    panel.add_argument("--color", action="store_true", help="Colour the used/unused marks")
     explain = sub.add_parser("explain")
     explain.add_argument("memory_id")
     maintenance = sub.add_parser("maintenance")
@@ -371,6 +377,11 @@ def main() -> int:
 
     store = CortexStore(args.db)
     try:
+        if args.command == "panel":
+            # What was injected this turn (#148); read-only, plain text unless --color.
+            built = turn_panel.build(store, args.task_id, limit=args.limit)
+            print(turn_panel.text(built, width=args.width, color=args.color))
+            return 0
         if args.command == "stats":
             result = store.stats()
         elif args.command == "audit":
