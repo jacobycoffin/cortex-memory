@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<!-- Phone-first memory surface (#159). List, search and timeline; the graph is a drill-down on one
+     memory. No canvas, no force layout, no 624 KB: this page is served whole in a few kilobytes. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Cortex</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 16px/1.45 -apple-system, system-ui, sans-serif;
+         background: #0b0d10; color: #e8ecf1; padding-bottom: env(safe-area-inset-bottom); }
+  header { position: sticky; top: 0; z-index: 2; background: #10141a; padding: 10px 12px;
+           border-bottom: 1px solid #1d2430; }
+  h1 { font-size: 15px; margin: 0 0 8px; font-weight: 600; letter-spacing: .02em; color: #9fb0c3; }
+  .tabs { display: flex; gap: 8px; }
+  .tab { flex: 1; min-height: 44px; display: flex; align-items: center; justify-content: center;
+         border: 1px solid #222b38; border-radius: 10px; background: #141a22; color: #cbd6e2;
+         font: inherit; }
+  .tab[aria-selected="true"] { background: #1d2a3a; border-color: #2f4760; color: #fff; }
+  input[type="search"] { width: 100%; min-height: 44px; margin-top: 8px; padding: 0 12px;
+                         border-radius: 10px; border: 1px solid #222b38; background: #141a22;
+                         color: #e8ecf1; font: inherit; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { border-bottom: 1px solid #161c25; }
+  li a { display: block; min-height: 44px; padding: 12px; color: inherit; text-decoration: none; }
+  .meta { font-size: 12px; color: #7d8ea1; margin-bottom: 3px; }
+  .day { padding: 10px 12px 4px; font-size: 12px; color: #7d8ea1; text-transform: uppercase;
+         letter-spacing: .06em; }
+  footer { padding: 14px 12px 22px; font-size: 12px; color: #7d8ea1; }
+  nav.detail { padding: 12px; }
+  nav.detail a { display: block; min-height: 44px; padding: 10px 0; color: #9ecbff;
+                 text-decoration: none; border-bottom: 1px solid #161c25; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Cortex — what I know</h1>
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" data-view="list" aria-selected="true">Recent</button>
+    <button class="tab" role="tab" data-view="timeline" aria-selected="false">Timeline</button>
+  </div>
+  <input id="q" type="search" inputmode="search" placeholder="Search memories" autocomplete="off">
+</header>
+<main id="out" role="tabpanel"></main>
+<footer id="foot"></footer>
+<script>
+(() => {
+  let view = "list";
+  const out = document.getElementById("out");
+  const foot = document.getElementById("foot");
+  const q = document.getElementById("q");
+
+  const row = (item) => {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "#detail=" + item.id;
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = [item.kind, item.state, item.created_at.slice(0, 10)].filter(Boolean).join(" · ");
+    const text = document.createElement("div");
+    text.textContent = item.text;
+    a.append(meta, text);
+    li.append(a);
+    return li;
+  };
+
+  const draw = (data) => {
+    out.textContent = "";
+    if (data.view === "detail") {
+      const nav = document.createElement("nav");
+      nav.className = "detail";
+      if (data.found) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = [data.memory.kind, data.memory.created_at.slice(0, 19)].join(" · ");
+        const body = document.createElement("p");
+        body.textContent = data.memory.text;
+        nav.append(meta, body);
+        for (const n of data.neighbours) {
+          const a = document.createElement("a");
+          a.href = "#detail=" + n.id;
+          a.textContent = n.id.slice(0, 8) + "  ↔  " + n.weight;
+          nav.append(a);
+        }
+      } else {
+        nav.textContent = "Not found.";
+      }
+      out.append(nav);
+      foot.textContent = "the graph, one memory at a time";
+      return;
+    }
+    const list = document.createElement("ul");
+    if (data.days) {
+      for (const group of data.days) {
+        const head = document.createElement("div");
+        head.className = "day";
+        head.textContent = group.day;
+        out.append(head);
+        for (const item of group.items) list.append(row(item));
+      }
+    } else {
+      for (const item of data.items) list.append(row(item));
+    }
+    out.append(list);
+    foot.textContent = data.more
+      ? data.more + " more of " + data.total
+      : data.total + " memories";
+  };
+
+  const load = async () => {
+    const hash = location.hash.startsWith("#detail=") ? location.hash.slice(8) : "";
+    const params = new URLSearchParams({ view: hash ? "detail" : (q.value ? "search" : view) });
+    if (hash) params.set("memory_id", hash);
+    if (q.value) params.set("query", q.value);
+    try {
+      const reply = await fetch("/api/phone?" + params.toString(), { credentials: "same-origin" });
+      if (!reply.ok) { foot.textContent = "not available (" + reply.status + ")"; return; }
+      draw(await reply.json());
+    } catch (error) {
+      foot.textContent = "offline";
+    }
+  };
+
+  for (const tab of document.querySelectorAll(".tab")) {
+    tab.addEventListener("click", () => {
+      view = tab.dataset.view;
+      location.hash = "";
+      for (const other of document.querySelectorAll(".tab")) {
+        other.setAttribute("aria-selected", String(other === tab));
+      }
+      load();
+    });
+  }
+  let timer = null;
+  q.addEventListener("input", () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { location.hash = ""; load(); }, 220);
+  });
+  window.addEventListener("hashchange", load);
+  load();
+})();
+</script>
+</body>
+</html>

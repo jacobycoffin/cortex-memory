@@ -25,6 +25,7 @@ from .benchmarking import (
     DASHBOARD_BENCHMARK_VERSION,
     run_dashboard_benchmark,
 )
+from . import phone_surface  # (#159) phone-first surface
 from .dashboard_auth import DashboardAuth, SESSION_COOKIE
 from .evaluation import (
     REAL_HISTORY_MIN_CASES,
@@ -299,6 +300,7 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
     html_path = Path(__file__).with_name("dashboard.html")
     html = html_path.read_bytes()
     public_assets = {
+        "/phone": ("text/html; charset=utf-8", Path(__file__).with_name("phone.html").read_bytes()),
         "/favicon.svg": ("image/svg+xml", Path(__file__).with_name("favicon.svg").read_bytes()),
         "/favicon.ico": ("image/x-icon", Path(__file__).with_name("favicon.ico").read_bytes()),
         "/apple-touch-icon.png": ("image/png", Path(__file__).with_name("apple-touch-icon.png").read_bytes()),
@@ -598,6 +600,21 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
                 )
                 return
             if not self._require_auth(complete=True):
+                return
+            if parsed.path == "/api/phone":
+                # Phone-first surface (#159): list, search, timeline, and one memory's neighbours.
+                params = parse_qs(parsed.query)
+                self._json(
+                    HTTPStatus.OK,
+                    phone_surface.payload(
+                        store,
+                        params.get("view", ["list"])[0],
+                        query=params.get("query", [""])[0],
+                        limit=int(params.get("limit", ["30"])[0] or 30),
+                        kind=params.get("kind", [""])[0],
+                        memory_id=params.get("memory_id", [""])[0],
+                    ),
+                )
                 return
             if parsed.path == "/api/snapshot":
                 snapshot = store.dashboard_snapshot()
