@@ -37,6 +37,8 @@ MEMBER_TABLE = "topic_members"
 GIANT_WARNING = 1000
 
 _WORD = re.compile(r"[a-z][a-z0-9_-]{2,}", re.IGNORECASE)
+_DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
+_TIME = re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?\b", re.IGNORECASE)
 _STOP = {
     "about", "after", "again", "against", "all", "also", "and", "any", "are", "because", "been",
     "before", "being", "both", "but", "can", "could", "did", "does", "done", "each", "every",
@@ -84,11 +86,36 @@ def _rows(store: Any, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
         return []
 
 
-def _terms(text: str) -> set[str]:
+# Vault scaffolding, not content. Every note the vault importer produced carries the same header
+# ("Vault note: <title> Path: <file> Section: <heading>"), so those words appear in *every* memory and
+# score enormous lift exactly because they are meaningless -- the first live run labelled the giant
+# component "vault path note section". Stripping the shape before counting is what lets a real subject
+# outrank the template.
+_SCAFFOLD = re.compile(
+    r"(?im)^\s*vault note\s*:.*$"
+    r"|\bpath\s*:\s*[^\n|]*?\.md\b"
+    # Bounded: a header value is short. An unbounded `.*` would eat the rest of a single-line note,
+    # which is the one way this pattern could remove a subject instead of a label.
+    r"|\bsection\s*:\s*[^\n]{0,80}"
+    r"|\btags?\s*:\s*[^\n]{0,80}"
+    r"|^\s*#{1,6}\s*"
+)
+
+
+def _strip_scaffolding(text: str) -> str:
+    """Remove the note-template shape, keeping whatever the note was actually about."""
+    stripped = _SCAFFOLD.sub(" ", str(text or ""))
+    # Dates and clock times are metadata about when a note was written, never its subject.
+    stripped = _DATE.sub(" ", stripped)
+    return _TIME.sub(" ", stripped)
+
+
+def _terms(text: str, *, strip: bool = True) -> set[str]:
     """The words worth scoring: long enough to mean something, minus the ones every sentence has."""
+    body = _strip_scaffolding(text) if strip else str(text or "")
     return {
         token.casefold().strip("_")
-        for token in _WORD.findall(str(text or ""))
+        for token in _WORD.findall(body)
         if len(token) >= 3 and token.casefold() not in _STOP
     }
 
@@ -127,12 +154,12 @@ def _global_terms(store: Any, *, limit: int = 20000) -> tuple[dict[str, int], in
     return counts, total
 
 
-def _region_terms(store: Any, members: Iterable[str]) -> dict[str, int]:
+def _region_terms(store: Any, members: Iterable[str], *, strip: bool = True) -> dict[str, int]:
     """How many memories inside the region mention each term."""
     counts: dict[str, int] = {}
     contents = _contents(store, members)
     for text in contents.values():
-        for term in _terms(text):
+        for term in _terms(text, strip=strip):
             counts[term] = counts.get(term, 0) + 1
     return counts
 
@@ -176,7 +203,17 @@ def label(store: Any, members: Iterable[str]) -> str:
         global_df, total = _global_terms(store)
     except Exception:  # noqa: BLE001 - an unnamed region is better than a broken caller
         return ""
-    return _label_from(terms, len(ids), global_df, total)
+    name = _label_from(terms, len(ids), global_df, total)
+    if name:
+        return name
+    # Stripping the scaffolding can leave a region with nothing to say -- a vault chunk whose entire
+    # text was a header. An empty title is worse than a templatey one, so fall back to the raw words
+    # rather than claiming the region has no subject.
+    try:
+        raw = _region_terms(store, ids, strip=False)
+    except Exception:  # noqa: BLE001
+        raw = {}
+    return _label_from(raw, len(ids), global_df, total)
 
 
 @dataclass(frozen=True)

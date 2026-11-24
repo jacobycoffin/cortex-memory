@@ -339,3 +339,79 @@ class FailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScaffoldingTests(unittest.TestCase):
+    """The note template is not the note's subject."""
+
+    def texts(self) -> dict:
+        return {}
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from cortex.store import CortexStore
+
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = CortexStore(Path(self.tmp.name) / "cortex.db")
+
+    def tearDown(self):
+        self.store.close()
+        self.tmp.cleanup()
+
+    def memory(self, text: str) -> str:
+        return self.store.add_memory(
+            content=text, kind="semantic", source_type="vault", source_category="AGENT_INFERENCE",
+        )[0]
+
+    def test_the_vault_header_is_not_a_term(self) -> None:
+        from cortex import topic_nodes
+
+        terms = topic_nodes._terms(
+            "Vault note: Cortex Brain Guide Path: 00 - Start Here.md Section: Guide"
+        )
+        self.assertNotIn("vault", terms)
+        self.assertNotIn("path", terms)
+        self.assertNotIn("section", terms)
+
+    def test_a_date_is_not_a_term(self) -> None:
+        from cortex import topic_nodes
+
+        self.assertNotIn("2026", topic_nodes._terms("the cutover happened 2026-11-01 on r630"))
+
+    def test_a_clock_time_is_not_a_term(self) -> None:
+        from cortex import topic_nodes
+
+        self.assertNotIn("18", topic_nodes._terms("it finished at 18:48 on the box"))
+
+    def test_the_subject_survives_the_stripping(self) -> None:
+        from cortex import topic_nodes
+
+        # The header is its own lines in a real vault chunk; that is the shape being stripped.
+        terms = topic_nodes._terms(
+            "Vault note: Build Info\nPath: _meta/Build Info.md\nSection: Build Info\n"
+            "nginx proxying on the dashboard"
+        )
+        self.assertIn("nginx", terms)
+
+    def test_a_region_whose_text_is_all_header_still_gets_a_name(self) -> None:
+        """Stripping must not leave a region nameless -- an empty title is worse than a template."""
+        from cortex import topic_nodes
+
+        for index in range(4):
+            self.memory(f"Vault note: Build Info {index} Path: _meta/build-{index}.md Section: Info")
+        members = [row[0] for row in self.store._conn.execute(
+            "SELECT id FROM memories ORDER BY created_at").fetchall()]
+        self.assertTrue(topic_nodes.label(self.store, members))
+
+    def test_boilerplate_loses_to_a_subject_in_a_label(self) -> None:
+        from cortex import topic_nodes
+
+        for index in range(5):
+            self.memory(
+                f"Vault note: note {index} Path: homelab/nginx-{index}.md Section: Nginx "
+                f"nginx proxy cache tuning note {index}"
+            )
+        members = [row[0] for row in self.store._conn.execute(
+            "SELECT id FROM memories ORDER BY created_at").fetchall()]
+        self.assertIn("nginx", topic_nodes.label(self.store, members))
