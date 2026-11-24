@@ -108,6 +108,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
 )
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import sleep_proposals, two_pass  # (#27, #76)
+from . import outcome_lessons  # (#208)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -206,6 +207,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "lessons",
                     "two_pass",
                     "edge_proposals",
                     "outcomes",
@@ -1736,6 +1738,30 @@ class CortexMemoryProvider(MemoryProvider):
                     ))
                 return _json_ok(proposals=sleep_proposals.proposals(self._store),
                                 **sleep_proposals.report(self._store))
+
+            if action == "lessons":
+                # Failures as questions, not rewrites (#208).
+                if args.get("correct"):
+                    return _json_ok(**outcome_lessons.propose_correction(
+                        self._store, str(args.get("memory_id") or ""),
+                        str(args.get("statement") or ""),
+                        by=str(args.get("by") or ""),
+                    ))
+                if args.get("close"):
+                    return _json_ok(**outcome_lessons.close(
+                        self._store, str(args["close"]), by=str(args.get("by") or ""),
+                        note=str(args.get("note") or ""),
+                    ))
+                if args.get("persist"):
+                    return _json_ok(recorded=outcome_lessons.persist(self._store),
+                                    **outcome_lessons.report(self._store))
+                if args.get("state"):
+                    return _json_ok(lessons=outcome_lessons.lessons(
+                        self._store, state=str(args["state"])
+                    ))
+                return _json_ok(open_questions=[lesson.as_dict()
+                                                for lesson in outcome_lessons.as_lessons(self._store)],
+                                **outcome_lessons.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
