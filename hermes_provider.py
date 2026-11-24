@@ -88,6 +88,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     as_of,
     contradiction_cluster,
     derived_facts,
+    outcomes,
     relationship_edges,
     tool_links,
     edge_explain,
@@ -197,6 +198,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "outcomes",
                 ],
             },
             "content": {
@@ -1571,6 +1573,20 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "outcomes":
+                # A memory's track record (#71). Recording a verdict needs an existing task ref.
+                if args.get("record"):
+                    return _json_ok(**outcomes.record(
+                        self._store, str(args.get("memory_id") or ""),
+                        str(args.get("task_ref") or ""), str(args.get("outcome") or ""),
+                        detail=str(args.get("detail") or ""),
+                    ))
+                if args.get("memory_id"):
+                    return _json_ok(**outcomes.track_record(
+                        self._store, str(args["memory_id"])
+                    ).as_dict())
+                return _json_ok(**outcomes.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
