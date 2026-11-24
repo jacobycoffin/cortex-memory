@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from . import saved_views  # (#163) named filters
 from . import turn_panel  # (#148) what the last turn injected
 from .retrieval import MemoryRetriever
 from .security import sanitize_memory
@@ -49,6 +50,10 @@ def main() -> int:
     review.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
     review.add_argument("--limit", type=int, default=50)
     review.add_argument("--reason", default="local CLI review")
+    views = sub.add_parser("views", help="Saved views: list, install presets, run or explain one")
+    views.add_argument("action", nargs="?", default="list",
+                       choices=["list", "install", "run", "explain"])
+    views.add_argument("name", nargs="?", default="")
     panel = sub.add_parser("panel", help="What the last turn injected, as terminal lines")
     panel.add_argument("--task-id", default="", help="A specific turn (default: the latest)")
     panel.add_argument("--limit", type=int, default=8)
@@ -377,6 +382,35 @@ def main() -> int:
 
     store = CortexStore(args.db)
     try:
+        if args.command == "views":
+            # A saved view is a filter with a name, never a script (#163).
+            if args.action == "install":
+                added = saved_views.install_presets(store)
+                print(f"installed {len(added)} preset(s)" + (f": {', '.join(added)}" if added else ""))
+            elif args.action == "run":
+                found = saved_views.run(store, args.name)
+                if not found["found"]:
+                    print(f"no saved view named {args.name!r}")
+                    return 1
+                for item in found["items"]:
+                    print(f"{item['id'][:8]} {item['kind'][:12]:12} {item['text'][:70]}")
+                if found["more"]:
+                    print(f"… {found['more']} more of {found['total']}")
+            elif args.action == "explain":
+                described = saved_views.explain(store, args.name)
+                if not described["found"]:
+                    print(f"no saved view named {args.name!r}")
+                    return 1
+                print(f"{described['name']}: {described['matches']} match(es)")
+                print(f"  {described['sql']}")
+                print(f"  params {described['params']}")
+            else:
+                rows = saved_views.views(store)
+                if not rows:
+                    print("no saved views; try: cortex-memory views install")
+                for row in rows:
+                    print(f"{row['name'][:24]:24} used {row['use_count']:3d}  {row['spec']}")
+            return 0
         if args.command == "panel":
             # What was injected this turn (#148); read-only, plain text unless --color.
             built = turn_panel.build(store, args.task_id, limit=args.limit)
