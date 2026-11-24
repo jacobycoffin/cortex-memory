@@ -113,6 +113,7 @@ from . import idle_window  # (#212)
 from . import citations  # (#201)
 from . import shadow_rank  # (#202)
 from . import counterfactuals  # (#77)
+from . import summaries  # (#205)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -211,6 +212,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "summaries",
                     "counterfactuals",
                     "shadow",
                     "citations",
@@ -1822,6 +1824,24 @@ class CortexMemoryProvider(MemoryProvider):
                 if args.get("narrowest"):
                     return _json_ok(narrowest=counterfactuals.narrowest(self._store))
                 return _json_ok(**counterfactuals.report(self._store))
+
+            if action == "summaries":
+                # A summary is a new node, never a replacement (#205).
+                if args.get("create"):
+                    return _json_ok(**summaries.create(
+                        self._store, args.get("members") or [],
+                        str(args.get("statement") or ""),
+                    ))
+                if args.get("refresh"):
+                    return _json_ok(**summaries.refresh(
+                        self._store, str(args["refresh"]), str(args.get("statement") or "")
+                    ))
+                if args.get("memory_id"):
+                    return _json_ok(
+                        members=summaries.members_of(self._store, str(args["memory_id"])),
+                        staleness=summaries.stale(self._store, str(args["memory_id"])).as_dict(),
+                    )
+                return _json_ok(**summaries.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
