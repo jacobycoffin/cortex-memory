@@ -87,9 +87,11 @@ from . import constraints, dry_run, entity_timeline, expiry_classes  # (#46, #50
 from . import (  # (#27-#30, #33, #38, #85, #213)
     archaeology,
     as_of,
+    entity_merge,
     contradiction_cluster,
     derived_facts,
     outcomes,
+    person_profiles,
     relationship_edges,
     tool_links,
     edge_explain,
@@ -201,6 +203,8 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "tool_use",
                     "outcomes",
                     "archaeology",
+                    "person",
+                    "entity_merge",
                 ],
             },
             "content": {
@@ -1575,6 +1579,34 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "person":
+                # A one-page profile assembled from the facts that mention someone (#61).
+                name = str(args.get("name") or args.get("query") or "").strip()
+                if not name:
+                    return _json_ok(people=person_profiles.index(self._store))
+                if args.get("facts"):
+                    return _json_ok(facts=person_profiles.facts_about(self._store, name))
+                payload = person_profiles.profile(self._store, name)
+                if payload is None:
+                    return _json_error(f"no facts mention {name}")
+                return _json_ok(**payload)
+
+            if action == "entity_merge":
+                # Collapse two ids for one thing, keeping the alias trail (#63).
+                if args.get("undo"):
+                    return _json_ok(**entity_merge.undo(
+                        self._store, args.get("merge_id") or None
+                    ))
+                source = str(args.get("source") or args.get("left") or "").strip()
+                target = str(args.get("target") or args.get("right") or "").strip()
+                if not source or not target:
+                    return _json_ok(**entity_merge.report(self._store))
+                by = str(args.get("by") or args.get("consent") or "").strip()
+                if not by:
+                    return _json_ok(needs_consent=True,
+                                    **entity_merge.propose(self._store, source, target))
+                return _json_ok(**entity_merge.apply(self._store, source, target, by=by))
 
             if action == "archaeology":
                 # What a memory actually changed (#81). Read-only.
