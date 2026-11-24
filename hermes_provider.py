@@ -88,6 +88,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     as_of,
     contradiction_cluster,
     derived_facts,
+    relationship_edges,
     edge_explain,
     entity_resolve,
     provenance,
@@ -193,6 +194,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "contradictions",
                     "as_of",
                     "derived",
+                    "relations",
                 ],
             },
             "content": {
@@ -1567,6 +1569,22 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "relations":
+                # Typed relations between entities (#62).
+                entity = str(args.get("entity") or args.get("query") or "").strip()
+                if args.get("link"):
+                    return _json_ok(**relationship_edges.link(
+                        self._store,
+                        str(args.get("source") or ""), str(args.get("target") or ""),
+                        str(args.get("relation") or ""),
+                        evidence=str(args.get("evidence") or ""),
+                        asserted_by=str(args.get("by") or ""),
+                    ))
+                if not entity:
+                    return _json_ok(**relationship_edges.report(self._store))
+                return _json_ok(relations=[relation.as_dict() for relation in
+                                           relationship_edges.relations_of(self._store, entity)])
 
             if action == "derived":
                 # Inferences, and whether their sources have moved (#57).
