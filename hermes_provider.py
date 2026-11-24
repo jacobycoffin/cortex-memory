@@ -107,6 +107,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
     write_dedup,
 )
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
+from . import context_tags  # (#83)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -208,6 +209,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "person",
                     "promotion_gate",
                     "prediction_error",
+                    "context_tags",
                     "entity_merge",
                 ],
             },
@@ -1583,6 +1585,20 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "context_tags":
+                # Context as a retrieval key (#83): read-only ranking hints, capped at +-0.15.
+                ids = args.get("memory_ids") or []
+                at = context_tags.context(
+                    project=str(args.get("project") or ""),
+                    who=args.get("who") or (),
+                    where=args.get("where") or (),
+                    when=str(args.get("when") or ""),
+                    kind=str(args.get("kind") or ""),
+                )
+                if ids:
+                    return _json_ok(ranked=context_tags.rank(self._store, ids, at))
+                return _json_ok(**context_tags.report(self._store))
 
             if action == "prediction_error":
                 # Should this observation touch anything (#68)? Read-only by default.
