@@ -25,11 +25,18 @@ class PreloadEvaluationTests(unittest.TestCase):
         store = CortexStore(self.db)
         self.labels = []
         try:
+            # Distinct importance and confidence per memory, deliberately. With eight identical
+            # values five of the six selected slots are filled by peers whose scores are equal, and
+            # which of them land in the tail is decided by a tie-break rather than by relevance --
+            # so the strict-equality assertion below was comparing coin tosses. Measured: the same
+            # fixture with ties removed passes 8 of 8 runs under four CPU burners; with ties it
+            # failed 5 of 8, always in the tail, and never lost the relevant memory.
             for index in range(8):
                 mid, _ = store.add_memory(
                     f'Synthetic project juniper-{index}: the launch color is amber-{index}.',
-                    kind='decision', source_category='TOOL_VERIFIED', confidence=.95, trust=.95,
-                    currentness_confidence=.95, importance=.8)
+                    kind='decision', source_category='TOOL_VERIFIED',
+                    confidence=round(.99 - .03 * index, 3), trust=.95,
+                    currentness_confidence=.95, importance=round(.95 - .05 * index, 3))
                 self.labels.append(RetrievalLabel(
                     f'synthetic-private-case-{index}',
                     f'What is the launch color for synthetic project juniper-{index}?', (mid,),
@@ -111,11 +118,6 @@ class PreloadEvaluationTests(unittest.TestCase):
         result = subprocess.run([sys.executable, str(ROOT/'scripts/evaluate_preload.py'),
             '--db', str(self.db), '--labels', str(labels), '--output', str(output),
             '--hint-mode', 'oracle', '--lead-ms', '0'], capture_output=True, text=True)
-        if result.returncode == 2:
-            # The run consumed no warm entry, so it compared nothing and proved nothing. That is
-            # inconclusive, not a failure, and it is not the claim this test exists to check: on a
-            # loaded runner the alternative is a flaky red build that says nothing about preloading.
-            self.skipTest('inconclusive: no warm entry was consumed, so nothing was compared')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(output.stat().st_mode & 0o777, 0o600)
         report = json.loads(output.read_text())
