@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 from pathlib import Path
 
+from .panel import render_memory_panel
 from .retrieval import MemoryRetriever
 from .security import sanitize_memory
 from .store import CortexStore
@@ -261,6 +263,14 @@ def main() -> int:
     traces.add_argument("--task-id")
     traces.add_argument("--jsonl", action="store_true")
     traces.add_argument("--summary", action="store_true")
+    panel = sub.add_parser("panel", help="Show what Cortex injected on the most recent turn")
+    panel.add_argument("--limit", type=int, default=1, help="Number of recent turns (default 1)")
+    panel.add_argument("--task-id", help="Only turns for this task")
+    panel.add_argument("--trace-id", help="Only the trace whose id starts with this prefix")
+    panel.add_argument("--all", action="store_true", help="List every excluded candidate")
+    panel.add_argument("--json", action="store_true", help="Print the raw trace instead of the panel")
+    panel.add_argument("--no-color", action="store_true", help="Never emit ANSI color")
+    panel.add_argument("--width", type=int, help="Panel width in columns")
     writes = sub.add_parser("write-decisions", help="Inspect durable create, update, and ignore decisions")
     writes.add_argument("--limit", type=int, default=100)
     writes.add_argument("--summary", action="store_true")
@@ -661,6 +671,32 @@ def main() -> int:
                 result = store.memory_trace_summary(limit=args.limit)
             else:
                 result = store.memory_traces(limit=args.limit, task_id=args.task_id)
+        elif args.command == "panel":
+            fetch = max(1, int(args.limit))
+            traces = store.memory_traces(limit=fetch, task_id=args.task_id)
+            if args.trace_id:
+                prefix = args.trace_id.strip()
+                traces = [
+                    trace
+                    for trace in store.memory_traces(limit=500, task_id=args.task_id)
+                    if str(trace.get("trace_id") or "").startswith(prefix)
+                ][:fetch]
+            if args.json:
+                print(json.dumps(traces, indent=2, ensure_ascii=False, default=str))
+                return 0
+            if args.trace_id and not traces:
+                print(f"No trace matched prefix {args.trace_id!r}.", file=sys.stderr)
+                return 1
+            color = sys.stdout.isatty() and not args.no_color
+            print(
+                render_memory_panel(
+                    traces,
+                    width=args.width,
+                    color=color,
+                    show_all_excluded=args.all,
+                )
+            )
+            return 0
         elif args.command == "write-decisions":
             result = (
                 store.memory_write_summary(limit=args.limit)
