@@ -110,6 +110,7 @@ from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-
 from . import sleep_proposals, two_pass  # (#27, #76)
 from . import outcome_lessons  # (#208)
 from . import idle_window  # (#212)
+from . import citations  # (#201)
 from . import context_tags  # (#83)
 from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
@@ -208,6 +209,7 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "derived",
                     "relations",
                     "tool_use",
+                    "citations",
                     "lessons",
                     "idle",
                     "two_pass",
@@ -1769,6 +1771,23 @@ class CortexMemoryProvider(MemoryProvider):
                 return _json_ok(**idle_window.report(
                     self._store, min_idle_seconds=int(args.get("min_idle_seconds") or 600)
                 ))
+
+            if action == "citations":
+                # Which candidates the reply actually repeated (#201). Detection is read-only
+                # unless record is set.
+                reply = str(args.get("reply") or args.get("content") or "")
+                ids = args.get("memory_ids") or []
+                if args.get("record") and reply:
+                    return _json_ok(**citations.record(
+                        self._store, str(args.get("turn_id") or ""), reply, ids
+                    ).as_dict())
+                if reply and ids:
+                    return _json_ok(**citations.detect(self._store, reply, ids).as_dict())
+                if args.get("memory_id"):
+                    return _json_ok(citations=citations.citations(
+                        self._store, str(args["memory_id"])
+                    ))
+                return _json_ok(**citations.report(self._store))
 
             if action == "tool_use":
                 # Which memories informed which tool calls (#70).
