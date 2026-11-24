@@ -108,6 +108,7 @@ from . import (  # (#27-#30, #33, #38, #85, #213)
 )
 from . import assoc_feedback, cross_project, near_miss, path_query  # (#75, #78-#80)
 from . import context_tags  # (#83)
+from . import migrations, topic_nodes  # (#65, #74)
 from . import volatility as _volatility  # (#31)
 from . import negative_facts, preference_strength  # (#58, #59)
 from . import quotes, redaction_receipt, secret_refusal  # (#42, #43, #44)
@@ -210,6 +211,8 @@ CORTEX_MEMORY_SCHEMA: Dict[str, Any] = {
                     "promotion_gate",
                     "prediction_error",
                     "context_tags",
+                    "topics",
+                    "migrate",
                     "entity_merge",
                 ],
             },
@@ -1585,6 +1588,30 @@ class CortexMemoryProvider(MemoryProvider):
                     # A redaction leaves a receipt naming the pattern, never the value (#44).
                     redaction_labels=list(getattr(sanitized, "redactions", ()) or ()),
                 )
+
+            if action == "topics":
+                # Dense regions of the graph and their names (#74). Read-only unless create is set.
+                if args.get("create"):
+                    regions = topic_nodes.dense_regions(self._store)
+                    created = [topic_nodes.create(self._store, getattr(region, "members", []))
+                               for region in regions]
+                    return _json_ok(created=len(created), topics=topic_nodes.topics(self._store))
+                if args.get("memory_id"):
+                    return _json_ok(topic=topic_nodes.topic_of(self._store, str(args["memory_id"])))
+                return _json_ok(**topic_nodes.report(self._store))
+
+            if action == "migrate":
+                # Schema migrations (#65). Applying needs a verified backup path.
+                if args.get("apply"):
+                    return _json_ok(**migrations.apply(
+                        self._store, str(args.get("apply")),
+                        backup_path=str(args.get("backup_path") or ""),
+                    ))
+                if args.get("reverse"):
+                    return _json_ok(**migrations.reverse(
+                        self._store, str(args["reverse"])
+                    ))
+                return _json_ok(**migrations.status(self._store))
 
             if action == "context_tags":
                 # Context as a retrieval key (#83): read-only ranking hints, capped at +-0.15.
