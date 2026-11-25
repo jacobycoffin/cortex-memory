@@ -462,15 +462,11 @@ def apply(store: Any, diff: MergeDiff, *, consent: bool = False, consented_by: s
     merge_id = str(diff.undo.get("merge_id") or uuid.uuid4().hex[:12])
     undo = {**diff.undo, "merge_id": merge_id, "applied_at": moment}
     proposed = {item["field"]: item["after"] for item in diff.fields}
+    # Record the post-merge state as well as the pre-merge state. A rollback has to be able to tell "the survivor
+    # still looks like this merge left it" from "somebody edited it afterwards", and only the after-state says which;
+    # without it, reversing a merge silently discards every later edit to the survivor.
+    undo = {**undo, "survivor": {**((undo.get("survivor") or {})), "after": {}}}
     with store.transaction() as conn:
-        conn.execute(
-            f"""INSERT INTO {RECORD_TABLE}
-                (merge_id, survivor_id, absorbed_id, lossy, lost_facts_json, undo_json,
-                 consented_by, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (merge_id, diff.survivor_id, diff.absorbed_id, int(diff.lossy),
-             json.dumps(diff.lost_facts), json.dumps(undo), str(consented_by), moment),
-        )
         conn.execute(
             f"""UPDATE {MEMORY_TABLE} SET content = ?, content_hash = ?, scope_json = ?,
                     pinned = ?, protected = ?, entities_json = ?, importance = ?, updated_at = ?
@@ -515,6 +511,19 @@ def apply(store: Any, diff: MergeDiff, *, consent: bool = False, consented_by: s
                     (float(move["weight"]), int(move["evidence_count"]),
                      new_src, new_dst, str(move["relation"])),
                 )
+        # Read the survivor back inside the same transaction: this is the state a rollback must match, and guessing
+        # it from the diff was wrong for every field the UPDATE writes implicitly (content_hash, updated_at).
+        merged_row = dict(conn.execute(
+            f"SELECT * FROM {MEMORY_TABLE} WHERE id = ?", (diff.survivor_id,)).fetchone())
+        undo["survivor"]["after"] = {name: merged_row.get(name) for name in RESTORE_FIELDS}
+        conn.execute(
+            f"""INSERT INTO {RECORD_TABLE}
+                (merge_id, survivor_id, absorbed_id, lossy, lost_facts_json, undo_json,
+                 consented_by, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (merge_id, diff.survivor_id, diff.absorbed_id, int(diff.lossy),
+             json.dumps(diff.lost_facts), json.dumps(undo), str(consented_by), moment),
+        )
     return Applied(True, merge_id, lost_facts=list(diff.lost_facts))
 
 
