@@ -148,7 +148,8 @@ def _survivor_key(row: dict[str, Any]) -> tuple:
     )
 
 
-def plan(store: Any, *, limit: int = DEFAULT_LIMIT, include_contradictions: bool = True) -> Plan:
+def plan(store: Any, *, limit: int = 25, include_contradictions: bool = True,
+         max_pairs: int = 200_000) -> Plan:
     """What a night could settle on its own, and what it must leave alone. Writes nothing."""
     rows = _rows(
         store,
@@ -206,9 +207,10 @@ def plan(store: Any, *, limit: int = DEFAULT_LIMIT, include_contradictions: bool
         by_kind.setdefault(str(row.get("kind") or ""), []).append(row)
 
     compared = 0
-    # Jaccard over short texts is microseconds; 50k comparisons is a second or two and covers the whole store at
-    # this size. The number actually compared is reported, because a bounded scan that hides its bound is a lie.
-    max_pairs = 50_000
+    # Jaccard over short texts is cheap: on the live store the complete candidate set is 95,221 pairs and takes
+    # 17 s, so the default finishes the scan rather than truncating it. A cap that silently lowers the count of
+    # findings is worse than one that admits it: at 50,000 the live answer read 16 instead of 18.
+    max_pairs = max(200, max_pairs)
     seen_pairs: set[tuple[str, str]] = set()
     for kind, members in by_kind.items():
         index: dict[str, list[dict[str, Any]]] = {}
