@@ -165,6 +165,30 @@ class LearningBaselineTests(unittest.TestCase):
         self.assertIn("Hermes", neighborhood["summary"])
         self.assertTrue(neighborhood["reversible"])
 
+    def test_the_newest_neighborhood_decision_wins_a_timestamp_tie(self) -> None:
+        """A single refresh writes several evaluations with one `now`, so `created_at` cannot order them.
+
+        Without a tiebreak the reader gets whichever row the storage engine returns first, which on a fast machine was
+        the earlier `held` decision - this test pins the tie so the answer stops depending on row order.
+        """
+        stamp = "2026-11-24T12:00:00+00:00"
+        with self.store.transaction() as conn:
+            for decision in ("held", "admitted"):
+                conn.execute(
+                    """INSERT INTO memory_neighborhood_decision_events(
+                         event_id,category,name_key,display_name,prior_decision,decision,
+                         memory_count,context_count,reason,created_at
+                       ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (str(uuid.uuid4()), "service", "Hermes", "Hermes", None, decision, 5, 1,
+                     f"decided {decision}", stamp),
+                )
+
+        entries = self.store.decision_log(limit=50)
+
+        neighborhood = next(item for item in entries if item["category"] == "neighborhood")
+        self.assertEqual(neighborhood["action"], "admitted",
+                         "the later row is the newer decision, and both rows carry the same timestamp")
+
 
 if __name__ == "__main__":
     unittest.main()
