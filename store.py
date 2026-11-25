@@ -19,6 +19,7 @@ from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from . import cortex_records as _records
 from . import cortex_trace as _trace
+from . import trace_components
 
 from .refinery import (
     CLARITY_FLAGS,
@@ -16150,11 +16151,13 @@ def _trim_trace_candidate_detail(candidates: list[dict[str, Any]]) -> list[dict[
     )
     for candidate in ranked[:TRACE_COMPONENT_DETAIL_TOP_N]:
         keep.add(str(candidate.get("memory_id") or ""))
+    # #222: dropping the whole dump left 88% of candidate rows with a score and no reason for it. Keep the
+    # graded signals (what actually explains a ranking), drop the adjustment bookkeeping (what made the dump
+    # big), and keep naming what went: `components_omitted` still means "the full dump is not here".
     for candidate in candidates:
         if str(candidate.get("memory_id") or "") in keep:
             continue
-        if candidate.pop("components", None) is not None:
-            candidate["components_omitted"] = True
+        trace_components.compact(candidate)
     return candidates
 
 
