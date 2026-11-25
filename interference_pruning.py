@@ -42,6 +42,10 @@ SKIP = "skip"
 # different facts that happen to share words. The band is a reporting threshold, never an auto-merge rule.
 NEAR_DUPLICATE = 0.85
 
+# A token carried by more rows than this is too common to be evidence of similarity, and scoring its whole bucket
+# would dominate the night's budget. 64 keeps "walnut shelf" while dropping "the" and "and".
+MAX_BUCKET = 12
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -83,6 +87,7 @@ class Plan:
     items: list[Item] = field(default_factory=list)
     skips: dict[str, int] = field(default_factory=dict)
     considered: int = 0
+    compared: int = 0
     duplicate_groups: int = 0
     readable: bool = True
     reason: str = ""
@@ -109,8 +114,9 @@ class Plan:
     def render(self) -> list[str]:
         if not self.readable:
             return [self.reason]
-        lines = [f"{self.considered} active row(s), {self.duplicate_groups} duplicate group(s): "
-                 f"{len(self.auto_mergeable)} mergeable, {len(self.needs_decision)} need a decision"]
+        lines = [f"{self.considered} active row(s), {self.duplicate_groups} duplicate group(s), "
+                 f"{self.compared} pair(s) compared: {len(self.auto_mergeable)} mergeable, "
+                 f"{len(self.needs_decision)} need a decision"]
         lines.extend(f"- {item.render()}" for item in self.items[:12])
         if len(self.items) > 12:
             lines.append(f"… and {len(self.items) - 12} more")
@@ -188,24 +194,52 @@ def plan(store: Any, *, limit: int = DEFAULT_LIMIT, include_contradictions: bool
 
     # Near-misses: not identical, but close enough that a person should look. Never auto-merged, and only reported
     # when the budget allows — the point is to surface them, not to resolve them.
+    # Comparing every pair inside a kind is O(n^2): on the live store (3,831 active rows) that is millions of
+    # comparisons and the run never finishes. Instead, rows are bucketed by their two rarest tokens — two texts that
+    # overlap above the band almost always share a rare word — and only rows inside a bucket are compared. The pair
+    # count is capped so a pathological bucket cannot stall the night either.
+    # An inverted index over every token: two texts that overlap above the band share at least one word, so every
+    # real candidate pair is generated, and only plausible pairs are scored. A bucket larger than MAX_BUCKET is
+    # skipped as too common to be evidence (it would be words like "the"), which is also what keeps this linear-ish.
     by_kind: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         by_kind.setdefault(str(row.get("kind") or ""), []).append(row)
+
+    compared = 0
+    # Jaccard over short texts is microseconds; 50k comparisons is a second or two and covers the whole store at
+    # this size. The number actually compared is reported, because a bounded scan that hides its bound is a lie.
+    max_pairs = 50_000
+    seen_pairs: set[tuple[str, str]] = set()
     for kind, members in by_kind.items():
-        for index, left in enumerate(members):
-            for right in members[index + 1:]:
-                if len(out.items) >= budget * 2:
-                    out.skips["over budget (near duplicates)"] = out.skips.get("over budget (near duplicates)", 0) + 1
-                    continue
-                score = similarity(left.get("content"), right.get("content"))
-                if score < NEAR_DUPLICATE or score >= 1.0:
-                    continue
-                ordered = sorted((left, right), key=_survivor_key)
-                out.items.append(Item(
-                    action=DECIDE, survivor_id=str(ordered[0]["id"]), absorbed_id=str(ordered[1]["id"]),
-                    reason=f"near duplicate ({score:.2f} overlap), not identical: a person must confirm they say "
-                           f"the same thing",
-                ))
+        index: dict[str, list[dict[str, Any]]] = {}
+        for row in members:
+            for token in _tokens(row.get("content")):
+                index.setdefault(token, []).append(row)
+        for token, bucket in index.items():
+            if len(bucket) < 2 or len(bucket) > MAX_BUCKET:
+                continue
+            for left_index, left in enumerate(bucket):
+                for right in bucket[left_index + 1:]:
+                    left_id, right_id = str(left["id"]), str(right["id"])
+                    key = (left_id, right_id) if left_id <= right_id else (right_id, left_id)
+                    if key in seen_pairs:
+                        continue
+                    seen_pairs.add(key)
+                    if compared >= max_pairs or len(out.items) >= budget * 2:
+                        out.skips["near-duplicate scan capped"] = out.skips.get("near-duplicate scan capped", 0) + 1
+                        continue
+                    compared += 1
+                    score = similarity(left.get("content"), right.get("content"))
+                    if score < NEAR_DUPLICATE or score >= 1.0:
+                        continue
+                    ordered = sorted((left, right), key=_survivor_key)
+                    out.items.append(Item(
+                        action=DECIDE, survivor_id=str(ordered[0]["id"]), absorbed_id=str(ordered[1]["id"]),
+                        reason=f"near duplicate ({score:.2f} overlap), not identical: a person must confirm they "
+                               f"say the same thing",
+                    ))
+
+    out.compared = compared
 
     if include_contradictions:
         try:
