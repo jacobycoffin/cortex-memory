@@ -3836,8 +3836,11 @@ class CortexStore:
             lifecycle = self._conn.execute(
                 "SELECT * FROM lifecycle_events ORDER BY created_at DESC LIMIT ?", (bounded,)
             ).fetchall()
+            # Tiebreak by rowid: a single refresh writes several evaluations with one `now`, so created_at alone does
+            # not order them, and the newest decision is exactly what a reader is looking for.
             neighborhoods = self._conn.execute(
-                "SELECT * FROM memory_neighborhood_decision_events ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM memory_neighborhood_decision_events "
+                "ORDER BY created_at DESC, rowid DESC LIMIT ?",
                 (bounded,),
             ).fetchall()
             recall_sets = self._conn.execute(
