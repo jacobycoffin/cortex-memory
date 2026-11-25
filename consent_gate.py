@@ -78,6 +78,16 @@ _PATTERNS: dict[str, re.Pattern[str]] = {
 DEFAULT_CONSENT = {"technical": True}
 
 
+def patterns() -> dict[str, re.Pattern[str]]:
+    """A copy of the keyword screens, so another policy can share this one definition of a secret.
+
+    Read-only by convention: callers get their own dict, so mutating it cannot change what the write
+    gate screens. (#184 needs the credential/finance/health screens and must not grow a second,
+    divergent opinion about what those look like.)
+    """
+    return dict(_PATTERNS)
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
