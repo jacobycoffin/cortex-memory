@@ -101,7 +101,10 @@ class StoreTests(unittest.TestCase):
                          (first,))
         second = self.memory("newer")
         page = phone_surface.timeline(self.store)
-        self.assertEqual(page["days"][0]["day"], "2026-11-24")
+        # Computed, not hardcoded: a literal "today" makes this test fail the day after it is written,
+        # and it must be the UTC day because that is what the surface groups by.
+        from datetime import datetime, timezone
+        self.assertEqual(page["days"][0]["day"], datetime.now(timezone.utc).date().isoformat())
         self.assertEqual([item["id"] for item in page["days"][0]["items"]], [second])
 
     def test_detail_returns_one_memory_and_its_neighbours(self) -> None:
