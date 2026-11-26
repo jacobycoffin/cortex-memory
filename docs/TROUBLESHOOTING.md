@@ -58,6 +58,21 @@ interpreter the installer prints as `Hermes Python:`. Re-running
   The runtime lives in `$HERMES_HOME/cortex/pydeps/py3.X`; a new Python minor version needs a new directory.
 - Fix: re-run `bash scripts/install.sh --agent hermes`.
 
+**Semantic recall is silently inactive with no error anywhere**
+- Cause: three things must all be true, and each fails quietly. The sidecar runtime
+  (`$HERMES_HOME/cortex/pydeps/py<major>.<minor>`) must contain `onnxruntime`, `tokenizers` **and** `numpy`;
+  `Embedder.available` must be true, which needs *both* `model_optimized.onnx` and `tokenizer.json` under
+  `$HERMES_HOME/models/bge-small-en-v1.5`; and that path is resolved from the **profile's** `HERMES_HOME`, so a profile
+  whose `models/` directory is empty looks exactly like a missing model even when the shared one is intact.
+  Recall keeps working, just lexically — nothing warns you.
+- Check: run any query that shares no words with its answer and read the `semantic` component of the results
+  (`RetrievalResult.components["semantic"]`). All zeros means the stage never ran.
+- Fix: install the three packages into the sidecar directory (`pip install --target "$HERMES_HOME/cortex/pydeps/py3.X"
+  onnxruntime tokenizers numpy`) rather than into Hermes's own interpreter, which a managed update rebuilds. If the model
+  lives under a shared home, link it (`ln -s "$SHARED/models" "$HERMES_HOME/models"`) or set `CORTEX_MODEL_DIR`.
+- Expect: ~800 ms first-call model load, ~10 ms warm per query. That load is also why the first turn of a session is
+  slower than the rest; it is not a hang.
+
 **A systemd timer (sleep, auto-judge, vault, dashboard) fails with "No such file" for python**
 - Cause: PM-managed Hermes rebuilds its environment on update/repair, which changes the Python path embedded in the unit.
 - Fix: re-run that timer's installer script (they now find Hermes's current Python automatically).
