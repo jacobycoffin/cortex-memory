@@ -6,21 +6,25 @@ box.
 
 ## The rule that makes it safe
 
-**A file whose deployed content exists nowhere in git is a local patch. A file whose deployed content *is* in git is
-merely old.**
+**A file whose deployed content exists nowhere in git is a candidate local patch. A file whose content *is* in git is
+merely old and may be replaced.**
 
-That distinction is the whole procedure. "Deployed differs from main" is not a reason to overwrite: on this box it was
-true of 42 files, and 11 of them contained code git had never seen — including `dashboard.py`, which is 588 lines larger
-than the repository's and serves the live website.
+That is only the first half, and the second half is the one that bites. "Not in git" does not mean "newer": on this box
+11 files were absent from history, and 9 of them were **older** than `main` — the box's `cortex_records.py` raised
+`ValueError: invalid state: suppressed` against modules that already used that state. Keeping every uncommitted file
+produced a mixed tree that failed **79 tests**.
 
-So the deploy is **additive**:
+So the composition is not decided by a rule. It is **measured**, one file at a time:
 
 | case | action |
 |---|---|
 | module only the repository has | add it |
-| module only the box has (`fleet.py`, `jev_live.py`, `prefetch_service.py`) | keep it |
+| module only the box has | keep it (it cannot be regenerated) |
 | file on both, deployed content **is** in git history | take the repository's version |
-| file on both, deployed content **is not** in git | keep the box's version |
+| file on both, deployed content **is not** in git | **run the suite both ways** and keep whichever passes; then diff the two versions to see what the box's copy actually adds |
+
+For a file that survives that test, the diff tells you whether it is a feature (`dashboard.py`: 588 lines of JEV panel
+the repo lacks) or a stale copy (7 lines). Replace the stale ones, port the features.
 
 ## Procedure
 
@@ -75,5 +79,7 @@ symptom table, because the person reading it is usually looking at a broken site
 
 ## What this procedure does not solve
 
-The eleven local patches are older than the modules now beside them. They import, they run, and their behaviour under
-every code path is **not** proven. Reconciling them is a merge, one file at a time, with the diff in hand — not a copy.
+Verifying a composition is not the same as merging it. A box file that survives the suite still has to be diffed against
+`main` to see whether it *adds* anything; if it does, that work has to be ported rather than carried, or it will drift
+again at the next deploy. On this box that meant carrying `dashboard.py` and `jev.py`, and accepting that the fleet tool
+(`_fleet_tool` in the old provider) stopped being wired until it is ported.
