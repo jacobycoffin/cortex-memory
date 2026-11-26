@@ -138,6 +138,8 @@ from .hermes_receipts import (
     _STRONG_POSITIVE_FEEDBACK,
     _receipt_feedback_outcome,
     _resolve_allowed_prefixes,
+    format_grade_hint,
+    parse_explicit_grade,
 )
 
 from .hermes_config import (
@@ -1247,6 +1249,11 @@ class CortexMemoryProvider(MemoryProvider):
             str(self._config.get("memory_receipt_url", "")),
         )
         transformed = f"{semantic_response.rstrip()}\n\n{receipt}"
+        if _as_bool(self._config.get("memory_feedback_hint", True)):
+            # The ask has to come from the harness, every turn recall contributes: Jacoby grades willingly and forgets
+            # anyway ("i'm always working on a bunch of things through the day so i forget"), so a prompt that depends
+            # on him remembering is no prompt at all.
+            transformed = f"{transformed}\n{format_grade_hint()}"
         return None if transformed == response_text.rstrip() else transformed
 
     def sync_turn(
@@ -1301,6 +1308,13 @@ class CortexMemoryProvider(MemoryProvider):
 
         # Feedback applies to memories inferred as used in the preceding answer.
         previous_tasks = self._completed_task_by_session.get(sid, [])
+        explicit_grade = parse_explicit_grade(user_content or "")
+        if explicit_grade and previous_tasks:
+            # An explicit grade outranks the sentiment heuristics below, and must not be applied twice: "cortex -" is a
+            # correction, which is stronger evidence than "harmful", and grading one answer as both corrupts the record.
+            for previous_task in previous_tasks:
+                self._store.apply_task_outcome(previous_task, explicit_grade)
+            previous_tasks = []
         if (
             previous_tasks
             and _NEGATIVE_FEEDBACK.search(user_content or "")

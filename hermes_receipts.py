@@ -30,6 +30,34 @@ _NEGATIVE_FEEDBACK = re.compile(
 )
 
 
+# The one token the recall receipt asks for. Deliberately not a bare word: "no" and "good" turn up inside ordinary
+# sentences, and grading the wrong turn is worse than not grading one at all. ``cortex +`` means the answer was right,
+# ``cortex -`` means it was wrong.
+_EXPLICIT_GRADE = re.compile(r"(?:^|\s)cortex\s*([+-])(?=\s|$|[,.;:!?])", re.I)
+
+GRADE_VALIDATED = "validated"
+GRADE_CORRECTED = "corrected"
+
+
+def parse_explicit_grade(text: str) -> str | None:
+    """Return the task outcome the user just stated, or None.
+
+    ``cortex +`` is a *validated* answer — the reasoning path and the memories behind it were checked and held. ``cortex -``
+    is a *corrected* one, which is stronger evidence than "harmful": something was positively wrong, not merely unhelpful.
+    """
+
+    match = _EXPLICIT_GRADE.search(text or "")
+    if not match:
+        return None
+    return GRADE_VALIDATED if match.group(1) == "+" else GRADE_CORRECTED
+
+
+def format_grade_hint() -> str:
+    """The single line that asks for a grade, phrased with a token the plugin actually reads."""
+
+    return "Cortex grade: was this right? `cortex +` / `cortex -` changes how these memories rank next time."
+
+
 _RECEIPT_IRRELEVANT_FEEDBACK = re.compile(
     r"\b(?:not relevant|irrelevant|wrong context|didn(?:'t| not) apply|doesn(?:'t| not) apply)\b",
     re.I,

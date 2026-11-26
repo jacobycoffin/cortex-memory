@@ -11,6 +11,11 @@ from unittest.mock import patch
 from tests._bootstrap import ROOT  # noqa: F401  (loads the package as ``cortex``)
 
 from cortex import CortexMemoryProvider, _install_hermes_output_hook, register
+from cortex.hermes_receipts import format_grade_hint
+
+# The receipt now ends with the grade ask, so exact-output assertions carry it explicitly rather than
+# loosening into substring checks.
+GRADE_SUFFIX = f"\n{format_grade_hint()}"
 
 
 class CortexProviderTests(unittest.TestCase):
@@ -348,7 +353,7 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            f"{original}\n\nCortex recall: 1 memory recalled",
+            f"{original}\n\nCortex recall: 1 memory recalled{GRADE_SUFFIX}",
         )
         self.provider.sync_turn(query, transformed, session_id="session-1")
         self.assertEqual(self.provider._receipt_ids_by_session["session-1"], [memory_id])
@@ -372,8 +377,8 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            "All currently monitored services are healthy.\n\n"
-            "Cortex recall: 1 memory recalled",
+            f"All currently monitored services are healthy.\n\n"
+            f"Cortex recall: 1 memory recalled{GRADE_SUFFIX}",
         )
 
     def test_output_hook_replaces_model_authored_id_receipt(self) -> None:
@@ -395,7 +400,7 @@ class CortexProviderTests(unittest.TestCase):
 
         self.assertEqual(
             transformed,
-            "The port is 8181.\n\nCortex recall: 1 memory recalled",
+            f"The port is 8181.\n\nCortex recall: 1 memory recalled{GRADE_SUFFIX}",
         )
 
     def test_output_hook_replaces_legacy_receipt_with_trace_link(self) -> None:
@@ -421,7 +426,7 @@ class CortexProviderTests(unittest.TestCase):
             transformed,
             "The port is 8181.\n\nCortex recall: "
             "[1 memory recalled · View trace]"
-            f"(https://brain.example/?trace={task_ids[-1]})",
+            f"(https://brain.example/?trace={task_ids[-1]}){GRADE_SUFFIX}",
         )
 
     def test_output_hook_adds_dashboard_link_when_model_omits_receipt(self) -> None:
@@ -445,7 +450,7 @@ class CortexProviderTests(unittest.TestCase):
             transformed,
             f"{original}\n\nCortex recall: "
             "[1 memory recalled · View trace]"
-            f"(https://brain.example/?trace={task_ids[-1]})",
+            f"(https://brain.example/?trace={task_ids[-1]}){GRADE_SUFFIX}",
         )
 
     def test_output_hook_scopes_receipt_to_newest_pending_recall(self) -> None:
@@ -465,7 +470,7 @@ class CortexProviderTests(unittest.TestCase):
             transformed,
             "The current answer.\n\nCortex recall: "
             "[2 memories recalled · View trace]"
-            "(https://brain.example/?trace=new-task-12345678)",
+            f"(https://brain.example/?trace=new-task-12345678){GRADE_SUFFIX}",
         )
 
     def test_output_hook_strips_spoofed_receipt_without_current_recall(self) -> None:
@@ -538,7 +543,8 @@ class CortexProviderTests(unittest.TestCase):
                 model="deepseek-v4-flash",
                 platform="telegram",
             )
-            self.assertTrue(transformed.endswith("Cortex recall: 1 memory recalled"))
+            self.assertIn("Cortex recall: 1 memory recalled", str(transformed))
+            self.assertTrue(str(transformed).endswith(GRADE_SUFFIX.strip()))
             provider.shutdown()
             self.assertIsNone(
                 callbacks[0](
