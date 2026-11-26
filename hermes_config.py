@@ -44,18 +44,96 @@ def _read_config(hermes_home: Path) -> dict[str, Any]:
     path = hermes_home / "config.yaml"
     if not path.exists():
         return {}
+    text = path.read_text(encoding="utf-8-sig")
     try:
-        root = _load_yaml(path.read_text(encoding="utf-8-sig")) or {}
+        root = _load_yaml(text) or {}
         return dict((root.get("plugins") or {}).get("cortex") or {})
     except Exception:
-        return {}
+        # No YAML library is guaranteed to be importable: the Hermes runtime ships
+        # neither PyYAML nor ruamel.yaml, so leaning on them lost every
+        # ``plugins.cortex`` setting there. The block is a flat mapping of scalars, so
+        # read exactly that and nothing else.
+        return _read_cortex_block(text)
+
+
+def _read_cortex_block(text: str) -> dict[str, Any]:
+    """Read ``plugins.cortex`` out of YAML text without a YAML library.
+
+    Deliberately narrow: it understands the shape this setting has (a two-level
+    mapping of scalars), because a general YAML parser written here would be a bug
+    farm. Nested containers are skipped rather than guessed at.
+    """
+
+    block: dict[str, Any] = {}
+    in_plugins = False
+    in_cortex = False
+    cortex_indent = 0
+    for raw_line in text.splitlines():
+        if not raw_line.strip() or raw_line.lstrip().startswith("#"):
+            continue
+        indent = len(raw_line) - len(raw_line.lstrip(" "))
+        line = raw_line.strip()
+
+        if indent == 0:
+            in_plugins = line == "plugins:"
+            in_cortex = False
+            continue
+        if not in_plugins:
+            continue
+        if not in_cortex:
+            if line == "cortex:":
+                in_cortex = True
+                cortex_indent = indent
+            continue
+        if indent <= cortex_indent:
+            in_cortex = False
+            continue
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if not value:
+            continue  # nested container: not a scalar, so not something this reader claims to support
+        if value[:1] in {'"', "'"}:
+            # Unquote first: a '#' inside quotes is content, not a comment.
+            quote = value[0]
+            end = value.find(quote, 1)
+            value = value[1:end] if end != -1 else value[1:]
+        elif " #" in value:
+            value = value.split(" #", 1)[0].strip()
+        block[key] = _coerce_scalar(value)
+    return block
+
+
+def _coerce_scalar(value: str) -> Any:
+    """Turn a YAML scalar into the type the plugin expects, without guessing past the obvious."""
+
+    lowered = value.casefold()
+    if lowered in {"true", "yes", "on"}:
+        return True
+    if lowered in {"false", "no", "off"}:
+        return False
+    if lowered in {"null", "none", "~"}:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        return value
 
 
 def _load_yaml(text: str) -> Any:
     """Parse YAML with PyYAML, or ruamel.yaml when PyYAML is absent.
 
-    Current Hermes environments ship ruamel.yaml but not PyYAML; without this
-    fallback every ``plugins.cortex`` setting was silently ignored there.
+    Neither is guaranteed on this host: ``_read_config`` falls back to
+    ``_read_cortex_block`` when both imports fail, so a missing library degrades the
+    reader instead of silently losing every setting.
     """
 
     try:
