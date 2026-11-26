@@ -156,6 +156,18 @@ Each completed tool call records a redacted episode: task family, tool name, arg
 
 `tool_workflows` preserves ordered multi-step traces. `tool_workflow_stats` reinforces a sequence only after the same task family and workflow succeeds across at least two distinct task descriptions. Workflow guidance is similarity-ranked within the current task type.
 
+## Environment facts
+
+`env_registry.py` turns the environment sentences the store already holds — hosts, ports, absolute paths, credential *pointers*, and version pins — into rows keyed by `kind, subject, value` and stamped with the date the store learned them. Detection is deterministic regex work over one memory at a time; nothing is inferred from a model, and a fact with no owner ("port 8100", "version 2.4.1") is not recorded, because it cannot be looked up and would collide with every other unattributed fact.
+
+Three properties keep it usable:
+
+- **Pointers, never secrets.** Values matching token, key, password, or long-hex shapes are dropped at extraction. A path to a secret file is a fact worth keeping; the secret is not.
+- **Conflicts are reported, not resolved.** Only `host` is monovalued, so a name mapped to two addresses is a conflict that keeps both sides with their dates. Ports, paths, and credential pointers legitimately coexist per box. Version disagreement is reported separately as drift, since pins change over time.
+- **Undated is a failure.** Every row carries `confirmed_at`; a rebuild is idempotent and raises `confirmations` when a second memory states the same fact.
+
+`environment_facts` is derived data: `build()` can regenerate it from memories at any time, and `render()` emits a size-capped block ordered host → port → version → path → credential so `.env` lists cannot crowd out the boxes and pins.
+
 ## Consolidation and lifecycle
 
 Near-duplicate consolidation chooses a high-value canonical memory, adds a `consolidates` relation, and moves redundant members to `cold`. `consolidation_members` stores each prior state so `undo-consolidation` can restore it.
