@@ -6897,6 +6897,52 @@ class CortexStore:
             self._conn.commit()
         return {"orphaned_tasks": len(rows), "resolved_usage_rows": resolved}
 
+    # Where a task outcome lands in a procedure's run record. A procedure earns trust only from the tasks it actually
+    # helped: a validated or helpful answer is a success, a corrected or harmful one means it led somewhere wrong.
+    _PROCEDURE_RUN_FOR_TASK = {
+        "validated": "success",
+        "helpful": "success",
+        "corrected": "failure",
+        "harmful": "failure",
+    }
+
+    def _record_procedure_outcomes(
+        self, memory_ids: Sequence[str], outcome: str, *, task_id: str
+    ) -> list[str]:
+        """Grade every procedure that was actually used in this task.
+
+        ``procedure_confidence`` can rank a procedure only once it has been run and graded, and before this bridge nothing
+        ever wrote a run: procedures sat at ``untested`` while the same outcome was being recorded for every other kind of
+        memory in the task. Runs are written after the outcome transaction has committed, so a failure here can never undo
+        the label itself.
+        """
+
+        mapped = self._PROCEDURE_RUN_FOR_TASK.get(str(outcome))
+        ids = [str(memory_id) for memory_id in memory_ids]
+        if not mapped or not ids:
+            return []
+        from . import procedure_confidence
+
+        graded: list[str] = []
+        chunk_size = 400
+        with self._lock:
+            for start in range(0, len(ids), chunk_size):
+                chunk = ids[start : start + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"SELECT id FROM memories WHERE kind='procedure' AND id IN ({placeholders})",
+                    tuple(chunk),
+                ).fetchall()
+                graded.extend(str(row["id"]) for row in rows)
+        recorded: list[str] = []
+        for procedure_id in graded:
+            result = procedure_confidence.record(
+                self, procedure_id, mapped, note=f"task {task_id}: {outcome}"
+            )
+            if result.get("ok"):
+                recorded.append(procedure_id)
+        return recorded
+
     def apply_task_outcome(self, task_id: str, outcome: str) -> list[str]:
         if outcome not in TASK_OUTCOMES:
             raise ValueError("invalid task outcome")
@@ -6976,6 +7022,10 @@ class CortexStore:
                 )
         for memory_id in ids:
             self.log_access(memory_id, outcome if outcome != "harmful" else "wrong")
+        try:
+            self._record_procedure_outcomes(ids, outcome, task_id=task_id)
+        except Exception:  # noqa: BLE001 - grading a procedure must never cost the outcome itself
+            logger.warning("procedure grading failed for task %s", task_id, exc_info=True)
         return ids
 
     def resolve_usage_and_apply_outcome(
