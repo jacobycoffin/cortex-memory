@@ -104,6 +104,19 @@ POLICY_CORE_MIN_SUPPORT = 15
 POLICY_CORE_MIN_CONTEXTS = 3
 DYNAMIC_NEIGHBORHOOD_MIN_MEMORIES = 5
 DYNAMIC_NEIGHBORHOOD_MIN_CONTEXTS = 2
+
+# Admission bars for a memory write. A candidate below its bar is not stored; the automatic path faces a higher bar
+# than a person approving one, because nobody looked at it.
+#
+# The temporary bar was 0.62, which is above the ceiling an operational candidate can reach: a volatility of 0.70 or
+# more costs 0.12 * (1 - 0.70) = 0.036 in the score *and* is what makes the candidate temporary, while "operational"
+# carries the lowest type prior. The two rules cancelled each other, so every operational candidate was rejected and
+# none could ever be stored: 52 of 52 automatic writes on the live box were refused, several at 0.6012 and 0.6192 -
+# facts like "the queue console runs on port 8791". 0.58 admits those and still refuses the 0.45-0.55 band.
+MANUAL_MIN_REUSABLE_SCORE = 0.45
+AUTOMATIC_MIN_REUSABLE_SCORE_DURABLE = 0.52
+AUTOMATIC_MIN_REUSABLE_SCORE_TEMPORARY = 0.58
+
 _INACTIVE_PROJECT_STATUSES = {"abandoned", "cancelled", "canceled", "inactive", "paused", "stopped"}
 _TOKEN = re.compile(r"[\w'-]{2,}", re.UNICODE)
 _UNRESOLVED_REFERENCE = re.compile(
@@ -1332,9 +1345,13 @@ class CortexStore:
             or "transient_automation_status" in quality_flags
             else "durable"
         )
-        minimum_reusable_score = 0.45
+        minimum_reusable_score = MANUAL_MIN_REUSABLE_SCORE
         if automatic:
-            minimum_reusable_score = 0.62 if durability == "temporary" else 0.52
+            minimum_reusable_score = (
+                AUTOMATIC_MIN_REUSABLE_SCORE_TEMPORARY
+                if durability == "temporary"
+                else AUTOMATIC_MIN_REUSABLE_SCORE_DURABLE
+            )
         digest = content_hash(clean)
         scope_json = _trace_json(scope_value)
         preconditions_json = _trace_json(precondition_values)
@@ -1416,6 +1433,7 @@ class CortexStore:
             )
         return {
             "candidate_hash": digest,
+            "minimum_reusable_score": minimum_reusable_score,
             "kind": kind,
             "source_type": source_type_value,
             "context_mode": mode,
