@@ -27,7 +27,16 @@ package-dir = {cortex = "."}
 include-package-data = true
 
 [tool.setuptools.package-data]
-cortex = ["dashboard.html", "favicon.svg", "favicon.ico", "apple-touch-icon.png", "plugin.yaml"]
+cortex = [
+  "dashboard.html",
+  "dashboard.css",
+  "dashboard.js",
+  "favicon.svg",
+  "favicon.ico",
+  "apple-touch-icon.png",
+  "plugin.yaml",
+  "vendor/*.js",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
