@@ -3,7 +3,18 @@ name = "cortex-view"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Terminal dot views for the read-only Cortex service. Stub until the view crate is filled in."
+description = "Terminal dot views of an existing cortex.db. Read-only: pulse and dream."
+
+[dependencies]
+cortex-store = { path = "../cortex-store" }
+libc = "0.2.191"
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
+
+[lib]
+path = "src/lib.rs"
 
 [[bin]]
 name = "cortex-view"

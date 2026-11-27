@@ -205,6 +205,12 @@ dependencies = [
 [[package]]
 name = "cortex-view"
 version = "0.1.0"
+dependencies = [
+ "cortex-store",
+ "libc",
+ "rusqlite",
+ "serde_json",
+]
 
 [[package]]
 name = "cpufeatures"
