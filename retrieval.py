@@ -142,6 +142,45 @@ _SHADOW_GRAPH_EXPANSION_WEIGHT = 0.14
 # Fusion results, 2026-09-10).
 _SEMANTIC_RRF_K = 60
 
+# Cosine-similarity band used to turn a raw vector hit into evidence on the same
+# [0, 1] scale the lexical signal lives on. The bounds are on the scale the
+# stored vectors come from (L2-normalised bge-small): below the anchor a
+# "closest neighbour" is indistinguishable from noise, at the ceiling it is an
+# unambiguous match. The curve between them is convex (see _semantic_evidence)
+# because cosine compresses real matches near the top and noise near the middle,
+# so a marginal hit must pay proportionally much less than a clear one.
+_SEMANTIC_EVIDENCE_ANCHOR = 0.45
+_SEMANTIC_EVIDENCE_CEILING = 0.80
+# A semantic-only candidate is missing its lexical term because the wording
+# differs, not because the memory is irrelevant, so similarity-derived evidence
+# may fill the lexical weight slot -- never more than that slot, and never on top
+# of lexical evidence the memory already earned.
+_SEMANTIC_LIFT_WEIGHT = SCORE_SIGNAL_WEIGHTS["lexical"]
+
+
+def _semantic_evidence(similarity: float, floor: float = 0.0) -> float:
+    """Map a cosine similarity onto [0, 1] evidence; 0.0 means "no evidence".
+
+    ``floor`` (the configured minimum similarity) can only raise the anchor, so
+    an operator who has tightened the semantic boundary never sees a lift
+    credited to vectors they already consider noise. The result is continuous
+    and strictly increasing above the anchor, which is what lets a weak vector
+    match lose to a strong one instead of every hit receiving a flat bonus.
+    """
+
+    try:
+        value = float(similarity)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    anchor = max(_SEMANTIC_EVIDENCE_ANCHOR, float(floor))
+    ceiling = max(_SEMANTIC_EVIDENCE_CEILING, anchor + 0.05)
+    if value <= anchor:
+        return 0.0
+    return max(0.0, min(1.0, ((value - anchor) / (ceiling - anchor)) ** 2))
+
+
 # Shadow-only role tiering. This version string names the exact proposed
 # policy compared against live retrieval; nothing here changes live results.
 SHADOW_ROLE_POLICY_VERSION = "role_tier_shadow_v1"
@@ -1338,18 +1377,29 @@ class MemoryRetriever:
             # because the pool is sparse. Keep the configured boundary strict.
             if float(similarity) <= self.semantic_floor:
                 continue
+            # Every semantic contribution is scaled by how similar the vector
+            # actually was, not by how crowded the pool is. A flat rank bonus
+            # (the previous behaviour) handed a marginal 0.55 neighbour almost
+            # the same credit as a 0.95 match, so the semantic signal could only
+            # ever reorder candidates the lexical pass had already found.
+            evidence = _semantic_evidence(float(similarity), self.semantic_floor)
             # The fusion contribution must land in the SCORE, not only in the
             # selector's ordering value: the threshold and relevance gates below
             # read `result.score`, so a boost applied later is invisible to them
             # and a semantically-found memory gets rejected for having — by
             # definition — little lexical overlap. (Caught by
             # tests/test_semantic_fusion_integration.py.)
-            bonus = self.semantic_weight * (1.0 / (_SEMANTIC_RRF_K + rank + 1))
+            bonus = (
+                self.semantic_weight
+                * (1.0 / (_SEMANTIC_RRF_K + rank + 1))
+                * evidence
+            )
 
             existing = scored.get(memory_id)
             if existing is not None:
                 components = dict(existing.components)
                 components["semantic_fusion"] = bonus
+                components["semantic_evidence"] = evidence
                 scored[memory_id] = RetrievalResult(
                     existing.memory,
                     min(1.0, existing.score + bonus),
@@ -1380,11 +1430,21 @@ class MemoryRetriever:
                 context=retrieval_context,
                 scoring_weights=scoring_profile["weights"],
             )
+            # Semantic-only candidate: it was never in the lexical/feature pool,
+            # so its lexical term is 0 by construction. That zero is an artefact
+            # of a paraphrase, not evidence against the memory, so the vector
+            # similarity is allowed to fill the lexical weight slot on the same
+            # [0, 1] scale. A weak neighbour fills almost none of it (evidence is
+            # convex) and still loses; a clear match can reach the top-k.
+            lift = _SEMANTIC_LIFT_WEIGHT * evidence
             components = dict(result.components)
             components["semantic_fusion"] = bonus
+            components["semantic_evidence"] = evidence
+            components["semantic_vector_similarity"] = float(similarity)
+            components["semantic_lift"] = lift
             scored[memory_id] = RetrievalResult(
                 result.memory,
-                min(1.0, result.score + bonus),
+                min(1.0, result.score + bonus + lift),
                 components,
                 result.estimated_tokens,
             )
