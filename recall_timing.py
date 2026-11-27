@@ -270,8 +270,10 @@ def stage_percentiles(store: Any, *, window: int = DEFAULT_WINDOW) -> TimingRepo
 def _profile(store: Any, report: TimingReport) -> TimingReport:
     rows = _rows(
         store,
+        # Order by insertion, not by recall_id: two recalls inside the same second share created_at, and recall_id is a
+        # random UUID, so a tie on the timestamp would pick an arbitrary run and quietly report the wrong window.
         "SELECT prepare_ms, stage_ms_json FROM recall_runs WHERE prepare_ms IS NOT NULL "
-        "ORDER BY created_at DESC, recall_id DESC LIMIT ?",
+        "ORDER BY created_at DESC, rowid DESC LIMIT ?",
         (int(report.window),),
     )
     if not rows:
