@@ -1,4 +1,4 @@
 fn main() {
-    eprintln!("not implemented");
-    std::process::exit(2);
+    let code = cortex_http::run(std::env::args_os());
+    std::process::exit(code);
 }
