@@ -1,0 +1,19 @@
+[Unit]
+Description=Cortex read-only service
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=@@HERMES_HOME@@/cortex/cortex-serve.env
+ExecStart=@@BIN@@ serve --bind 127.0.0.1:@@PORT@@
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@@HERMES_HOME@@/cortex
+
+[Install]
+WantedBy=default.target
