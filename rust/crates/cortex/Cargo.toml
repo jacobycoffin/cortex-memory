@@ -1,0 +1,21 @@
+[package]
+name = "cortex"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "cortex-rs: one binary for the read-only CLI, terminal views, and loopback HTTP daemon."
+
+[[bin]]
+name = "cortex-rs"
+path = "src/main.rs"
+
+[dependencies]
+cortex-cli = { path = "../cortex-cli" }
+cortex-http = { path = "../cortex-http" }
+cortex-store = { path = "../cortex-store" }
+cortex-view = { path = "../cortex-view" }
+libc = "0.2.191"
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde_json = "1"
