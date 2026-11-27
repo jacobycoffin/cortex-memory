@@ -3,7 +3,15 @@ name = "cortex-cli"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "Headless JSON commands for cortex.db. Stub until the command crate is filled in."
+description = "Headless JSON commands for an existing cortex.db. Reads stay read-only; remember delegates to cortex-memory."
+
+[dependencies]
+cortex-store = { path = "../cortex-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [[bin]]
 name = "cortex-cli"
