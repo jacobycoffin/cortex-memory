@@ -365,6 +365,32 @@ class CortexMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         return True
 
+    def _warm_embeddings_async(self) -> None:
+        """Load the embedding model off the critical path.
+
+        The ONNX session costs roughly 800 ms on first use, and without this the first recall of every session pays it
+        inside a 1,500 ms pre-turn deadline. Loading it in a daemon thread moves that cost into initialization, which is
+        already seconds long.
+
+        Best-effort by design: an unavailable embedder, a missing model file or a slow disk must never delay, block or
+        break a single turn, so every failure is swallowed and logged at debug level only.
+        """
+
+        if not _as_bool(self._config.get("warm_embeddings", True)):
+            return
+
+        def warm() -> None:
+            try:
+                from .embeddings import get_embedder
+
+                embedder = get_embedder()
+                if embedder.available:
+                    embedder.embed_one("warm up")
+            except Exception:  # noqa: BLE001 - warming may never cost a turn
+                logger.debug("embedding warm-up skipped", exc_info=True)
+
+        threading.Thread(target=warm, name="cortex-embed-warm", daemon=True).start()
+
     def initialize(self, session_id: str, **kwargs) -> None:
         hermes_home = Path(
             kwargs.get("hermes_home") or os.environ.get("HERMES_HOME") or Path.home() / ".hermes"
@@ -386,6 +412,7 @@ class CortexMemoryProvider(MemoryProvider):
             semantic_pool=int(self._config.get("semantic_fusion_pool") or 20),
             semantic_floor=float(self._config.get("semantic_fusion_min_similarity") or 0.0),
         )
+        self._warm_embeddings_async()
         try:
             cache_ttl = float(self._config.get("query_cache_ttl_seconds", 45))
         except (TypeError, ValueError):
