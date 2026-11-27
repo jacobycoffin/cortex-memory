@@ -1,4 +1,342 @@
     "use strict";
+
+    /* cortex-measure:start */
+    function isString(value) {
+      return typeof value == "string";
+    }
+    function isNumber(value) {
+      return typeof value == "number";
+    }
+    function hasKey(obj, key) {
+      if (!obj) return false;
+      return obj[key] != null;
+    }
+    function lower(value) {
+      if (value == null) return "";
+      return ("" + value).toLowerCase();
+    }
+    function agoLabel(hours) {
+      if (hours == null) return "stale";
+      if (hours < 24) {
+        var rounded = Math.round(hours);
+        if (rounded < 1) rounded = 1;
+        return rounded + " h ago";
+      }
+      var days = Math.round(hours / 24);
+      if (days < 1) days = 1;
+      return days + " d ago";
+    }
+    function hourMinute(text) {
+      if (!isString(text)) return "";
+      var mark = text.indexOf("T");
+      if (mark < 0) return "";
+      var clock = text.substring(mark + 1, mark + 6);
+      if (clock.length != 5) return "";
+      if (text.substring(mark + 3, mark + 4) != ":") return "";
+      return clock;
+    }
+    function ageHours(text, nowMs) {
+      if (!isString(text)) return null;
+      var ms = Date.parse(text);
+      if (ms != ms) return null;
+      return (nowMs - ms) / 3600000;
+    }
+    function renderMeasure(reading) {
+      if (!reading) return { state: "no_data", text: "not measurable yet" };
+      if (reading.kind == "dream" || reading.kind == "stamp") {
+        var state = reading.state;
+        if (state == null || state == "no_data" || state == "not run yet") {
+          return { state: "no_data", text: "not run yet" };
+        }
+        if (state == "running") {
+          if (reading.progress) return { state: "running", text: "running… " + reading.progress };
+          return { state: "running", text: "running…" };
+        }
+        if (state == "stale") {
+          var ago = reading.ago || "stale";
+          return { state: "stale", text: ago + " ⚠" };
+        }
+        if (state == "failed") {
+          if (reading.when) return { state: "failed", text: "failed " + reading.when };
+          return { state: "failed", text: "failed" };
+        }
+        if (reading.when) return { state: "fresh", text: reading.when + " ✓" };
+        return { state: "fresh", text: "fresh ✓" };
+      }
+      if (reading.emptyStore) return { state: "empty", text: "0", note: "the store is empty" };
+      if (reading.running) {
+        if (reading.progress) return { state: "running", text: "running… " + reading.progress };
+        return { state: "running", text: "running…" };
+      }
+      if (reading.value == null || (reading.zeroIsAbsent && reading.value == 0)) {
+        return { state: "no_data", text: "not measurable yet" };
+      }
+      if (reading.stale) {
+        var mark = reading.ago || "stale";
+        return { state: "stale", text: reading.value + " · " + mark + " ⚠" };
+      }
+      return { state: "fresh", text: reading.value + " ✓" };
+    }
+    function withFreshness(reading, at, nowMs, cadenceHours) {
+      if (!reading) return { kind: "count", value: null };
+      if (reading.emptyStore || reading.running || reading.value == null || reading.kind == "dream" || reading.kind == "stamp") return reading;
+      var hours = ageHours(at, nowMs);
+      if (hours != null && hours >= cadenceHours) {
+        if (reading.zeroIsAbsent) return { kind: "count", value: reading.value, stale: true, ago: agoLabel(hours), zeroIsAbsent: true };
+        return { kind: "count", value: reading.value, stale: true, ago: agoLabel(hours) };
+      }
+      return reading;
+    }
+    function memoryFromCounts(memories, note) {
+      if (!memories) return { kind: "count", value: null };
+      var keys = ["active", "cold", "archived", "other"];
+      var sum = 0;
+      var sawNumber = false;
+      var i = 0;
+      while (i < keys.length) {
+        var key = keys[i];
+        i = i + 1;
+        if (!hasKey(memories, key)) continue;
+        var value = memories[key];
+        if (!isNumber(value)) return { kind: "count", value: null };
+        sum = sum + value;
+        sawNumber = true;
+      }
+      if (!sawNumber) return { kind: "count", value: null };
+      if (sum == 0) return { kind: "count", emptyStore: true, value: 0 };
+      return { kind: "count", value: sum };
+    }
+    function countOrAbsent(value) {
+      if (value == null || value == 0) return { kind: "count", value: null, zeroIsAbsent: true };
+      return { kind: "count", value: value };
+    }
+    function countReal(value) {
+      if (value == null) return { kind: "count", value: null };
+      return { kind: "count", value: value };
+    }
+    function progressReading(percent, active) {
+      if (active) {
+        var progress = "";
+        if (percent != null) progress = Math.round(percent) + "%";
+        return { kind: "count", running: true, progress: progress };
+      }
+      if (percent == null || percent == 0) return { kind: "count", value: null };
+      return { kind: "count", value: Math.round(percent) + "%" };
+    }
+    function dreamFromPulse(dream, nowMs) {
+      if (!dream) return { kind: "dream", state: "not run yet" };
+      var state = dream.state;
+      if (state == null || state == "no_data" || state == "not run yet") {
+        return { kind: "dream", state: "not run yet" };
+      }
+      if (state == "running") return { kind: "dream", state: "running", progress: dream.progress || "" };
+      var when = hourMinute(dream.at);
+      if (state == "stale") {
+        var hours = ageHours(dream.at, nowMs);
+        var ago = "stale";
+        if (hours != null) ago = agoLabel(hours);
+        return { kind: "dream", state: "stale", ago: ago };
+      }
+      if (state == "failed") return { kind: "dream", state: "failed", when: when };
+      if (state == "fresh") return { kind: "dream", state: "fresh", when: when };
+      return { kind: "dream", state: "not run yet" };
+    }
+    function dreamFromRun(run, nowMs, runtime) {
+      var runtimeStatus = "";
+      if (runtime) runtimeStatus = lower(runtime.status);
+      var status = "";
+      if (run) status = lower(run.status);
+      if (status == "running" || status == "started" || status == "in_progress" || runtimeStatus == "running" || runtimeStatus == "starting") {
+        var progress = "";
+        if (runtime && runtime.progress != null) progress = Math.round(runtime.progress) + "%";
+        return { kind: "dream", state: "running", progress: progress };
+      }
+      if (!run) return { kind: "dream", state: "not run yet" };
+      var at = run.completed_at;
+      if (!at) at = run.started_at;
+      var when = hourMinute(at);
+      var hours = ageHours(at, nowMs);
+      var within = false;
+      if (hours != null && hours <= 36) within = true;
+      if (status == "failed" && within) return { kind: "dream", state: "failed", when: when };
+      if (within && (status == "completed" || status == "complete" || status == "success" || status == "succeeded" || status == "reverted" || status == "revert_partial")) {
+        return { kind: "dream", state: "fresh", when: when };
+      }
+      var ago = "stale";
+      if (hours != null) ago = agoLabel(hours);
+      return { kind: "dream", state: "stale", ago: ago };
+    }
+    var COUNT_STALE_HOURS = 24;
+    var DREAM_FRESH_HOURS = 36;
+    /* cortex-measure:end */
+
+    function paintMeasured(id, reading, label) {
+      var node = document.getElementById(id);
+      if (!node || !reading) return null;
+      var view = renderMeasure(reading);
+      var text = view.note ? view.text + " · " + view.note : view.text;
+      if (label && view.state === "fresh") text = view.text + " " + label;
+      if (label && view.state === "stale") text = reading.value + " " + label + " · " + (reading.ago || "stale") + " ⚠";
+      if (label && view.state === "empty") text = "0 " + label + " · the store is empty";
+      node.textContent = text;
+      node.dataset.state = view.state;
+      node.classList.remove("state-no_data", "state-running", "state-stale", "state-fresh", "state-empty", "state-failed");
+      node.classList.add("state-" + view.state);
+      return view;
+    }
+
+    function memoryReadingFromStats(data, now) {
+      var stats = data && data.stats;
+      if (!stats || stats.memories == null) return { kind: "count", value: null };
+      if (Number(stats.memories) === 0) return { kind: "count", emptyStore: true, value: 0 };
+      return withFreshness({ kind: "count", value: Number(stats.memories) }, data.generated_at, now, COUNT_STALE_HOURS);
+    }
+
+    function activityReading(data, now) {
+      var rows = data.access_by_day || [];
+      var sum = 0;
+      rows.forEach(function (row) { sum += Number(row.count || 0); });
+      if (!rows.length || sum === 0) return { kind: "count", value: null };
+      return withFreshness({ kind: "count", value: sum }, data.generated_at, now, COUNT_STALE_HOURS);
+    }
+
+    function sourceReading(data, now) {
+      var sources = data.sources;
+      if (!sources) return { kind: "count", value: null };
+      var count = sources.filter(function (row) { return row.status === "active"; }).length;
+      if (count === 0) return { kind: "count", value: null, zeroIsAbsent: true };
+      return withFreshness({ kind: "count", value: count }, data.generated_at, now, COUNT_STALE_HOURS);
+    }
+
+    function freshnessReading(at, now) {
+      if (!at) return { kind: "count", value: null };
+      var hours = ageHours(at, now);
+      if (hours == null) return { kind: "count", value: null };
+      if (hours >= COUNT_STALE_HOURS) return { kind: "stamp", state: "stale", ago: agoLabel(hours) };
+      var when = hourMinute(at);
+      return { kind: "stamp", state: "fresh", when: when || "now" };
+    }
+
+    function latestSleep(data) {
+      var runs = (data.sleep_runs || []).slice().sort(sleepNewest);
+      return runs[0] || null;
+    }
+
+    function sleepProgressReading(data) {
+      var runtime = data.sleep_runtime || {};
+      var status = String(runtime.status || "").toLowerCase();
+      var active = status === "running" || status === "starting";
+      if (!active && status !== "completed" && status !== "failed") return { kind: "count", value: null };
+      return progressReading(runtime.progress == null ? null : Number(runtime.progress), active);
+    }
+
+    function trainingProgressReading(data) {
+      var training = data.policy_training || {};
+      if (training.overall_progress == null) return { kind: "count", value: null };
+      return progressReading(Math.round(Number(training.overall_progress) * 100), Boolean(app.policy && app.policy.busy));
+    }
+
+    function jobProgressReading(active) {
+      if (!active) return { kind: "count", value: null };
+      return progressReading(Number(active.progress || 0), true);
+    }
+
+    function mapMemories(data, now) { return memoryReadingFromStats(data, now); }
+    function mapRecalled(data, now) {
+      var value = data && data.stats ? data.stats.recall_runs : null;
+      return withFreshness(countOrAbsent(value), data.generated_at, now, COUNT_STALE_HOURS);
+    }
+    function mapDream(data, now) { return dreamFromRun(latestSleep(data), now, (data && data.sleep_runtime) || {}); }
+    function mapActivity(data, now) { return activityReading(data, now); }
+    function mapSources(data, now) { return sourceReading(data, now); }
+    function mapFreshness(data, now) { return freshnessReading(data && data.generated_at, now); }
+    function mapProgress(data, now) { return sleepProgressReading(data); }
+    function mapCount(data, now) { return countOrAbsent(data && data.stats ? data.stats.recall_runs : null); }
+    function mapProposals(data, now) {
+      if (!data || !(data.sleep_runs || []).length) return { kind: "dream", state: "not run yet" };
+      var run = latestSleep(data);
+      var rows = (data.sleep_proposals || []).filter(function (item) { return run && item.run_id === run.run_id; });
+      if (!rows.length) return { kind: "count", value: null, zeroIsAbsent: true };
+      return countReal(rows.length);
+    }
+    function mapRuns(data, now) {
+      var n = data && data.sleep_runs ? data.sleep_runs.length : 0;
+      if (!n) return { kind: "dream", state: "not run yet" };
+      return withFreshness(countReal(n), data.generated_at, now, COUNT_STALE_HOURS);
+    }
+    const STATE_MAP = {
+      memories: mapMemories,
+      recalled: mapRecalled,
+      dream: mapDream,
+      activity: mapActivity,
+      sources: mapSources,
+      freshness: mapFreshness,
+      progress: mapProgress,
+      count: mapCount,
+      proposals: mapProposals,
+      runs: mapRuns
+    };
+
+    function clearOutage() {
+      var banner = document.getElementById("server-banner");
+      if (banner) banner.hidden = true;
+      var page = document.querySelector(".page");
+      if (page) page.style.opacity = "";
+    }
+
+    function holdSnapshot(message) {
+      var banner = document.getElementById("server-banner");
+      if (banner) {
+        banner.hidden = false;
+        banner.textContent = message || "server unreachable";
+      }
+      var page = document.querySelector(".page");
+      if (page && app.data) page.style.opacity = "0.55";
+      var freshness = document.getElementById("freshness");
+      if (freshness && app.data && app.data.generated_at) {
+        freshness.textContent = "as of " + app.data.generated_at;
+        freshness.dataset.state = "stale";
+        freshness.style.color = "var(--muted)";
+      }
+    }
+
+    function applyTruth(nowMs) {
+      if (!app.data) return;
+      clearOutage();
+      var now = nowMs || Date.now();
+      var data = app.data;
+      var mem = STATE_MAP.memories(data, now);
+      var memView = paintMeasured("hero-memory-count", mem, "memories");
+      paintMeasured("donut-total", mem);
+      paintMeasured("hero-dream", STATE_MAP.dream(data, now));
+      var empty = document.getElementById("empty-store");
+      if (empty) empty.hidden = !memView || memView.state !== "empty";
+      paintMeasured("activity-total", STATE_MAP.activity(data, now), "events");
+      paintMeasured("source-total", STATE_MAP.sources(data, now), "sources");
+      var edgeReading = data.stats && data.stats.edges != null && memView && memView.state !== "empty"
+        ? withFreshness(countReal(data.stats.edges), data.generated_at, now, COUNT_STALE_HOURS)
+        : { kind: "count", value: null };
+      var edgeView = renderMeasure(edgeReading);
+      var side = document.getElementById("sidebar-status");
+      if (side && memView) {
+        if (memView.state === "empty") side.textContent = "0 memories · the store is empty";
+        else side.textContent = memView.text + " memories · " + edgeView.text + " connections";
+        side.dataset.state = memView.state;
+      }
+      paintMeasured("freshness", STATE_MAP.freshness(data, now));
+      paintMeasured("recall-total", STATE_MAP.recalled(data, now), "runs");
+      paintMeasured("sleep-status", STATE_MAP.dream(data, now));
+      paintMeasured("sleep-run-total", STATE_MAP.runs(data, now), "runs");
+      paintMeasured("sleep-progress-value", sleepProgressReading(data));
+      paintMeasured("training-progress-value", trainingProgressReading(data));
+      paintMeasured("benchmark-progress-value", jobProgressReading((data.benchmarks || {}).active));
+      paintMeasured("evaluation-progress-value", jobProgressReading((data.evaluations || {}).active));
+      if (!(data.sleep_runs || []).length) {
+        paintMeasured("sleep-proposal-total", { kind: "dream", state: "not run yet" });
+        paintMeasured("sleep-hypothesis-count", { kind: "dream", state: "not run yet" });
+      }
+    }
+
     const savedGraphPositions = parseJson(localStorage.getItem("cortex-graph-positions") || "{}", {});
     const app = {
       data: null, view: "overview", selectedId: null, selectedTrace: null, explorerPage: 1, pageSize: 36, firstLoad: true, kindGuide: null,
@@ -284,9 +622,6 @@
         app.data = await response.json();
         populateFilters();
         renderAll({ preserveReviewDraft });
-        const generated = new Date(app.data.generated_at);
-        document.getElementById("freshness").textContent = `Updated ${timeAgo(generated)}`;
-        document.getElementById("sidebar-status").textContent = `${formatNum(app.data.stats.memories)} memories · ${formatNum(app.data.stats.edges)} connections`;
         if (app.deepLinkTrace) {
           const taskId = app.deepLinkTrace;
           app.deepLinkTrace = null;
@@ -298,6 +633,7 @@
         }
         if (!silent && !app.firstLoad) showToast("Cortex data refreshed");
       } catch (error) {
+        holdSnapshot("server unreachable");
         showToast(`Could not load Cortex: ${error.message}`, true);
       } finally {
         refresh.classList.remove("refreshing");
@@ -308,6 +644,7 @@
     function renderAll({ preserveReviewDraft = false } = {}) {
       renderOverview(); renderTimeline(); if (!preserveReviewDraft) renderReviewInbox(); renderTrainingGovernance(); renderInsights(); renderLearning(); renderCognition(); renderMetacognition(); renderTools(); renderHealth(); renderExplorer(); renderAutoJudge();
       if (app.view === "graph") renderActiveGraph();
+      applyTruth();
     }
 
     function setView(name) {
@@ -374,27 +711,40 @@
     }
 
     function renderOverview() {
-      const d = app.data, memories = d.memories || [];
-      const active = Number(d.stats?.states?.active ?? memories.filter(row => row.state === "active").length);
-      const retrieved = sum(memories,"retrieved_count"), used = sum(memories,"used_count");
-      const structural=technicalIssueCount(d.audit||{}),status=structural?"Repair":"Ready",statusValue=structural?30:100;
+      const d = app.data, memories = d.memories || [], now = Date.now();
+      const memReading = memoryReadingFromStats(d, now);
+      const empty = renderMeasure(memReading).state === "empty";
+      const active = d.stats?.states?.active;
+      const activeReading = active == null ? { kind: "count", value: null } : countReal(active);
+      const retrieved = sum(memories, "retrieved_count"), used = sum(memories, "used_count");
+      const structural = technicalIssueCount(d.audit || {}), status = empty ? "Empty" : structural ? "Repair" : "Ready", statusValue = structural ? 30 : empty ? 0 : 100;
       document.getElementById("hero-health").textContent = status;
-      const heroCount = document.getElementById("hero-memory-count");
-      if (heroCount) {
-        const stored = Number(d.stats?.memories);
-        heroCount.textContent = Number.isFinite(stored) ? `${formatNum(stored)} memories` : "no data yet";
-      }
+      paintMeasured("hero-memory-count", memReading, "memories");
+      const emptyNote = document.getElementById("empty-store");
+      if (emptyNote) emptyNote.hidden = !empty;
       document.getElementById("health-orb").style.setProperty("--health-angle", `${statusValue}%`);
       const aj = d.auto_judge || {};
-      const ajDecisions = aj.summary?.total || 0;
-      metricCards("overview-metrics", [
-        ["Active memories", active, `${formatNum(d.stats.memories)} stored`, "●"],
-        ["Indexed notes", d.stats.documents, `${formatNum(d.stats.document_chunks)} sections`, "▤"],
-        ["Connections", d.stats.edges, `${formatNum(d.contradiction_count)} contradictions`, "⌁"],
-        ["Recall events", retrieved, `${formatNum(used)} confirmed used`, "↗"],
-        ["Auto-Judge decisions", ajDecisions, `${formatNum(aj.summary?.remembered||0)} remembered · ${formatNum(aj.summary?.rejected||0)} rejected`, "⚖"],
-        ["Tool observations", d.stats.tool_executions, `${formatNum(d.stats.tool_strategies)} strategies`, "◇"]
-      ]);
+      const ajTotal = aj.summary && aj.summary.total != null ? aj.summary.total : null;
+      if (empty) {
+        metricCards("overview-metrics", [
+          ["Memories", { kind: "count", emptyStore: true, value: 0 }, "The memories table exists and has no rows", "●"],
+          ["Recall", { kind: "count", value: null }, "Recall shows up after a memory is retrieved", "↗"],
+          ["Dreams", dreamFromRun(latestSleep(d), now, d.sleep_runtime || {}), "A dream that has not run is not zero", "⌁"],
+          ["Notes", { kind: "count", value: null }, "Indexed notes show up after a vault import", "▤"],
+          ["Connections", { kind: "count", value: null }, "Links show up after memories exist", "⌁"],
+          ["Tools", { kind: "count", value: null }, "Tool notes show up after a tool runs", "◇"]
+        ]);
+      } else {
+        const aged = reading => withFreshness(reading, d.generated_at, now, COUNT_STALE_HOURS);
+        metricCards("overview-metrics", [
+          ["Active memories", aged(activeReading), `${formatNum(d.stats.memories)} stored`, "●"],
+          ["Indexed notes", aged(countReal(d.stats.documents)), `${formatNum(d.stats.document_chunks)} sections`, "▤"],
+          ["Connections", aged(countReal(d.stats.edges)), `${formatNum(d.contradiction_count)} contradictions`, "⌁"],
+          ["Recall events", aged(countOrAbsent(retrieved)), retrieved ? `${formatNum(used)} confirmed used` : "not measurable yet", "↗"],
+          ["Auto-Judge decisions", aged(countOrAbsent(ajTotal)), ajTotal ? `${formatNum(aj.summary.remembered)} remembered · ${formatNum(aj.summary.rejected)} rejected` : "not measurable yet", "⚖"],
+          ["Tool observations", aged(countOrAbsent(d.stats.tool_executions)), d.stats.tool_executions ? `${formatNum(d.stats.tool_strategies)} strategies` : "not measurable yet", "◇"]
+        ]);
+      }
       renderActivityChart();
       renderKindDonut();
       renderRoleStrip();
@@ -402,7 +752,7 @@
       const highSignal = [...memories].filter(row => row.state === "active").sort((a,b) => signalScore(b)-signalScore(a)).slice(0,6);
       renderSignalList(highSignal);
       renderSources();
-      document.getElementById("activity-total").textContent = `${formatNum((d.access_by_day || []).reduce((n,row)=>n+Number(row.count||0),0))} events`;
+      paintMeasured("activity-total", activityReading(d, now), "events");
     }
 
     function renderActivityChart() {
@@ -1257,7 +1607,7 @@
     function handleTrainingNextAction(){const training=app.data?.policy_training||{},action=training.next_action?.action||"review",candidates=training.candidates||[];if(action==="review"){goToTrainingReviews();return;}if(action==="replay"){const candidate=candidates.find(item=>item.stage==="replay_ready");if(candidate)runPolicyAction("replay",{candidate_id:candidate.candidate_id});return;}if(action==="shadow"){const candidate=candidates.find(item=>item.stage==="shadow_ready");if(candidate)runPolicyAction("start_shadow",{candidate_id:candidate.candidate_id});return;}document.getElementById("policy-lab-heading")?.scrollIntoView({behavior:"smooth",block:"start"});}
     function renderPolicyTraining(training){
       document.getElementById("policy-compile").disabled=app.policy.busy||app.data?.review_writes_enabled!==true;
-      const progress=Math.round(Number(training.overall_progress||0)*100),progressTrack=document.getElementById("training-progress-track");document.getElementById("training-progress-value").textContent=`${progress}%`;document.getElementById("training-progress-fill").style.width=`${progress}%`;progressTrack.setAttribute("aria-valuenow",String(progress));
+      const progress=Math.round(Number(training.overall_progress||0)*100),progressTrack=document.getElementById("training-progress-track");paintMeasured("training-progress-value", progressReading(progress, app.policy.busy));document.getElementById("training-progress-fill").style.width=`${progress}%`;progressTrack.setAttribute("aria-valuenow",String(progress));
       const stepHost=document.getElementById("training-steps");stepHost.replaceChildren();(training.steps||[]).forEach((step,index)=>{const card=el("article",`training-step ${step.status||"waiting"}`),badge=el("span","training-step-index",step.status==="complete"?"✓":String(index+1));card.append(badge,el("strong","",step.label),el("span","",`${step.description} ${formatNum(step.current||0)} / ${formatNum(step.target||0)}`));stepHost.append(card);});
       const next=training.next_action||{};document.getElementById("training-next-title").textContent=next.title||"Review real examples";document.getElementById("training-next-copy").textContent=next.description||"Your choices create the evidence used by the policy compiler.";const nextButton=document.getElementById("training-next-action"),nextLabels={review:"Start reviewing",replay:"Run evidence replay",shadow:"Start shadow observation",approve:"Review policy approval"};nextButton.textContent=nextLabels[next.action]||"Open training work";nextButton.disabled=app.policy.busy||app.data?.review_writes_enabled!==true;
       const candidates=training.candidates||[],candidateHost=document.getElementById("policy-candidate-list");candidateHost.replaceChildren();if(!candidates.length)candidateHost.append(emptyState("No proposed standard yet","Complete five consistent reviews of a similar pattern. Cortex will compile them here automatically without changing live behavior."));
@@ -1306,7 +1656,7 @@
       button.disabled=Boolean(active);button.textContent=active?"Benchmark running…":"Run benchmark";
       status.textContent=active?`${humanize(active.phase)} · ${Math.round(Number(active.progress||0))}%`:latest?`Score ${Number(latest.score||0).toFixed(1)}`:current?.status==="failed"?"Last run failed":"Not run";
       progress.hidden=!(active||current?.status==="failed");
-      if(!progress.hidden){const progressValue=Math.max(0,Math.min(100,Number((active||current).progress||0)));document.getElementById("benchmark-progress-title").textContent=active?humanize(active.phase||"running"):"Benchmark stopped";document.getElementById("benchmark-progress-message").textContent=String((active||current).error||(active||current).message||"Benchmark is running.");document.getElementById("benchmark-progress-value").textContent=`${Math.round(progressValue)}%`;document.getElementById("benchmark-progress-fill").style.width=`${progressValue}%`;}
+      if(!progress.hidden){const progressValue=Math.max(0,Math.min(100,Number((active||current).progress||0)));document.getElementById("benchmark-progress-title").textContent=active?humanize(active.phase||"running"):"Benchmark stopped";document.getElementById("benchmark-progress-message").textContent=String((active||current).error||(active||current).message||"Benchmark is running.");paintMeasured("benchmark-progress-value", progressReading(progressValue, Boolean(active)));document.getElementById("benchmark-progress-fill").style.width=`${progressValue}%`;}
       const summaryHost=document.getElementById("benchmark-summary");summaryHost.replaceChildren();
       const stats=latest?[
         ["Overall score",`${Number(latest.score||0).toFixed(1)} / 100`,delta?`${signed(delta.score,1)} vs previous compatible run`:"First compatible baseline"],
@@ -1378,7 +1728,7 @@
     function renderPrivateEvaluation(evaluation){
       const runs=Array.isArray(evaluation.runs)?evaluation.runs:[],active=evaluation.active||null,latest=evaluation.latest||null,button=document.getElementById("evaluation-start"),progress=document.getElementById("evaluation-progress"),ready=Boolean(evaluation.ready);
       button.disabled=Boolean(active)||!ready;button.textContent=active?"Evaluation running…":ready?"Run private evaluation":`Label ${Math.max(0,Number(evaluation.minimum_cases||8)-Number(evaluation.case_count||0))} more positive tasks`;
-      progress.hidden=!(active||runs[0]?.status==="failed");if(!progress.hidden){const current=active||runs[0],value=Math.max(0,Math.min(100,Number(current.progress||0)));document.getElementById("evaluation-progress-title").textContent=active?humanize(current.phase||"running"):"Evaluation stopped";document.getElementById("evaluation-progress-message").textContent=String(current.error||current.message||"Comparing the paired retrieval conditions.");document.getElementById("evaluation-progress-value").textContent=`${Math.round(value)}%`;document.getElementById("evaluation-progress-fill").style.width=`${value}%`;}
+      progress.hidden=!(active||runs[0]?.status==="failed");if(!progress.hidden){const current=active||runs[0],value=Math.max(0,Math.min(100,Number(current.progress||0)));document.getElementById("evaluation-progress-title").textContent=active?humanize(current.phase||"running"):"Evaluation stopped";document.getElementById("evaluation-progress-message").textContent=String(current.error||current.message||"Comparing the paired retrieval conditions.");paintMeasured("evaluation-progress-value", progressReading(value, Boolean(active)));document.getElementById("evaluation-progress-fill").style.width=`${value}%`;}
       const summary=document.getElementById("evaluation-summary");summary.replaceChildren();const fields=latest?[
         ["Adaptive hit@6",`${(Number(latest.adaptive_hit_at_k||0)*100).toFixed(1)}%`],["Fixed hit@6",`${(Number(latest.fixed_hit_at_k||0)*100).toFixed(1)}%`],["Context p50 Δ",`${signed(latest.context_delta_p50||0,0)} tok`],["Latency p95 Δ",`${signed(latest.latency_delta_p95||0,1)} ms`]
       ]:[["Adaptive hit@6","—"],["Fixed hit@6","—"],["Context p50 Δ","—"],["Latency p95 Δ","—"]];fields.forEach(([label,value])=>{const card=el("div","private-evaluation-stat");card.append(el("span","",label),el("strong","",value));summary.append(card);});
@@ -1499,12 +1849,12 @@
       if(!app.data)return;
       const d=app.data,summary=d.recall_summary||{},runs=d.recall_runs||[],modes=d.recall_modes||[],budgets=d.recall_budgets||[],days=[...(d.recall_by_day||[])].reverse(),abstained=Number(summary.abstained||0),runCount=Number(summary.count||0),abstention=percent(abstained,Math.max(1,runCount));
       metricCards("cognition-metrics",[
-        ["Recall decisions",d.stats.recall_runs||0,`${formatNum(abstained)} of the latest ${formatNum(runCount)} abstained`,"⌁"],
+        ["Recall decisions",countOrAbsent(d.stats.recall_runs),d.stats.recall_runs?`${formatNum(abstained)} of the latest ${formatNum(runCount)} abstained`:"not measurable yet","⌁"],
         ["Context avoided",`${abstention}%`,"Turns where Cortex injected zero memory tokens","○"],
         ["Median context",`${Math.round(Number(summary.p50_tokens||0))} tok`, `p95 ${Math.round(Number(summary.p95_tokens||0))} estimated tokens`,"≋"],
         ["Recall preparation",`${Number(summary.p50_prepare_ms||0).toFixed(1)} ms`,`p95 ${Number(summary.p95_prepare_ms||0).toFixed(1)} ms`,"↯"]
       ],true);
-      document.getElementById("recall-total").textContent=`${formatNum(d.stats.recall_runs||0)} runs`;
+      paintMeasured("recall-total", countOrAbsent(d.stats.recall_runs), "runs");
       const modeDescriptions={none:"No durable context needed",lean:"Small evidence check",focused:"Personal, current, or decision context",procedural:"Memory plus tool evidence",deep:"Temporal or multi-memory reasoning",fixed:"Adaptive gate disabled"},modeHost=document.getElementById("recall-mode-list");modeHost.replaceChildren();
       if(!modes.length)modeHost.append(emptyState("No recall decisions yet","Use Hermes normally; attention-gate evidence will appear here."));
       modes.forEach(mode=>{const row=el("div","mode-row"),count=Number(mode.count||0),skipped=Number(mode.abstained||0);row.append(el("div","mode-name",humanize(mode.mode)),el("div","mode-copy",`${modeDescriptions[mode.mode]||"Adaptive recall plan"} · avg ${Math.round(Number(mode.avg_tokens||0))} tokens`),el("div","mode-stat",`${formatNum(count)} · ${percent(skipped,Math.max(1,count))}% empty`));modeHost.append(row);});
@@ -1583,7 +1933,7 @@
       renderSleepProgress(runtime);
       const summaryHost=document.getElementById("sleep-cycle-summary"),metricHost=document.getElementById("sleep-metrics"),statusHost=document.getElementById("sleep-status");summaryHost.replaceChildren();metricHost.replaceChildren();
       if(!selected){
-        statusHost.textContent="Waiting";
+        paintMeasured("sleep-status", dreamFromRun(null, Date.now(), runtime));
         document.getElementById("sleep-run-subtitle").textContent="No completed maintenance record exists yet.";
         summaryHost.append(emptyState("No Sleep cycles yet","Start a shadow run or wait for the scheduled window. The first report will appear here without changing live memory."));
         const waiting=el("div","sleep-metric sleep-metric-empty");waiting.append(el("span","","Offline evidence"),el("strong","","—"),el("small","","Replay, proposals, actual changes, and after-run observations will appear after the first cycle."));metricHost.append(waiting);
@@ -1593,16 +1943,24 @@
         return;
       }
       const mode=String(selected.mode||"unknown").toLowerCase(),status=String(selected.status||"unknown").toLowerCase(),isFinished=["complete","completed","success","succeeded"].includes(status),isRunning=["running","started","in_progress"].includes(status),hasError=Boolean(selected.error),tone=hasError||status==="failed"||status==="error"?"failed":isFinished?"ready":isRunning?"running":"",statusLabel=hasError&&isFinished?"Completed with warning":isFinished?"Completed":isRunning?"Running":humanize(status),modeLabel=mode==="shadow"?"Shadow":mode==="apply"?"Apply":humanize(mode),duration=sleepDuration(selected);
-      if(selected===latest&&!(["starting","running"].includes(String(runtime.status))))statusHost.textContent=`${modeLabel} · ${statusLabel}`;
+      paintMeasured("sleep-status", dreamFromRun(selected, Date.now(), selected===latest ? runtime : null));
       document.getElementById("sleep-run-subtitle").textContent=`Run ${shortId(selected.run_id)} · ${formatDate(selected.started_at)} · ${duration}`;
       const card=el("div","sleep-cycle-card"),head=el("div","sleep-cycle-head"),title=el("div","");title.append(el("div","sleep-kicker",`Selected ${modeLabel.toLowerCase()} cycle`),el("div","sleep-cycle-title",mode==="shadow"?"A complete preview; live memory stayed unchanged":"A gated apply cycle with reversible changes"),el("div","sleep-cycle-time",`Started ${formatDate(selected.started_at)} · finished in ${duration} · cutoff ${formatDate(selected.cutoff_at)}`));head.append(title,el("span",`sleep-status-chip ${tone}`,statusLabel));card.append(head);
       card.append(el("p","sleep-summary",mode==="shadow"?"Cortex replayed recorded evidence and wrote proposals only. Every item below says what would change; none of it entered normal recall.":"Cortex reviewed the same bounded evidence and committed only validated actions. Exact before-and-after rows appear below."));
       if(selected.error)card.append(el("div","sleep-error",`Cycle note: ${String(selected.error)}`));summaryHost.append(card);
       const report=selected.report||{},scanned=Number(selected.episodes_scanned||0),replayed=Number(selected.episodes_replayed||0),usage=Number(report.usage_tasks_replayed||0),evidence=Number(report.evidence_added||0),tokenBudget=Number(selected.reflection_token_budget||0),estimatedTokens=Number(selected.reflection_estimated_tokens||0);
-      addSleepMetric(metricHost,"Episode replay",`${formatNum(replayed)} / ${formatNum(scanned)}`,scanned?`${percent(replayed,scanned)}% of eligible episodes revisited`:"No eligible episodes in this run");
-      addSleepMetric(metricHost,"Outcome replay",formatNum(usage),`${formatNum(evidence)} new independent evidence ${evidence===1?"record":"records"}`);
-      addSleepMetric(metricHost,"Runtime",duration,`${formatNum(selected.applied_changes||0)} reported applied changes`);
-      addSleepMetric(metricHost,"Model reflection",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:"Off",tokenBudget?humanize(selected.reflection_status||"unknown"):"Deterministic local analysis only");
+      const runningText = renderMeasure(dreamFromRun(selected, Date.now(), runtime)).text;
+      if (isRunning) {
+        addSleepMetric(metricHost,"Episode replay",runningText,"scanned and replayed totals are written when the run finishes");
+        addSleepMetric(metricHost,"Outcome replay",runningText,"child rows are still being written");
+        addSleepMetric(metricHost,"Runtime",runningText,"applied changes stay unset until the run finishes");
+        addSleepMetric(metricHost,"Model reflection",runningText,"not measurable yet");
+      } else {
+        addSleepMetric(metricHost,"Episode replay",`${formatNum(replayed)} / ${formatNum(scanned)}`,scanned?`${percent(replayed,scanned)}% of eligible episodes revisited`:"No eligible episodes in this run");
+        addSleepMetric(metricHost,"Outcome replay",formatNum(usage),`${formatNum(evidence)} new independent evidence ${evidence===1?"record":"records"}`);
+        addSleepMetric(metricHost,"Runtime",duration,`${formatNum(selected.applied_changes==null?null:selected.applied_changes)} reported applied changes`);
+        addSleepMetric(metricHost,"Model reflection",tokenBudget?`${formatNum(estimatedTokens)} / ${formatNum(tokenBudget)} tok`:"Off",tokenBudget?humanize(selected.reflection_status||"unknown"):"Deterministic local analysis only");
+      }
       renderSleepEffects(selected,proposals);
       renderSleepHypotheses(selected);
       renderSleepLedger(proposals,app.data?.sleep_edge_changes||[],app.data?.sleep_state_changes||[]);
@@ -1612,14 +1970,14 @@
     function sleepDuration(run){const start=Date.parse(run.started_at),end=Date.parse(run.completed_at);if(!Number.isFinite(start)||!Number.isFinite(end)||end<start)return String(run.status)==="running"?"in progress":"duration unavailable";const seconds=Math.max(0,Math.round((end-start)/1000));return seconds<60?`${seconds}s`:seconds<3600?`${Math.floor(seconds/60)}m ${seconds%60}s`:`${Math.floor(seconds/3600)}h ${Math.round(seconds%3600/60)}m`;}
     function addSleepMetric(host,label,value,copy){const card=el("div","sleep-metric");card.append(el("span","",label),el("strong","",value),el("small","",copy));host.append(card);}
     function renderSleepSchedule(schedule){const next=document.getElementById("sleep-next-run"),copy=document.getElementById("sleep-schedule-copy"),meta=document.getElementById("sleep-schedule-meta"),nextValue=String(schedule.next_run||"").trim(),parsed=Date.parse(nextValue);next.textContent=nextValue?(Number.isFinite(parsed)?formatDate(nextValue):nextValue):(schedule.schedule||"Nightly · 03:00–05:00 local window");copy.textContent=String(schedule.detail||"Starts nightly in a bounded idle window; manual shadow runs are available at any time.");meta.replaceChildren();[[schedule.active===true?"Timer active":schedule.active===false?"Timer inactive":"Timer state unknown",schedule.active===false?"bad":""],[schedule.enabled===true?"Enabled at login":schedule.enabled===false?"Not enabled":"Bundled default",""],[schedule.last_trigger?`Last trigger ${formatDate(schedule.last_trigger)}`:String(schedule.source||"Schedule source"),""]].forEach(([label,tone])=>meta.append(el("span",tone,label)));}
-    function renderSleepRunStats(runs){const host=document.getElementById("sleep-run-stats"),completed=runs.filter(run=>String(run.status).toLowerCase()==="completed"),failed=runs.filter(run=>String(run.status).toLowerCase()==="failed"),durations=completed.map(run=>{const a=Date.parse(run.started_at),b=Date.parse(run.completed_at);return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,b-a):0;}).filter(Boolean),avg=durations.length?`${Math.round(durations.reduce((a,b)=>a+b,0)/durations.length/1000)}s`:"—",proposals=runs.reduce((total,run)=>total+sleepProposalCount(run),0),changes=runs.reduce((total,run)=>total+Number(run.applied_changes||0),0);host.replaceChildren();document.getElementById("sleep-run-total").textContent=`${formatNum(runs.length)} runs`;[[runs.length,"cycles recorded"],[runs.length?`${Math.round(completed.length/runs.length*100)}%`:"—",`${failed.length} failed`],[avg,"average runtime"],[proposals,`${changes} live changes`]].forEach(([value,label])=>{const card=el("div","sleep-run-stat");card.append(el("strong","",formatNum(value)),el("span","",label));host.append(card);});}
+    function renderSleepRunStats(runs){const host=document.getElementById("sleep-run-stats"),completed=runs.filter(run=>String(run.status).toLowerCase()==="completed"),failed=runs.filter(run=>String(run.status).toLowerCase()==="failed"),durations=completed.map(run=>{const a=Date.parse(run.started_at),b=Date.parse(run.completed_at);return Number.isFinite(a)&&Number.isFinite(b)?Math.max(0,b-a):0;}).filter(Boolean),avg=durations.length?`${Math.round(durations.reduce((a,b)=>a+b,0)/durations.length/1000)}s`:"—",proposals=runs.reduce((total,run)=>total+sleepProposalCount(run),0),changes=runs.reduce((total,run)=>total+Number(run.applied_changes||0),0);host.replaceChildren();paintMeasured("sleep-run-total", runs.length ? countReal(runs.length) : {kind:"dream", state:"not run yet"}, "runs");[[runs.length,"cycles recorded"],[runs.length?`${Math.round(completed.length/runs.length*100)}%`:"—",`${failed.length} failed`],[avg,"average runtime"],[proposals,`${changes} live changes`]].forEach(([value,label])=>{const card=el("div","sleep-run-stat");card.append(el("strong","",formatNum(value)),el("span","",label));host.append(card);});}
     function sleepProposalCount(run){return Number(run.association_proposals||0)+Number(run.interference_proposals||0)+Number(run.edge_decay_proposals||0)+Number(run.lifecycle_candidates||0)+Number(run.consolidation_candidates||0)+Number(run.dependency_candidates||0);}
     function renderSleepHistory(runs){const host=document.getElementById("sleep-run-history");host.replaceChildren();if(!runs.length){host.append(emptyState("No run history","Scheduled and manual cycles will appear here."));return;}runs.forEach(run=>{const button=el("button",`sleep-run-button ${run.run_id===app.sleepRunId?"active":""}`),top=el("div","sleep-run-button-top"),status=String(run.status||"unknown").toLowerCase();button.type="button";top.append(el("strong","",formatDate(run.started_at)),el("span",`sleep-run-button-status ${status==="failed"?"failed":""}`,`${humanize(run.mode)} · ${humanize(status)}`));button.append(top,el("small","",`${sleepDuration(run)} · ${formatNum(sleepProposalCount(run))} proposals · ${formatNum(run.applied_changes||0)} changed`));button.addEventListener("click",()=>{app.sleepRunId=run.run_id;renderSleep(app.data.sleep_runs||[],app.data.sleep_proposals||[],app.data.sleep_runtime||{});});host.append(button);});}
     function renderSleepEffects(run,proposals){const host=document.getElementById("sleep-effects"),runProposals=proposals.filter(item=>item.run_id===run.run_id),effects=app.data?.sleep_effects?.[run.run_id]||{},mode=String(run.mode||"shadow"),connectionIdeas=runProposals.filter(item=>["association","association_reinforcement"].includes(item.kind)).length,pruneIdeas=runProposals.filter(item=>["edge_downscale","lifecycle"].includes(item.kind)).length,reviewIdeas=runProposals.length-connectionIdeas-pruneIdeas,liveEdges=Number(effects.live_edge_changes||0),liveStates=Number(effects.live_state_changes||0),reversed=Number(effects.reversed_edge_changes||0)+Number(effects.reversed_state_changes||0),live=liveEdges+liveStates;host.replaceChildren();const direct=el("div",`sleep-effect-card ${mode==="shadow"?"proposed":"applied"}`),directCopy=mode==="shadow"?"This run observed and proposed. It did not change retrieval state, edge weights, or memory availability.":`${formatNum(liveEdges)} connection ${liveEdges===1?"change":"changes"} and ${formatNum(liveStates)} lifecycle ${liveStates===1?"change":"changes"} remain active; every one has stored before-and-after values.${reversed?` ${formatNum(reversed)} ${reversed===1?"change was":"changes were"} later reversed.`:""}`;direct.append(el("span","",mode==="shadow"?"Direct effect · proposal only":"Direct effect · committed"),el("strong","",mode==="shadow"?"0 live changes":`${formatNum(live)} live changes`),el("p","",directCopy));const signals=el("div","sleep-effect-signals"),signalRows=mode==="shadow"?[[connectionIdeas,"connect"],[pruneIdeas,"cool / archive"],[reviewIdeas,"review"]]:[[live,"still active"],[reversed,"reversed"],[run.applied_changes||0,"committed originally"]];signalRows.forEach(([count,label])=>signals.append(el("b","",`${formatNum(count)} ${label}`)));direct.append(signals);const observed=el("div","sleep-effect-card observed");observed.append(el("span","","Observed after this run"),el("strong","",`${formatNum(effects.recall_runs_after||0)} recalls`),el("p","","These are follow-up observations until the next Sleep cycle. They show what happened afterward, not proof that Sleep caused it."));const outcomes=el("div","sleep-effect-signals");[[effects.helpful_outcomes_after||0,"helpful"],[effects.harmful_outcomes_after||0,"harmful / corrected"],[effects.pruning_regrets_after||0,"pruning regret"]].forEach(([count,label])=>outcomes.append(el("b","",`${formatNum(count)} ${label}`)));observed.append(outcomes);host.append(direct,observed);}
     function sleepRecordCategory(kind){if(["association","association_reinforcement","edge_change","connection_added"].includes(kind))return"connections";if(["edge_downscale","lifecycle","state_change"].includes(kind))return"pruning";return"review";}
-    function renderSleepHypotheses(run){const host=document.getElementById("sleep-hypotheses"),rows=run?(app.data?.sleep_hypotheses?.[run.run_id]||[]):[];host.replaceChildren();document.getElementById("sleep-hypothesis-count").textContent=`${formatNum(rows.length)} hypotheses`;if(!run){host.append(emptyState("No run selected","Choose a Sleep cycle to see the measurable predictions created by its proposals."));return;}if(!rows.length){host.append(emptyState("No hypotheses in this run","This cycle produced no proposal that could be followed through future attributed use."));return;}rows.slice(0,10).forEach(item=>{const card=el("article","sleep-hypothesis"),copy=el("div",""),meta=el("div","sleep-hypothesis-meta"),observations=Number(item.post_use_tasks||0),positive=Number(item.positive_tasks||0),negative=Number(item.negative_tasks||0);copy.append(el("strong","",item.hypothesis||"Future outcomes should test this proposal."),el("p","",`${item.success_metric||"Future explicit outcomes are the success metric."} ${truncate(String(item.rationale||""),120)}`));meta.append(el("span","",item.applied?"exposed · applied":"proposal only"),el("span","",`${formatNum(observations)} later uses`),el("span","",`${formatNum(positive)} positive · ${formatNum(negative)} negative`),el("span","",item.evidence_ready?"observational evidence ready":"needs 8 exposed observations"));card.append(copy,meta);host.append(card);});}
+    function renderSleepHypotheses(run){const host=document.getElementById("sleep-hypotheses"),rows=run?(app.data?.sleep_hypotheses?.[run.run_id]||[]):[];host.replaceChildren();paintMeasured("sleep-hypothesis-count", rows.length ? countReal(rows.length) : {kind:"count", value:null, zeroIsAbsent:true}, "hypotheses");if(!run){host.append(emptyState("No run selected","Choose a Sleep cycle to see the measurable predictions created by its proposals."));return;}if(!rows.length){host.append(emptyState("No hypotheses in this run","This cycle produced no proposal that could be followed through future attributed use."));return;}rows.slice(0,10).forEach(item=>{const card=el("article","sleep-hypothesis"),copy=el("div",""),meta=el("div","sleep-hypothesis-meta"),observations=Number(item.post_use_tasks||0),positive=Number(item.positive_tasks||0),negative=Number(item.negative_tasks||0);copy.append(el("strong","",item.hypothesis||"Future outcomes should test this proposal."),el("p","",`${item.success_metric||"Future explicit outcomes are the success metric."} ${truncate(String(item.rationale||""),120)}`));meta.append(el("span","",item.applied?"exposed · applied":"proposal only"),el("span","",`${formatNum(observations)} later uses`),el("span","",`${formatNum(positive)} positive · ${formatNum(negative)} negative`),el("span","",item.evidence_ready?"observational evidence ready":"needs 8 exposed observations"));card.append(copy,meta);host.append(card);});}
 
-    function renderSleepLedger(proposals,edgeChanges,stateChanges){const host=document.getElementById("sleep-proposal-list"),runId=app.sleepRunId;host.replaceChildren();if(!runId){document.getElementById("sleep-proposal-total").textContent="0 records";host.append(emptyState("No run selected","Choose a cycle to inspect exactly what it touched."));return;}const proposalRecords=proposals.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"proposal"})),edgeRecords=edgeChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"edge",kind:Number(item.prior_exists)?"edge_change":"connection_added",status:item.reversed_at?"reversed":"applied",rationale:Number(item.prior_exists)?`Changed ${humanize(item.relation)} weight from ${sleepWeight(item.prior_weight)} to ${sleepWeight(item.next_weight)}.`:`Created a ${humanize(item.relation)} connection at weight ${sleepWeight(item.next_weight)}.`,score:item.next_weight})),stateRecords=stateChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"state",kind:"state_change",status:item.reversed_at?"reversed":"applied",src_id:item.memory_id,src_kind:item.memory_kind,src_content:item.memory_content,rationale:`Changed memory availability from ${humanize(item.prior_state)} to ${humanize(item.next_state)}.`})),records=[...edgeRecords,...stateRecords,...proposalRecords].sort(sleepNewest).filter(item=>app.sleepFilter==="all"||sleepRecordCategory(item.kind)===app.sleepFilter);document.getElementById("sleep-proposal-total").textContent=`${formatNum(records.length)} records`;if(!records.length){host.append(emptyState("Nothing in this category","This run did not record a matching proposal or applied change."));return;}records.forEach(record=>renderSleepRecord(host,record));}
+    function renderSleepLedger(proposals,edgeChanges,stateChanges){const host=document.getElementById("sleep-proposal-list"),runId=app.sleepRunId;host.replaceChildren();if(!runId){paintMeasured("sleep-proposal-total",{kind:"dream",state:"not run yet"});host.append(emptyState("No run selected","Choose a cycle to inspect exactly what it touched."));return;}const proposalRecords=proposals.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"proposal"})),edgeRecords=edgeChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"edge",kind:Number(item.prior_exists)?"edge_change":"connection_added",status:item.reversed_at?"reversed":"applied",rationale:Number(item.prior_exists)?`Changed ${humanize(item.relation)} weight from ${sleepWeight(item.prior_weight)} to ${sleepWeight(item.next_weight)}.`:`Created a ${humanize(item.relation)} connection at weight ${sleepWeight(item.next_weight)}.`,score:item.next_weight})),stateRecords=stateChanges.filter(item=>item.run_id===runId).map(item=>({...item,record_type:"state",kind:"state_change",status:item.reversed_at?"reversed":"applied",src_id:item.memory_id,src_kind:item.memory_kind,src_content:item.memory_content,rationale:`Changed memory availability from ${humanize(item.prior_state)} to ${humanize(item.next_state)}.`})),records=[...edgeRecords,...stateRecords,...proposalRecords].sort(sleepNewest).filter(item=>app.sleepFilter==="all"||sleepRecordCategory(item.kind)===app.sleepFilter);paintMeasured("sleep-proposal-total", records.length ? countReal(records.length) : {kind:"count", value:null, zeroIsAbsent:true}, "records");if(!records.length){host.append(emptyState("Nothing in this category","This run did not record a matching proposal or applied change."));return;}records.forEach(record=>renderSleepRecord(host,record));}
     function renderSleepRecord(host,record){const row=el("article","sleep-proposal-row"),kind=humanize(record.kind||"proposal"),copy=el("div","sleep-proposal-copy"),created=record.created_at&&Number.isFinite(Date.parse(record.created_at))?timeAgo(new Date(record.created_at)):"Time not recorded",status=String(record.status||"proposed").toLowerCase(),numericScore=Number(record.score),score=Number.isFinite(numericScore)?`${Math.round((numericScore<=1?numericScore*100:numericScore))}% signal`:"No score";copy.append(el("p","",String(record.rationale||"No rationale was recorded.")));const refs=el("div","sleep-memory-pair");if(record.src_id)refs.append(sleepMemoryRef(record.src_id,record.src_kind,record.src_content,"Memory A"));if(record.dst_id){refs.append(el("span","sleep-memory-arrow",sleepRecordCategory(record.kind)==="connections"?"↔":"→"),sleepMemoryRef(record.dst_id,record.dst_kind,record.dst_content,"Memory B"));}if(record.src_id)copy.append(refs);const details=record.record_type==="proposal"?sleepProposalDetails(record):record.record_type==="edge"?`${humanize(record.relation)} · evidence ${formatNum(record.prior_evidence_count||0)} → ${formatNum(record.next_evidence_count||0)}`:`${humanize(record.prior_state)} → ${humanize(record.next_state)}`;copy.append(el("div","sleep-change-detail",`${details} · ${created}`));const meta=el("div","sleep-proposal-meta");meta.append(el("span",`sleep-proposal-state ${status}`,humanize(status)),el("span","sleep-proposal-score",score));row.append(el("div","sleep-proposal-kind",kind),copy,meta);host.append(row);}
     function sleepMemoryRef(id,kind,content,label){const button=el("button","sleep-memory-ref");button.type="button";button.append(el("span","",`${label} · ${humanize(kind||"memory")} · ${shortId(id)}`),el("strong","",truncate(cleanMemory(content||"Memory text unavailable"),180)));button.addEventListener("click",()=>selectMemory(id));return button;}
     function sleepProposalDetails(record){const details=parseJson(record.details_json||"{}",{}),parts=[`${formatNum(record.evidence_count||0)} evidence`];if(details.distinct_witnesses)parts.push(`${formatNum(details.distinct_witnesses)} independent witnesses`);if(details.next_state)parts.push(`would move to ${humanize(details.next_state)}`);if(details.prior_weight!==undefined&&details.next_weight!==undefined)parts.push(`weight ${sleepWeight(details.prior_weight)} → ${sleepWeight(details.next_weight)}`);if(details.action)parts.push(`action ${humanize(details.action)}`);return parts.join(" · ");}
@@ -1632,12 +1990,11 @@
       if(status==="idle")return;
       document.getElementById("sleep-progress-title").textContent=status==="completed"?"Sleep review complete":status==="failed"?"Sleep review stopped":humanize(runtime.phase||"working");
       document.getElementById("sleep-progress-message").textContent=String(runtime.message||"Cortex is reviewing stored evidence.");
-      document.getElementById("sleep-progress-value").textContent=`${Math.round(progress)}%`;
+      paintMeasured("sleep-progress-value", progressReading(progress, active));
       document.getElementById("sleep-progress-fill").style.width=`${progress}%`;
       const stepHost=document.getElementById("sleep-step-list");stepHost.replaceChildren();steps.slice(-5).forEach(step=>{const row=el("div","sleep-step");row.append(el("span","",humanize(step.phase||"step")),el("div","",String(step.message||"")));stepHost.append(row);});
-      if(active){statusHost.textContent=`Shadow · ${Math.round(progress)}%`;scheduleSleepPoll();}
-      else if(status==="completed")statusHost.textContent="Shadow · Completed";
-      else if(status==="failed")statusHost.textContent="Shadow · Failed";
+      if(active){paintMeasured("sleep-status", dreamFromRun(latestSleep(app.data || {}), Date.now(), runtime));scheduleSleepPoll();}
+      else if(status==="completed"||status==="failed")paintMeasured("sleep-status", dreamFromRun(latestSleep(app.data || {}), Date.now(), runtime));
     }
 
     async function startSleepSession() {
@@ -2214,7 +2571,7 @@
     function openDrawer(title="Memory detail"){document.getElementById("drawer-title").textContent=title;document.getElementById("drawer").classList.add("open");document.getElementById("drawer").setAttribute("aria-hidden","false");document.getElementById("drawer-backdrop").classList.add("open");document.body.style.overflow="hidden";}
     function closeDrawer({ updateUrl = true } = {}){if(updateUrl){const url=new URL(window.location.href);url.searchParams.delete("memory");url.searchParams.delete("trace");window.history.replaceState({},"",url);}app.selectedId=null;app.selectedTrace=null;document.getElementById("drawer").classList.remove("open");document.getElementById("drawer").setAttribute("aria-hidden","true");document.getElementById("drawer-backdrop").classList.remove("open");document.body.style.overflow="";}
 
-    function metricCards(id, values, allowText=false){const host=document.getElementById(id);host.replaceChildren();values.forEach(([label,value,note,icon])=>{const card=el("div","panel metric-card"),top=el("div","metric-top");top.append(el("span","metric-label",label),el("span","metric-icon",icon||"•"));card.append(top,el("div","metric-value",typeof value==="number"?formatNum(value):String(value)),el("div","metric-note",note||""));host.append(card);});}
+    function metricCards(id, values, allowText=false){const host=document.getElementById(id);host.replaceChildren();values.forEach(([label,value,note,icon])=>{let shown=value,state="";if(value&&typeof value==="object"&&value.kind){const view=renderMeasure(value);shown=view.note?view.text+" · "+view.note:view.text;state=view.state;}else if(typeof value==="number"){shown=formatNum(value);state="fresh";}const card=el("div","panel metric-card");card.dataset.stateMap=value&&value.kind==="dream"?"dream":"count";if(state)card.dataset.state=state;const top=el("div","metric-top");top.append(el("span","metric-label",label),el("span","metric-icon",icon||"•"));card.append(top,el("div",state?"metric-value state-"+state:"metric-value",String(shown)),el("div","metric-note",note||""));host.append(card);});}
     function detailSection(title){const section=el("section","detail-section");section.append(el("h3","",title));return section;}
     function scoreBar(name,value){const item=el("div","score-item"),label=document.createElement("label"),score=Math.max(0,Math.min(1,Number(value||0))),track=el("div","bar-track"),fill=el("div","bar-fill");label.append(el("span","",name),el("span","",score.toFixed(2)));fill.style.width=`${score*100}%`;track.append(fill);item.append(label,track);return item;}
     function scoreDots(value){const wrap=el("div","score-pair row-confidence"),n=Math.round(Number(value||0)*5);for(let i=1;i<=5;i++)wrap.append(el("i",`score-dot ${i<=n?"on":""}`));return wrap;}
@@ -2253,7 +2610,7 @@
     function countBy(rows,key){return rows.reduce((o,r)=>{const v=r[key]||"unknown";o[v]=(o[v]||0)+1;return o;},{});}
     function sum(rows,key){return rows.reduce((n,r)=>n+Number(r[key]||0),0);}
     function truncate(value,length){value=String(value||"");return value.length>length?`${value.slice(0,length-1)}…`:value;}
-    function formatNum(value){const n=Number(value);return Number.isFinite(n)?new Intl.NumberFormat(undefined,{notation:n>=10000?"compact":"standard",maximumFractionDigits:1}).format(n):String(value??"—");}
+    function formatNum(value){if(value==null||value==="")return "not measurable yet";const n=Number(value);return Number.isFinite(n)?new Intl.NumberFormat(undefined,{notation:n>=10000?"compact":"standard",maximumFractionDigits:1}).format(n):String(value);}
     function formatBytes(value){const n=Number(value||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1024).toFixed(1)} KB`;return`${(n/1048576).toFixed(1)} MB`;}
     function formatDate(value){const d=new Date(value);return Number.isNaN(d.getTime())?String(value||"—"):d.toLocaleString(undefined,{dateStyle:"medium",timeStyle:"short"});}
     function shortDate(value){const d=new Date(value);return Number.isNaN(d.getTime())?"—":d.toLocaleDateString(undefined,{month:"short",day:"numeric",year:d.getFullYear()!==new Date().getFullYear()?"numeric":undefined});}

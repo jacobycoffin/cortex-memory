@@ -64,23 +64,204 @@
       white-space: pre;
       overflow-wrap: normal;
       letter-spacing: 0;
-      /* A monospace cell is about 0.6em, so 40 columns are 24em.
-         Block glyphs draw past the em box; the line box has to hold them. */
       line-height: 1.7;
       font-size: clamp(12px, calc((100cqw - 6px) / 24), 26px);
     }
-    .grey { color: var(--muted); }
+    .grey, .state-no_data, .state-empty { color: var(--muted); }
+    .skeleton-row {
+      height: 1.15em;
+      margin: 0 0 0.45em;
+      border: 1px solid var(--muted);
+    }
+    #empty-store { margin: 0; color: var(--muted); }
   </style>
 </head>
 <body>
   <main class="tile">
     <pre id="notice" hidden aria-live="polite"></pre>
-    <pre id="status">no data yet</pre>
+    <p id="empty-store" hidden>The store is empty. Memories, recall, and dreams show up here after the first write. An empty store is not a working store.</p>
+    <div id="loading" aria-hidden="false">
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+      <div class="skeleton-row"></div>
+    </div>
+    <pre id="fallback" hidden>no data yet</pre>
+    <pre id="status" hidden>cortex  <span id="pulse-memories" data-state-map="memories">not measurable yet</span> mem  recalled <span id="pulse-recalled" data-state-map="recalled">not measurable yet</span>  dreams: <span id="pulse-dream" data-state-map="dream">not run yet</span></pre>
     <pre id="asof" hidden></pre>
     <pre id="grid" hidden></pre>
   </main>
   <script>
     "use strict";
+
+    /* cortex-measure:start */
+    function isString(value) {
+      return typeof value == "string";
+    }
+    function isNumber(value) {
+      return typeof value == "number";
+    }
+    function hasKey(obj, key) {
+      if (!obj) return false;
+      return obj[key] != null;
+    }
+    function lower(value) {
+      if (value == null) return "";
+      return ("" + value).toLowerCase();
+    }
+    function agoLabel(hours) {
+      if (hours == null) return "stale";
+      if (hours < 24) {
+        var rounded = Math.round(hours);
+        if (rounded < 1) rounded = 1;
+        return rounded + " h ago";
+      }
+      var days = Math.round(hours / 24);
+      if (days < 1) days = 1;
+      return days + " d ago";
+    }
+    function hourMinute(text) {
+      if (!isString(text)) return "";
+      var mark = text.indexOf("T");
+      if (mark < 0) return "";
+      var clock = text.substring(mark + 1, mark + 6);
+      if (clock.length != 5) return "";
+      if (text.substring(mark + 3, mark + 4) != ":") return "";
+      return clock;
+    }
+    function ageHours(text, nowMs) {
+      if (!isString(text)) return null;
+      var ms = Date.parse(text);
+      if (ms != ms) return null;
+      return (nowMs - ms) / 3600000;
+    }
+    function renderMeasure(reading) {
+      if (!reading) return { state: "no_data", text: "not measurable yet" };
+      if (reading.kind == "dream" || reading.kind == "stamp") {
+        var state = reading.state;
+        if (state == null || state == "no_data" || state == "not run yet") {
+          return { state: "no_data", text: "not run yet" };
+        }
+        if (state == "running") {
+          if (reading.progress) return { state: "running", text: "running… " + reading.progress };
+          return { state: "running", text: "running…" };
+        }
+        if (state == "stale") {
+          var ago = reading.ago || "stale";
+          return { state: "stale", text: ago + " ⚠" };
+        }
+        if (state == "failed") {
+          if (reading.when) return { state: "failed", text: "failed " + reading.when };
+          return { state: "failed", text: "failed" };
+        }
+        if (reading.when) return { state: "fresh", text: reading.when + " ✓" };
+        return { state: "fresh", text: "fresh ✓" };
+      }
+      if (reading.emptyStore) return { state: "empty", text: "0", note: "the store is empty" };
+      if (reading.running) {
+        if (reading.progress) return { state: "running", text: "running… " + reading.progress };
+        return { state: "running", text: "running…" };
+      }
+      if (reading.value == null || (reading.zeroIsAbsent && reading.value == 0)) {
+        return { state: "no_data", text: "not measurable yet" };
+      }
+      if (reading.stale) {
+        var mark = reading.ago || "stale";
+        return { state: "stale", text: reading.value + " · " + mark + " ⚠" };
+      }
+      return { state: "fresh", text: reading.value + " ✓" };
+    }
+    function withFreshness(reading, at, nowMs, cadenceHours) {
+      if (!reading) return { kind: "count", value: null };
+      if (reading.emptyStore || reading.running || reading.value == null || reading.kind == "dream" || reading.kind == "stamp") return reading;
+      var hours = ageHours(at, nowMs);
+      if (hours != null && hours >= cadenceHours) {
+        if (reading.zeroIsAbsent) return { kind: "count", value: reading.value, stale: true, ago: agoLabel(hours), zeroIsAbsent: true };
+        return { kind: "count", value: reading.value, stale: true, ago: agoLabel(hours) };
+      }
+      return reading;
+    }
+    function memoryFromCounts(memories, note) {
+      if (!memories) return { kind: "count", value: null };
+      var keys = ["active", "cold", "archived", "other"];
+      var sum = 0;
+      var sawNumber = false;
+      var i = 0;
+      while (i < keys.length) {
+        var key = keys[i];
+        i = i + 1;
+        if (!hasKey(memories, key)) continue;
+        var value = memories[key];
+        if (!isNumber(value)) return { kind: "count", value: null };
+        sum = sum + value;
+        sawNumber = true;
+      }
+      if (!sawNumber) return { kind: "count", value: null };
+      if (sum == 0) return { kind: "count", emptyStore: true, value: 0 };
+      return { kind: "count", value: sum };
+    }
+    function countOrAbsent(value) {
+      if (value == null || value == 0) return { kind: "count", value: null, zeroIsAbsent: true };
+      return { kind: "count", value: value };
+    }
+    function countReal(value) {
+      if (value == null) return { kind: "count", value: null };
+      return { kind: "count", value: value };
+    }
+    function progressReading(percent, active) {
+      if (active) {
+        var progress = "";
+        if (percent != null) progress = Math.round(percent) + "%";
+        return { kind: "count", running: true, progress: progress };
+      }
+      if (percent == null || percent == 0) return { kind: "count", value: null };
+      return { kind: "count", value: Math.round(percent) + "%" };
+    }
+    function dreamFromPulse(dream, nowMs) {
+      if (!dream) return { kind: "dream", state: "not run yet" };
+      var state = dream.state;
+      if (state == null || state == "no_data" || state == "not run yet") {
+        return { kind: "dream", state: "not run yet" };
+      }
+      if (state == "running") return { kind: "dream", state: "running", progress: dream.progress || "" };
+      var when = hourMinute(dream.at);
+      if (state == "stale") {
+        var hours = ageHours(dream.at, nowMs);
+        var ago = "stale";
+        if (hours != null) ago = agoLabel(hours);
+        return { kind: "dream", state: "stale", ago: ago };
+      }
+      if (state == "failed") return { kind: "dream", state: "failed", when: when };
+      if (state == "fresh") return { kind: "dream", state: "fresh", when: when };
+      return { kind: "dream", state: "not run yet" };
+    }
+    function dreamFromRun(run, nowMs, runtime) {
+      var runtimeStatus = "";
+      if (runtime) runtimeStatus = lower(runtime.status);
+      var status = "";
+      if (run) status = lower(run.status);
+      if (status == "running" || status == "started" || status == "in_progress" || runtimeStatus == "running" || runtimeStatus == "starting") {
+        var progress = "";
+        if (runtime && runtime.progress != null) progress = Math.round(runtime.progress) + "%";
+        return { kind: "dream", state: "running", progress: progress };
+      }
+      if (!run) return { kind: "dream", state: "not run yet" };
+      var at = run.completed_at;
+      if (!at) at = run.started_at;
+      var when = hourMinute(at);
+      var hours = ageHours(at, nowMs);
+      var within = false;
+      if (hours != null && hours <= 36) within = true;
+      if (status == "failed" && within) return { kind: "dream", state: "failed", when: when };
+      if (within && (status == "completed" || status == "complete" || status == "success" || status == "succeeded" || status == "reverted" || status == "revert_partial")) {
+        return { kind: "dream", state: "fresh", when: when };
+      }
+      var ago = "stale";
+      if (hours != null) ago = agoLabel(hours);
+      return { kind: "dream", state: "stale", ago: ago };
+    }
+    var COUNT_STALE_HOURS = 24;
+    var DREAM_FRESH_HOURS = 36;
+    /* cortex-measure:end */
 
     const GLYPHS = ["·", "░", "▒", "▓", "█"];
     const COLS = 40;
@@ -89,19 +270,36 @@
     const NO_DATA = "no data yet";
     const UNREACHABLE = "server unreachable";
     const NOT_MEASURABLE = "not measurable yet";
-    const DREAM = {
-      "not run yet": "not run yet",
-      no_data: "not run yet",
-      running: "running",
-      stale: "stale",
-      fresh: "fresh",
-      failed: "failed"
+
+    function mapMemories(payload, now) {
+      var status = payload && payload.status;
+      var reading = memoryFromCounts(status && status.memories, payload && payload.note);
+      var at = payload && (payload.observed_at || payload.received_at);
+      return withFreshness(reading, at, now, COUNT_STALE_HOURS);
+    }
+    function mapRecalled(payload, now) {
+      var status = payload && payload.status;
+      var reading = countOrAbsent(status ? status.recalled_7d : null);
+      var at = payload && (payload.observed_at || payload.received_at);
+      return withFreshness(reading, at, now, COUNT_STALE_HOURS);
+    }
+    function mapDream(payload, now) {
+      var status = payload && payload.status;
+      return dreamFromPulse(status && status.last_dream, now);
+    }
+    const STATE_MAP = {
+      memories: mapMemories,
+      recalled: mapRecalled,
+      dream: mapDream
     };
 
     const noticeEl = document.getElementById("notice");
     const statusEl = document.getElementById("status");
+    const fallbackEl = document.getElementById("fallback");
     const asofEl = document.getElementById("asof");
     const gridEl = document.getElementById("grid");
+    const emptyEl = document.getElementById("empty-store");
+    const loadingEl = document.getElementById("loading");
 
     let timer = 0;
     let inflight = null;
@@ -130,70 +328,52 @@
       return lines.join("\n");
     }
 
-    function memoryTotal(memories) {
-      if (!memories || typeof memories !== "object") return null;
-      const keys = ["active", "cold", "archived", "other"];
-      let sum = 0;
-      let saw = false;
-      for (let i = 0; i < keys.length; i++) {
-        if (!Object.prototype.hasOwnProperty.call(memories, keys[i])) continue;
-        const value = memories[keys[i]];
-        if (value === null || typeof value === "undefined") continue;
-        if (typeof value !== "number") return null;
-        sum += value;
-        saw = true;
-      }
-      return saw ? sum : null;
-    }
-
-    function hourMinute(at) {
-      if (typeof at !== "string") return "";
-      const match = /T(\d{2}:\d{2})/.exec(at);
-      return match ? match[1] : "";
-    }
-
-    function statusLine(payload) {
-      const status = payload.status || {};
-      const total = memoryTotal(status.memories);
-      const dream = status.last_dream || {};
-      const state = DREAM[dream.state] || "not run yet";
-      const parts = ["cortex", (total === null ? "n/a" : String(total)) + " mem"];
-      if (payload.note === "the store is empty") parts.push("the store is empty");
-      const recalled = status.recalled_7d;
-      parts.push("recalled " + (typeof recalled === "number" ? String(recalled) : NOT_MEASURABLE));
-      let dreamText = "last dream " + state;
-      if (state !== "not run yet" && state !== "running") {
-        const when = hourMinute(dream.at);
-        if (when) dreamText += " " + when;
-      }
-      parts.push(dreamText);
-      return parts.join("  ");
-    }
-
     function stamp(date) {
       const p = function (n) { return String(n).padStart(2, "0"); };
       return date.getFullYear() + "-" + p(date.getMonth() + 1) + "-" + p(date.getDate())
         + " " + p(date.getHours()) + ":" + p(date.getMinutes()) + ":" + p(date.getSeconds());
     }
 
+    function paintMeasure(id, reading, muted) {
+      var node = document.getElementById(id);
+      if (!node) return;
+      var view = renderMeasure(reading);
+      var text = view.note ? view.text + " · " + view.note : view.text;
+      node.textContent = text;
+      node.dataset.state = view.state;
+      node.className = "state-" + view.state;
+      if (muted) node.style.color = "var(--muted)";
+      else node.style.color = "";
+    }
+
     function paint(frame, banner) {
-      const stale = Boolean(banner) && Boolean(frame);
+      var stale = Boolean(banner) && Boolean(frame);
       noticeEl.hidden = !banner;
       noticeEl.textContent = banner || "";
+      loadingEl.hidden = true;
       if (frame) {
-        statusEl.textContent = frame.statusText;
+        fallbackEl.hidden = true;
+        statusEl.hidden = false;
+        paintMeasure("pulse-memories", frame.memories, stale);
+        paintMeasure("pulse-recalled", frame.recalled, stale);
+        paintMeasure("pulse-dream", frame.dream, stale);
         gridEl.textContent = frame.gridText;
         asofEl.textContent = stale ? "as of " + frame.stamp : "";
+        emptyEl.hidden = !frame.emptyStore;
       } else {
-        statusEl.textContent = NO_DATA;
+        statusEl.hidden = true;
+        fallbackEl.hidden = false;
+        fallbackEl.textContent = NO_DATA;
         gridEl.textContent = "";
         asofEl.textContent = "";
+        emptyEl.hidden = true;
       }
       gridEl.hidden = !frame || frame.gridText.length === 0;
       asofEl.hidden = !stale;
       statusEl.classList.toggle("grey", stale);
       gridEl.classList.toggle("grey", stale);
       asofEl.classList.toggle("grey", stale);
+      fallbackEl.classList.toggle("grey", Boolean(banner) && !frame);
       if (!gridEl.hidden) fitGrid();
     }
 
@@ -212,9 +392,20 @@
     }
 
     function remember(payload) {
-      // Level 0 is a calm idle grid. NO_DATA is only used when no frame has ever arrived.
+      var now = Date.now();
+      var stamped = {
+        status: payload.status,
+        note: payload.note,
+        observed_at: payload.observed_at || new Date(now).toISOString(),
+        received_at: new Date(now).toISOString()
+      };
+      var memories = STATE_MAP.memories(stamped, now);
+      var view = renderMeasure(memories);
       last = {
-        statusText: statusLine(payload),
+        memories: memories,
+        recalled: STATE_MAP.recalled(stamped, now),
+        dream: STATE_MAP.dream(stamped, now),
+        emptyStore: view.state === "empty" || payload.note === "the store is empty",
         gridText: gridText(payload.buckets),
         stamp: stamp(new Date())
       };

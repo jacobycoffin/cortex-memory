@@ -12,6 +12,7 @@
 
 </head>
 <body>
+  <p id="server-banner" hidden style="margin:0;padding:10px 16px;background:#f2bd62;color:#171a22;font-family:ui-monospace,monospace">server unreachable</p>
   <noscript><style>.auth-gate{display:none !important}</style><p class="noscript-banner">JavaScript is off, so live numbers stay unloaded. What you can still read is the dashboard itself: overview, memory map, timeline, training, auto-judge, insights, cognition, trust, tool notes, learning lab, health, index, and settings. Counts say "no data yet" until a script can ask the store. They are not zeros.</p></noscript>
   <div class="loading-screen hidden" id="loading-screen" hidden aria-live="polite">
     <div class="loader"><div class="loader-orb"></div>OPENING THE INDEX</div>
@@ -71,7 +72,7 @@
       <div class="sidebar-spacer"></div>
       <div class="brain-mini">
         <div class="brain-mini-top"><span class="live-dot"></span><span>Cortex online</span></div>
-        <p id="sidebar-status">Waiting for the memory index…</p>
+        <p id="sidebar-status" data-state-map="memories">Waiting for the memory index…</p>
       </div>
     </aside>
 
@@ -84,7 +85,7 @@
           <span class="shortcut">⌘ K</span>
         </div>
         <div class="topbar-spacer"></div>
-        <span class="freshness" id="freshness">Live data</span>
+        <span class="freshness" id="freshness" data-state-map="freshness">not measurable yet</span>
         <div class="theme-picker">
           <button class="icon-btn theme-trigger" id="theme-toggle" type="button" aria-haspopup="menu" aria-expanded="false"><span class="theme-dot" aria-hidden="true"></span><span class="theme-name" id="theme-current">Field</span></button>
           <div class="theme-menu" id="theme-menu" role="menu" hidden>
@@ -115,7 +116,9 @@
               <div class="eyebrow">Cortex field index · live</div>
               <h1 id="overview-heading" class="gradient-text">What your agent remembers—and why.</h1>
               <p>A working record of the facts, episodes, procedures, and connections that survive from one conversation to the next.</p>
-              <p class="hero-count" id="hero-memory-count">no data yet</p>
+              <p class="hero-count" data-state-map="memories" id="hero-memory-count">no data yet</p>
+              <p class="hero-count" id="hero-dream" data-state-map="dream">not run yet</p>
+              <p class="hero-count" id="empty-store" hidden>The store is empty. Memories, recall, and dreams show up here after the first write. An empty store is not a working store.</p>
               <div class="hero-actions">
                 <button class="primary-btn" type="button" data-go="explorer">Explore memories</button>
                 <button class="ghost-btn" type="button" data-go="graph">Open memory map</button>
@@ -126,16 +129,16 @@
             </div>
           </div>
 
-          <div class="metric-grid" id="overview-metrics"></div>
+          <div class="metric-grid" id="overview-metrics"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>
 
           <div class="dashboard-grid">
             <div class="panel panel-pad chart-box">
-              <div class="panel-heading"><div><div class="panel-title-row"><span class="panel-dot"></span><h2>Memory activity</h2></div><p>Recall and retrieval events across the recent timeline</p></div><span class="chip" id="activity-total">no data yet</span></div>
+              <div class="panel-heading"><div><div class="panel-title-row"><span class="panel-dot"></span><h2>Memory activity</h2></div><p>Recall and retrieval events across the recent timeline</p></div><span class="chip" id="activity-total" data-state-map="activity">no data yet</span></div>
               <svg id="activity-chart" class="chart-svg" viewBox="0 0 760 245" role="img" aria-label="Memory activity trend"></svg>
             </div>
             <div class="panel panel-pad">
               <div class="panel-heading"><div><h2>Memory composition</h2><p>How the brain is currently structured</p></div></div>
-              <div class="donut-layout"><div class="donut" id="kind-donut"><div class="donut-center"><strong id="donut-total">no data yet</strong><span>memories</span></div></div><div class="legend-list" id="kind-legend"></div><div class="kind-guide" id="kind-guide" aria-label="Memory type guide"></div></div>
+              <div class="donut-layout"><div class="donut" id="kind-donut"><div class="donut-center"><strong id="donut-total" data-state-map="memories">no data yet</strong><span>memories</span></div></div><div class="legend-list" id="kind-legend"></div><div class="kind-guide" id="kind-guide" aria-label="Memory type guide"></div></div>
               <div class="role-strip" id="role-strip" aria-label="Record roles, counted separately from memory types"></div>
             </div>
           </div>
@@ -152,7 +155,7 @@
           </div>
 
           <div class="panel panel-pad">
-            <div class="panel-heading"><div><h2>Vault map</h2><p>Indexed notes grouped by their working area</p></div><span class="chip" id="source-total">no data yet</span></div>
+            <div class="panel-heading"><div><h2>Vault map</h2><p>Indexed notes grouped by their working area</p></div><span class="chip" id="source-total" data-state-map="sources">no data yet</span></div>
             <div class="source-list" id="source-list"></div>
           </div>
         </section>
@@ -211,7 +214,7 @@
           <section class="panel training-overview" aria-labelledby="training-path-heading">
             <div class="training-overview-head">
               <div><div class="eyebrow">Your training path</div><h2 id="training-path-heading">Choose good memories first. Teach patterns second.</h2><p>New candidates wait outside recall until you decide. Teach the examples. Approve the standard. Cortex can group the examples you deliberately mark for teaching, replay a proposed rule, observe it in shadow mode, and return to you for final approval.</p></div>
-              <div class="training-progress-number"><strong id="training-progress-value">0%</strong><span>first policy journey</span></div>
+              <div class="training-progress-number"><strong id="training-progress-value" data-state-map="progress">not measurable yet</strong><span>first policy journey</span></div>
             </div>
             <div class="training-progress-track" role="progressbar" aria-label="Cortex training progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="training-progress-track"><div class="training-progress-fill" id="training-progress-fill"></div></div>
             <div class="training-steps" id="training-steps"></div>
@@ -381,7 +384,7 @@
               <div><strong>What it does not measure</strong><span>The agent’s complete answer quality, provider latency, model time to first token, or a universal speed advantage.</span></div>
             </div>
             <div class="benchmark-progress" id="benchmark-progress" hidden>
-              <div class="benchmark-progress-head"><div><strong id="benchmark-progress-title">Preparing benchmark</strong><p id="benchmark-progress-message">Opening the fixed local retrieval suite.</p></div><span class="benchmark-progress-value" id="benchmark-progress-value">0%</span></div>
+              <div class="benchmark-progress-head"><div><strong id="benchmark-progress-title">Preparing benchmark</strong><p id="benchmark-progress-message">Opening the fixed local retrieval suite.</p></div><span class="benchmark-progress-value" id="benchmark-progress-value" data-state-map="progress">not measurable yet</span></div>
               <div class="benchmark-progress-track"><div class="benchmark-progress-fill" id="benchmark-progress-fill"></div></div>
             </div>
             <div class="benchmark-summary" id="benchmark-summary"></div>
@@ -422,7 +425,7 @@
               <div class="panel panel-pad">
                 <div class="panel-heading"><div><h2>Private real-history evaluation</h2><p>Paired fixed and adaptive retrieval over the same labeled agent tasks.</p></div><button class="primary-btn" id="evaluation-start" type="button">Run private evaluation</button></div>
                 <div class="benchmark-progress" id="evaluation-progress" hidden>
-                  <div class="benchmark-progress-head"><div><strong id="evaluation-progress-title">Preparing evaluation</strong><p id="evaluation-progress-message">Opening a disposable snapshot.</p></div><span class="benchmark-progress-value" id="evaluation-progress-value">0%</span></div>
+                  <div class="benchmark-progress-head"><div><strong id="evaluation-progress-title">Preparing evaluation</strong><p id="evaluation-progress-message">Opening a disposable snapshot.</p></div><span class="benchmark-progress-value" id="evaluation-progress-value" data-state-map="progress">not measurable yet</span></div>
                   <div class="benchmark-progress-track"><div class="benchmark-progress-fill" id="evaluation-progress-fill"></div></div>
                 </div>
                 <div class="private-evaluation-summary" id="evaluation-summary"></div>
@@ -510,7 +513,7 @@
           <div class="page-heading"><div><div class="eyebrow">Recall laboratory</div><h1 id="cognition-heading">How Cortex thinks</h1><p>Live evidence showing when recall runs, how much context it costs, what it skips, and how the memory lifecycle repairs itself.</p></div></div>
           <div class="metric-grid" id="cognition-metrics"></div>
           <div class="dashboard-grid equal">
-            <div class="panel panel-pad"><div class="panel-heading"><div><h2>Attention gate</h2><p>Each request gets the smallest recall mode likely to help</p></div><span class="chip" id="recall-total">no data yet</span></div><div class="mode-ledger" id="recall-mode-list"></div></div>
+            <div class="panel panel-pad"><div class="panel-heading"><div><h2>Attention gate</h2><p>Each request gets the smallest recall mode likely to help</p></div><span class="chip" id="recall-total" data-state-map="recalled">no data yet</span></div><div class="mode-ledger" id="recall-mode-list"></div></div>
             <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context over time</h2><p>Daily estimated memory tokens injected into prompts</p></div><span class="chip" id="recall-window">No samples</span></div><div class="recall-strip" id="recall-strip"></div></div>
           </div>
           <div class="panel panel-pad"><div class="panel-heading"><div><h2>Context budget learning</h2><p>Resolved outcomes teach Cortex when a task can use less evidence or may need more. Retrieval count alone never changes the budget.</p></div><span class="chip" id="budget-learning-total">no data yet</span></div><div class="mode-ledger" id="budget-learning-list"></div></div>
@@ -541,7 +544,7 @@
           <section class="sleep-observatory" id="cortex-sleep" aria-labelledby="sleep-heading">
             <div class="sleep-observatory-head">
               <div><div class="eyebrow">Offline maintenance log</div><h2 id="sleep-heading">Cortex Sleep</h2><p>See when maintenance runs, every rule it checks, what it proposed, what actually changed, and what happened afterward.</p></div>
-              <div class="sleep-controls"><span class="chip" id="sleep-status" aria-live="polite">Waiting</span><button class="primary-btn" id="sleep-start" type="button">Start shadow Sleep</button></div>
+              <div class="sleep-controls"><span class="chip" id="sleep-status" data-state-map="dream" aria-live="polite">not run yet</span><button class="primary-btn" id="sleep-start" type="button">Start shadow Sleep</button></div>
             </div>
             <div class="sleep-command-grid">
               <div class="panel panel-pad sleep-schedule-card">
@@ -551,7 +554,7 @@
                 <div class="sleep-schedule-meta" id="sleep-schedule-meta"></div>
               </div>
               <div class="panel panel-pad">
-                <div class="panel-heading"><div><h2>Run record</h2><p>Completed cycles, proposals, failures, and actual changes.</p></div><span class="chip" id="sleep-run-total">no data yet</span></div>
+                <div class="panel-heading"><div><h2>Run record</h2><p>Completed cycles, proposals, failures, and actual changes.</p></div><span class="chip" id="sleep-run-total" data-state-map="runs">no data yet</span></div>
                 <div class="sleep-run-stats" id="sleep-run-stats"></div>
               </div>
             </div>
@@ -566,18 +569,18 @@
                 <article><span>06 · Consolidate</span><strong>Group near-duplicates</strong><p>Suggests a canonical memory while preserving every source record and its audit history.</p></article>
               </div>
             </div>
-            <div class="sleep-progress" id="sleep-progress" hidden aria-live="polite"><div class="sleep-progress-head"><div><strong id="sleep-progress-title">Preparing Sleep</strong><p id="sleep-progress-message">Opening a bounded shadow review.</p></div><span class="sleep-progress-value" id="sleep-progress-value">0%</span></div><div class="sleep-progress-track"><div class="sleep-progress-fill" id="sleep-progress-fill"></div></div><div class="sleep-step-list" id="sleep-step-list"></div></div>
+            <div class="sleep-progress" id="sleep-progress" hidden aria-live="polite"><div class="sleep-progress-head"><div><strong id="sleep-progress-title">Preparing Sleep</strong><p id="sleep-progress-message">Opening a bounded shadow review.</p></div><span class="sleep-progress-value" id="sleep-progress-value" data-state-map="progress">not measurable yet</span></div><div class="sleep-progress-track"><div class="sleep-progress-fill" id="sleep-progress-fill"></div></div><div class="sleep-step-list" id="sleep-step-list"></div></div>
             <div class="sleep-audit-layout">
               <aside class="panel sleep-run-browser">
                 <div class="sleep-run-browser-head"><span>Run history</span><small>Select a cycle</small></div>
                 <div id="sleep-run-history"></div>
               </aside>
               <div class="panel panel-pad sleep-run-audit">
-                <div class="panel-heading"><div><h2>Selected run</h2><p id="sleep-run-subtitle">Choose a run to inspect its evidence and effects.</p></div><span class="chip" id="sleep-proposal-total">no data yet</span></div>
+                <div class="panel-heading"><div><h2>Selected run</h2><p id="sleep-run-subtitle">Choose a run to inspect its evidence and effects.</p></div><span class="chip" id="sleep-proposal-total" data-state-map="proposals">no data yet</span></div>
                 <div id="sleep-cycle-summary" aria-live="polite"></div>
                 <div class="sleep-metric-grid" id="sleep-metrics"></div>
                 <div class="sleep-effect-board" id="sleep-effects"></div>
-                <div class="sleep-hypothesis-panel"><div class="panel-heading"><div><h2>Testable hypotheses</h2><p>Each proposal names a future observation that could support or contradict it.</p></div><span class="chip" id="sleep-hypothesis-count">no data yet</span></div><div class="sleep-hypothesis-list" id="sleep-hypotheses"></div></div>
+                <div class="sleep-hypothesis-panel"><div class="panel-heading"><div><h2>Testable hypotheses</h2><p>Each proposal names a future observation that could support or contradict it.</p></div><span class="chip" id="sleep-hypothesis-count" data-state-map="proposals">no data yet</span></div><div class="sleep-hypothesis-list" id="sleep-hypotheses"></div></div>
                 <div class="sleep-ledger-head"><div><h3>What it touched</h3><p>Open a memory to inspect its provenance, scores, and other links.</p></div><div class="sleep-ledger-filters" id="sleep-ledger-filters"><button class="ghost-btn active" type="button" data-sleep-filter="all">All</button><button class="ghost-btn" type="button" data-sleep-filter="connections">Connections</button><button class="ghost-btn" type="button" data-sleep-filter="pruning">Cooling / archive</button><button class="ghost-btn" type="button" data-sleep-filter="review">Review</button></div></div>
                 <div class="sleep-proposal-list" id="sleep-proposal-list"></div>
                 <div class="sleep-safety" id="sleep-safety"><span class="sleep-safety-mark">S</span><div><strong>Proposed is not applied.</strong><p>Shadow mode writes an audit report only. Apply mode is operator-only, never hard-deletes a memory, and records reversible before-and-after state for every committed change.</p></div></div>
