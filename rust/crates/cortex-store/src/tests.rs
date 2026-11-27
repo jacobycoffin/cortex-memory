@@ -307,6 +307,8 @@ fn reads_leave_schema_version_and_tables_unchanged() {
         Procedures {
             total: Measurement::NotPresent,
             graded: Measurement::NotPresent,
+            // This fixture holds only `semantic` memories, so there is no procedure library to count.
+            known: Measurement::NotMeasurable,
         }
     );
 
