@@ -1,0 +1,10 @@
+[package]
+name = "cortex-view"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Terminal dot views for the read-only Cortex service. Stub until the view crate is filled in."
+
+[[bin]]
+name = "cortex-view"
+path = "src/main.rs"

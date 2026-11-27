@@ -1,0 +1,10 @@
+[package]
+name = "cortex-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Headless JSON commands for cortex.db. Stub until the command crate is filled in."
+
+[[bin]]
+name = "cortex-cli"
+path = "src/main.rs"

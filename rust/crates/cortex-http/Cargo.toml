@@ -1,0 +1,10 @@
+[package]
+name = "cortex-http"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "HTTP daemon for the read-only Cortex service. Stub until the server crate is filled in."
+
+[[bin]]
+name = "cortex-http"
+path = "src/main.rs"
