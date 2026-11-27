@@ -114,10 +114,25 @@ class CortexService:
         rows = self.store.get_memories(ids)
         texts = [str(row.get("content") or "") for row in rows]
         vectors = self.embedder.embed(texts)
+        # Second view: the presentation's title+summary (or the content itself
+        # when a memory has no presentation). Short queries match this far
+        # better than the long full-text vectors; see
+        # CortexStore.semantic_top_ids_merged.
+        row_ids = [str(row["id"]) for row in rows]
+        short_texts = self.store.short_form_texts(row_ids)
+        short_vectors = self.embedder.embed(
+            [short_texts.get(memory_id) or text for memory_id, text in zip(row_ids, texts)]
+        )
+        if len(short_vectors) != len(rows):
+            # Never pair a vector with the wrong memory; the short view is
+            # optional, so drop it rather than shift the pairing.
+            short_vectors = [None] * len(rows)
         count = 0
-        for row, vector in zip(rows, vectors):
+        for row, vector, short_vector in zip(rows, vectors, short_vectors):
             if vector:
-                self.store.set_memory_embedding(str(row["id"]), self.embedder.model_id, vector)
+                self.store.set_memory_embedding(
+                    str(row["id"]), self.embedder.model_id, vector, short_vector
+                )
                 count += 1
         return count
 
