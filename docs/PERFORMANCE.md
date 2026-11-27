@@ -300,6 +300,36 @@ late-and-complete** for an interactive turn. The degradation is recorded in
 Off by default: skipping work makes results time-dependent, and a deterministic retriever
 should only become so when someone asks for it.
 
+## Reading per-stage latency from the store
+
+`recall_runs.stage_ms_json` holds one turn's stage timings keyed by `task_id` (the same key as
+`recall_budget_observations`, so a report can join the two). `recall_timing.stage_percentiles()`
+turns that into p50/p95/p99 per stage over a window, and `format_report()` prints it:
+
+```python
+from cortex.recall_timing import stage_percentiles, format_report
+
+report = stage_percentiles(store, window=500)
+print("\n".join(format_report(report)))
+```
+
+Three rules the module enforces, because each one was a way the old number lied:
+
+- `stage_ms` is `dict[str, float]` and every value is **milliseconds**, except keys ending in
+  `_count` (counters). Only `recall_timing.STAGE_DURATIONS` are reported as stages; anything
+  else — `abstained`, `abstained_top_score`, `entity_boosted_count` — is reported as a counter,
+  so a flag is never ranked as a pipeline stage.
+- **`embed_load` is its own stage.** `semantic` used to bundle the lazy ONNX/tokenizer load with
+  inference, so a first turn (~800 ms of model load) and a warm turn looked alike. `embed` is the
+  whole embedding call, `embed_load` the part that was the load — report the first prefetch of a
+  process separately from the steady state.
+- **Cached runs are excluded.** A cache hit stores `0.0` for every stage it did not run; averaging
+  those in drags the p50 toward a latency nobody measured. They are counted in the report instead.
+
+Nothing here can fail a recall: `StageSink`, `clock()`, `elapsed_ms()` and the store's
+`sanitize_stage_ms()` boundary drop a bad measurement rather than raise, and a bad stage value
+never reaches the JSON column as `NaN`.
+
 ### Measured cost of the L1 work
 
 Adding stability blending, negative-cue suppression, use weighting, diversity capping,

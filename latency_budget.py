@@ -18,8 +18,9 @@ degradation path is safe rather than assuming it.
 from __future__ import annotations
 
 import os
-import time
 from dataclasses import dataclass
+
+from .recall_timing import clock, elapsed_ms as _elapsed_ms
 
 DEFAULT_BUDGET_MS = 0.0  # disabled
 ENV = "CORTEX_LATENCY_BUDGET_MS"
@@ -33,14 +34,14 @@ class Budget:
     _start: float = 0.0
 
     def __post_init__(self) -> None:
-        self._start = time.perf_counter()
+        self._start = clock()
 
     @property
     def enabled(self) -> bool:
         return self.ms and self.ms > 0
 
     def elapsed_ms(self) -> float:
-        return (time.perf_counter() - self._start) * 1000.0
+        return _elapsed_ms(self._start)
 
     def remaining_ms(self) -> float:
         if not self.enabled:

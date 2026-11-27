@@ -29,9 +29,29 @@ from __future__ import annotations
 
 import os
 import struct
+import time
 import threading
 from pathlib import Path
 from typing import Any, Sequence
+
+
+# Timing helpers live here rather than importing `recall_timing`, because this module is also
+# loaded standalone (`from embeddings import Embedder` in tests and scripts), where a relative
+# import cannot resolve. Both are total: a broken clock returns 0.0 instead of raising, so
+# instrumentation can never be the reason a recall fails.
+def _clock() -> float:
+    try:
+        return float(time.perf_counter())
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _elapsed_ms(started: float) -> float:
+    try:
+        value = (float(time.perf_counter()) - float(started)) * 1000.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return value if value >= 0.0 else 0.0
 
 MODEL_ID = "BAAI/bge-small-en-v1.5"
 DIM = 384
@@ -91,6 +111,11 @@ class Embedder:
         self._tokenizer: Any = None
         self._lock = threading.Lock()
         self._load_error: str | None = None
+        # Per-call timings, so a caller can report the lazy model load separately from inference
+        # instead of hiding an ~800 ms one-time cost inside a single "semantic" stage.
+        # `last_embed_ms` is the whole call; `last_load_ms` is the part that was the load.
+        self.last_load_ms: float = 0.0
+        self.last_embed_ms: float = 0.0
 
     # ---------------------------------------------------------------- loading
 
@@ -151,33 +176,49 @@ class Embedder:
 
     def embed(self, texts: Sequence[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns [] if the model is unavailable."""
+        self.last_load_ms = 0.0
+        self.last_embed_ms = 0.0
+        started = _clock()
         clean = [t if isinstance(t, str) else "" for t in texts]
         if not clean:
             return []
+        already_loaded = self._session is not None and self._tokenizer is not None
         if not self._ensure_loaded():
+            self.last_embed_ms = _elapsed_ms(started)
             return []
+        if not already_loaded:
+            # The first call in a process pays the ONNX session and tokenizer construction. That
+            # is a one-time cost of the *process*, not of the query, and it is what makes the
+            # first prefetch of a session slow.
+            self.last_load_ms = _elapsed_ms(started)
 
         import numpy as np
 
-        encoded = self._tokenizer.encode_batch(clean)
-        input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
-        attention = np.array([e.attention_mask for e in encoded], dtype=np.int64)
+        try:
+            encoded = self._tokenizer.encode_batch(clean)
+            input_ids = np.array([e.ids for e in encoded], dtype=np.int64)
+            attention = np.array([e.attention_mask for e in encoded], dtype=np.int64)
 
-        feeds: dict[str, Any] = {"input_ids": input_ids}
-        names = {i.name for i in self._session.get_inputs()}
-        if "attention_mask" in names:
-            feeds["attention_mask"] = attention
-        if "token_type_ids" in names:
-            feeds["token_type_ids"] = np.zeros_like(input_ids)
+            feeds: dict[str, Any] = {"input_ids": input_ids}
+            names = {i.name for i in self._session.get_inputs()}
+            if "attention_mask" in names:
+                feeds["attention_mask"] = attention
+            if "token_type_ids" in names:
+                feeds["token_type_ids"] = np.zeros_like(input_ids)
 
-        hidden = self._session.run(None, feeds)[0]
+            hidden = self._session.run(None, feeds)[0]
 
-        # CLS pooling — verified to reproduce fastembed exactly for this model
-        # (mean pooling gives ~0.94 cosine, i.e. a DIFFERENT vector space).
-        pooled = hidden[:, 0, :].astype(np.float32)
-        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
-        pooled = pooled / np.clip(norms, 1e-12, None)
-        return pooled.tolist()
+            # CLS pooling — verified to reproduce fastembed exactly for this model
+            # (mean pooling gives ~0.94 cosine, i.e. a DIFFERENT vector space).
+            pooled = hidden[:, 0, :].astype(np.float32)
+            norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+            pooled = pooled / np.clip(norms, 1e-12, None)
+            return pooled.tolist()
+        finally:
+            # Published even when inference raises: a turn that spent 900 ms in here and then
+            # failed still spent it, and a stored zero would read as "the embedder was never
+            # tried".
+            self.last_embed_ms = _elapsed_ms(started)
 
     def embed_one(self, text: str) -> list[float]:
         """Embed a single text. Returns [] if the model is unavailable."""

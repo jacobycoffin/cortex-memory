@@ -39,6 +39,7 @@ from .negative_cues import excluded_terms, suppress
 from .usage_weight import apply_usage_boost
 from . import boost_caps, decay, edge_quarantine, near_miss, serial_position  # (#80, #82, #84, #203)
 from .rerank import DEFAULT_TOP_N, rerank
+from .recall_timing import StageSink, clock, elapsed_ms
 from .validity import apply_validity_penalty, superseded_ids
 from .semantics import feature_similarity
 from .store import CortexStore, query_tokens
@@ -388,7 +389,7 @@ class MemoryRetriever:
         ):
             scoped["__entities__"] = self._anchor_names(query)
         key = self.recall_cache.key(query, scoped, settings)
-        started = time.perf_counter()
+        started = clock()
         computed = False
         def compute():
             nonlocal computed
@@ -402,7 +403,7 @@ class MemoryRetriever:
             diagnostics = replace(
                 diagnostics, cache_hit=True,
                 stage_ms={**dict.fromkeys(diagnostics.stage_ms, 0.0),
-                          "cache_lookup": (time.perf_counter() - started) * 1000},
+                          "cache_lookup": elapsed_ms(started)},
             )
         return results, diagnostics
 
@@ -523,7 +524,9 @@ class MemoryRetriever:
             revision=revision_of(self.store),
         )
         candidate_limit = max(40, limit * 8)
-        stage_ms: dict[str, float] = {}
+        # A sink, not a plain dict: every assignment below can then be garbage-tolerant, so a
+        # broken measurement drops one stage instead of failing the recall (see recall_timing).
+        stage_ms: dict[str, float] = StageSink()
         budget = budget_from(self.latency_budget_ms)
 
         # Anchor on the names in the query before anything else runs: entity_match is the
@@ -533,21 +536,21 @@ class MemoryRetriever:
             anchored_entities = extract_entities(query, known_entities(self.store))
             if anchored_entities:
                 retrieval_context = replace(retrieval_context, entities=tuple(anchored_entities))
-                stage_ms["entities_anchored"] = float(len(anchored_entities))
-        stage_start = time.perf_counter()
+                stage_ms["entities_anchored_count"] = float(len(anchored_entities))
+        stage_start = clock()
         lexical_candidates = self.store.fts_search(
             expanded_query,
             limit=candidate_limit,
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
-        stage_ms["fts"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["fts"] = elapsed_ms(stage_start)
+        stage_start = clock()
         feature_candidates = self.store.feature_search(
             expanded_query, limit=candidate_limit, include_archived=include_archived
         )
-        stage_ms["feature"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["feature"] = elapsed_ms(stage_start)
+        stage_start = clock()
         context_candidates = self.store.context_search(
             active_project=retrieval_context.active_project,
             entities=retrieval_context.entities,
@@ -559,16 +562,16 @@ class MemoryRetriever:
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
-        stage_ms["context"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["context"] = elapsed_ms(stage_start)
+        stage_start = clock()
         neighborhood_candidates = self.store.neighborhood_search(
             expanded_query,
             limit=candidate_limit,
             include_archived=include_archived,
             evidence_lookup=evidence_lookup,
         )
-        stage_ms["neighborhood"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["neighborhood"] = elapsed_ms(stage_start)
+        stage_start = clock()
         # Deliberately NOT memoised: "which commitments are due" depends on the clock, not
         # on the store revision, so caching it would make a deterministic retriever
         # time-dependent — the exact mistake the latency budget (#22) is careful about. It
@@ -660,8 +663,8 @@ class MemoryRetriever:
         contradicted = {
             cid for cid in candidates_by_id if cid in contradicts[0] or cid in contradicts[1]
         }
-        stage_ms["prospective_merge"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["prospective_merge"] = elapsed_ms(stage_start)
+        stage_start = clock()
         prepared = _QuerySignals.prepare(expanded_query, retrieval_context)
         feedback = self.store.context_feedback_many(list(candidates_by_id), retrieval_context.as_record())
         scored: dict[str, RetrievalResult] = {}
@@ -680,8 +683,8 @@ class MemoryRetriever:
             )
             scored[candidate["id"]] = result
 
-        stage_ms["scoring"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["scoring"] = elapsed_ms(stage_start)
+        stage_start = clock()
         seeds = sorted(scored.values(), key=lambda r: r.score, reverse=True)[: min(10, len(scored))]
         if seeds:
             graph_scores = self.store.association_scores(
@@ -740,8 +743,8 @@ class MemoryRetriever:
                 )
                 scored[neighbor_id] = result
 
-        stage_ms["graph"] = (time.perf_counter() - stage_start) * 1000
-        stage_start = time.perf_counter()
+        stage_ms["graph"] = elapsed_ms(stage_start)
+        stage_start = clock()
 
         def _mark(label: str) -> None:
             """Record one sub-stage's elapsed time and restart the clock.
@@ -750,8 +753,8 @@ class MemoryRetriever:
             not say which pass owned it. Every pass now reports itself (#219).
             """
             nonlocal stage_start
-            stage_ms[label] = (time.perf_counter() - stage_start) * 1000
-            stage_start = time.perf_counter()
+            stage_ms[label] = elapsed_ms(stage_start)
+            stage_start = clock()
 
         # Optional semantic fusion. This AUGMENTS the candidate pool rather than
         # merely re-ranking it: the measured gain comes from embeddings finding
@@ -768,6 +771,7 @@ class MemoryRetriever:
                 scoring_profile=scoring_profile,
                 include_archived=include_archived,
                 evidence_lookup=evidence_lookup,
+                stage_ms=stage_ms,
             )
         else:
             if self.semantic_weight > 0.0 and budget.expired():
@@ -805,7 +809,7 @@ class MemoryRetriever:
                 # Only the head was rescored; the tail keeps its stage-one scores so the
                 # candidate pool is never silently shrunk to the rerank window.
                 scored = {r.memory["id"]: r for r in [*reranked_head, *tail]}
-                stage_ms["reranked"] = float(reranked)
+                stage_ms["reranked_count"] = float(reranked)
         _mark("rerank")
 
         # A memory that something else supersedes is history: reachable, never winning a
@@ -830,14 +834,14 @@ class MemoryRetriever:
         )
         if superseded_demoted:
             scored = {r.memory["id"]: r for r in scored_list}
-            stage_ms["superseded_demoted"] = float(superseded_demoted)
+            stage_ms["superseded_demoted_count"] = float(superseded_demoted)
         _mark("validity")
 
         # A fact restated over months should settle near-ties against one fresh sentence.
         scored_list, stability_boosted = apply_stability_blend(scored.values())
         if stability_boosted:
             scored = {r.memory["id"]: r for r in scored_list}
-            stage_ms["stability_boosted"] = float(stability_boosted)
+            stage_ms["stability_boosted_count"] = float(stability_boosted)
         _mark("stability")
 
         # If the query said what it does not want, do not return it confidently.
@@ -849,7 +853,7 @@ class MemoryRetriever:
             scored_list, negative_cue_suppressed = list(scored.values()), 0
         if negative_cue_suppressed:
             scored = {r.memory["id"]: r for r in scored_list}
-            stage_ms["negative_cue_suppressed"] = float(negative_cue_suppressed)
+            stage_ms["negative_cue_suppressed_count"] = float(negative_cue_suppressed)
         _mark("negative_cues")
 
         # Rank on use, not on retrieval count: a memory that informed an answer is worth
@@ -877,7 +881,7 @@ class MemoryRetriever:
         scored_list, authority_capped = cap_conflicts(scored.values())
         if authority_capped:
             scored = {r.memory["id"]: r for r in scored_list}
-            stage_ms["authority_capped"] = float(authority_capped)
+            stage_ms["authority_capped_count"] = float(authority_capped)
 
         ranked = rank_by_score(scored.values())
 
@@ -888,7 +892,7 @@ class MemoryRetriever:
         if channel:
             ranked, namespace_blocked = filter_results(ranked, channel)
             if namespace_blocked:
-                stage_ms["namespace_blocked"] = float(namespace_blocked)
+                stage_ms["namespace_blocked_count"] = float(namespace_blocked)
         eligible_ids = self.store.recall_eligible_ids(
             [str(result.memory["id"]) for result in ranked],
             evidence_lookup=evidence_lookup, include_archived=include_archived,
@@ -1054,7 +1058,7 @@ class MemoryRetriever:
 
         selected, duplicates_replaced = enforce_distinct(selected, remaining, limit=limit)
         if duplicates_replaced:
-            stage_ms["duplicates_replaced"] = float(duplicates_replaced)
+            stage_ms["duplicates_replaced_count"] = float(duplicates_replaced)
             for result in selected:
                 rejection_reasons.setdefault(
                     str(result.memory["id"]),
@@ -1076,8 +1080,8 @@ class MemoryRetriever:
             by_confidence_selection = by_confidence(eligible, token_budget, max_items=limit)
             if by_confidence_selection:
                 selected = by_confidence_selection
-                stage_ms["density_selected"] = float(len(selected))
-        stage_ms["select"] = (time.perf_counter() - stage_start) * 1000
+                stage_ms["density_selected_count"] = float(len(selected))
+        stage_ms["select"] = elapsed_ms(stage_start)
         selected_ids = {str(result.memory["id"]) for result in selected}
         candidate_decisions: list[dict[str, Any]] = []
         for rank, result in enumerate(ranked, 1):
@@ -1281,6 +1285,7 @@ class MemoryRetriever:
         scoring_profile: dict[str, Any],
         include_archived: bool,
         evidence_lookup: bool,
+        stage_ms: dict[str, float] | None = None,
     ) -> dict[str, int]:
         """Union the semantic top-N into the candidate pool; return ``id -> rank``.
 
@@ -1289,6 +1294,11 @@ class MemoryRetriever:
         scored. Returns ``{}`` — meaning "no semantic signal" — whenever the
         model or the stored vectors are unavailable, so retrieval falls back to
         exactly the previous behaviour instead of failing.
+
+        ``stage_ms`` receives ``embed_load`` (the one-time ONNX/tokenizer load) and ``embed``
+        (the whole embedding call), so the ~800 ms first-call cost is not hidden inside
+        ``semantic``. Those writes are guarded separately: a failed measurement must never turn
+        into an empty semantic pool.
         """
 
         try:
@@ -1299,6 +1309,12 @@ class MemoryRetriever:
                 return {}
             model_id = self.semantic_model_id or embedder.model_id
             vector = embedder.embed_one(query)
+            if stage_ms is not None:
+                try:
+                    stage_ms["embed_load"] = float(getattr(embedder, "last_load_ms", 0.0) or 0.0)
+                    stage_ms["embed"] = float(getattr(embedder, "last_embed_ms", 0.0) or 0.0)
+                except Exception:  # noqa: BLE001 - timing never decides whether recall works
+                    pass
             if not vector:
                 return {}
             hits = self.store.semantic_top_ids(
