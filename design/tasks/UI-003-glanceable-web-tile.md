@@ -3,14 +3,20 @@ task_id: UI-003
 assignee: cursor-cloud
 status: unassigned
 layer: glanceable
-owner_files: [pulse.html, dashboard.py, tests/test_pulse_page.py]
-depends_on: [UI-002]
+wave: 1
+superseded_by: null
+owner_files:
+  - pulse.html
+  - tests/test_pulse_page.py
+depends_on: []
 verify:
   - python3 -m pytest tests/test_pulse_page.py -q
   - python3 scripts/check_repository.py
 ---
 
 # The dot view: a phone tile
+
+> **Amendment in force.** Where this brief disagrees with the Amendment at the bottom, follow the Amendment. Server routes are RS-003, not this task.
 
 ## Why
 
@@ -46,3 +52,17 @@ also work opened directly from disk (`file://`) by reading `/api/snapshot` and d
 ## Out of scope
 
 Do not restyle or extend `dashboard.html`. Do not add a second data source; `/api/pulse` is the only new one.
+
+## Amendment
+
+Active, wave 1, no dependencies. Dispatch this task as written here.
+
+`dashboard.py` is no longer an owner file. RS-003 serves `GET /pulse` and `GET /api/pulse`. This task only writes `pulse.html` and `tests/test_pulse_page.py`.
+
+- The page is still one self-contained file under 20 KB, no `http://` or `https://` URL, monospace system stack, `<pre>` grid, poll every 2 seconds, hidden-tab pause, `clamp()` layout, dark by default.
+- Glyphs and the 0..4 mapping are `design/dot-glyphs.json`. The test loads that file and asserts the page's mapping matches it. Do not import a Python or Rust renderer.
+- The page calls `/api/pulse` and also works from `file://`. When `fetch` fails, show one line `server unreachable` and keep the last good frame greyed, with its timestamp. When there has never been a frame, show `no data yet`. A successful payload whose buckets are all `0` is a calm idle grid, not an error and not `no data yet`.
+- Buckets in the payload are integers 0..4. Render them with the glyph file. The status line uses the four words `not run yet`, `running`, `stale`, `fresh` (and `failed` when `last_dream.state` is `failed`). A null `recalled_7d` renders `not measurable yet`.
+- The 401 test moved to RS-003, because this task does not own the server. This task's test checks file size, the absence of remote URLs, the glyph mapping, and that the unreachable branch's text is present in the file.
+
+`/api/pulse` shape is fixed in `design/RUST-SERVICE.md`. Do not invent a second payload.
