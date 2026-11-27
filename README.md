@@ -150,6 +150,22 @@ An adapter maps its own session/turn lifecycle into `remember`, `recall`, `Recal
 
 Inspect recent task traces locally with `cortex-memory traces --limit 20`, summarize observed selection precision with `cortex-memory traces --summary`, or export the append-only ledger with `cortex-memory traces --jsonl`. Use `cortex-memory write-decisions --summary` for storage preflight, `cortex-memory context-feedback` for context-specific adaptation, `cortex-memory scoring-trend` for weekly retrieval quality, and `cortex-memory attention-learning` for the opt-in topic-salience shadow ledger. `cortex-memory quality-report` combines the retrieval, scoring, attention, health, and Sleep views. Raw traces can contain private task text and memory previews; do not commit them.
 
+### Is it working? Why did it recall that?
+
+```bash
+cortex-memory status
+```
+Prints how many memories are stored, how many were recalled in the last 7 days, and how many answers and procedures have been graded.
+Anything the store has never recorded prints as `not measurable yet` instead of a misleading zero.
+Read-only and short: six lines, no dashboard and no network.
+
+```bash
+cortex-memory why <memory id or prefix>
+```
+Explains one memory in plain English: what it is, when it was last recalled, and whether it was ever used in an answer.
+Adds the rank it got in its most recent recall and the plain-name signals behind that score, when a breakdown was recorded.
+Read-only; a wrong or ambiguous id gets a sentence, never a traceback.
+
 ## Hermes adapter
 
 The repository includes a complete Hermes MemoryProvider adapter and installer:
