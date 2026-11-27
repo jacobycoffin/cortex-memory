@@ -87,6 +87,36 @@ _CREATE_MEMORY_EMBEDDINGS_SQL = """
 # SQLite's default host-parameter cap is 999; chunk IN(...) lookups well below it.
 _EMBEDDING_ID_CHUNK = 400
 
+# Short-form view discriminator. Memories are long (median ~19 tokens, p90 ~82)
+# while real queries are short (median ~7), so one vector per memory is a poor
+# fit: a 200-wide cut cannot place half the memories that were actually used.
+# Each memory therefore carries a second vector over its presentation
+# (display_title + display_summary) under a view-discriminated key in the same
+# `memory_embeddings` table — no migration, the (memory_id, model_id) primary
+# key already allows several views per memory. Full-text rows keep the bare
+# model id, so existing readers are untouched.
+SHORT_VIEW_SUFFIX = "#short"
+
+# How many model/view matrices `_embedding_matrix` keeps cached. Two views of one
+# model (full + short) must both fit or a merged query rebuilds on every call.
+_EMBEDDING_CACHE_VIEWS = 4
+
+
+def short_view_model_id(model_id: str) -> str:
+    """Return the ``memory_embeddings.model_id`` key of the short-form view."""
+
+    if not model_id:
+        raise ValueError("model_id is required")
+    if model_id.endswith(SHORT_VIEW_SUFFIX):
+        return model_id
+    return f"{model_id}{SHORT_VIEW_SUFFIX}"
+
+
+def is_short_view_model_id(model_id: str) -> bool:
+    """True when ``model_id`` names a short-form view rather than full text."""
+
+    return bool(model_id) and str(model_id).endswith(SHORT_VIEW_SUFFIX)
+
 
 logger = logging.getLogger(__name__)
 
@@ -10444,32 +10474,81 @@ class CortexStore:
     # ------------------------------------------------------------------
 
     def set_memory_embedding(
-        self, memory_id: str, model_id: str, vector: Sequence[float]
+        self,
+        memory_id: str,
+        model_id: str,
+        vector: Sequence[float],
+        short_vector: Sequence[float] | None = None,
     ) -> None:
         """Store (or replace) the embedding a model produced for one memory.
 
         The vector is serialised with ``cortex.embeddings.pack_vector`` as
         little-endian float32 bytes. Storing twice for the same
         ``(memory_id, model_id)`` upserts instead of raising.
+
+        ``short_vector`` is the vector over the memory's short form
+        (``display_title`` + ``display_summary``, see
+        :meth:`short_form_texts`). When given it is written in the same
+        statement batch under the view-discriminated key
+        ``f"{model_id}#short"``, so a memory's two views can never be left
+        half-written. Both rows join the caller's transaction: nothing here
+        commits on its own.
         """
 
         if not memory_id:
             raise ValueError("memory_id is required")
         if not model_id:
             raise ValueError("model_id is required")
-        blob = pack_vector(vector)
         now = utc_now()
-        with self._lock:
-            self._conn.execute(
-                """INSERT INTO memory_embeddings(memory_id, model_id, dim, vector, created_at)
-                   VALUES(?,?,?,?,?)
-                   ON CONFLICT(memory_id, model_id) DO UPDATE SET
-                     dim=excluded.dim,
-                     vector=excluded.vector,
-                     created_at=excluded.created_at""",
-                (memory_id, model_id, len(vector), blob, now),
+        rows = [(model_id, vector)]
+        if short_vector is not None and len(short_vector):
+            rows.append((short_view_model_id(model_id), short_vector))
+        with self.transaction() as conn:
+            for view_model_id, view_vector in rows:
+                self._upsert_memory_embedding_tx(
+                    conn, memory_id, view_model_id, view_vector, now
+                )
+
+    def set_short_form_embedding(
+        self, memory_id: str, model_id: str, vector: Sequence[float]
+    ) -> None:
+        """Store (or replace) only the short-form view of one memory.
+
+        The model id is the full-text key; the row lands under
+        ``f"{model_id}#short"``. This exists for backfills that fill the
+        missing second view without touching the already-written full-text
+        vector. Nothing is committed here — the write joins the caller's
+        transaction, like every other embedding write.
+        """
+
+        if not memory_id:
+            raise ValueError("memory_id is required")
+        if not model_id:
+            raise ValueError("model_id is required")
+        with self.transaction() as conn:
+            self._upsert_memory_embedding_tx(
+                conn, memory_id, short_view_model_id(model_id), vector, utc_now()
             )
-            self._conn.commit()
+
+    @staticmethod
+    def _upsert_memory_embedding_tx(
+        conn: sqlite3.Connection,
+        memory_id: str,
+        model_id: str,
+        vector: Sequence[float],
+        now: str,
+    ) -> None:
+        """Upsert one ``memory_embeddings`` row on an open transaction."""
+
+        conn.execute(
+            """INSERT INTO memory_embeddings(memory_id, model_id, dim, vector, created_at)
+               VALUES(?,?,?,?,?)
+               ON CONFLICT(memory_id, model_id) DO UPDATE SET
+                 dim=excluded.dim,
+                 vector=excluded.vector,
+                 created_at=excluded.created_at""",
+            (memory_id, model_id, len(vector), pack_vector(vector), now),
+        )
 
     def get_memory_embeddings(
         self, model_id: str, memory_ids: Sequence[str]
@@ -10496,6 +10575,123 @@ class CortexStore:
                 for row in rows:
                     found[str(row["memory_id"])] = unpack_vector(row["vector"])
         return found
+
+    def short_form_texts(self, memory_ids: Sequence[str]) -> dict[str, str]:
+        """Return ``{memory_id: short-form text}`` for the ids that exist.
+
+        The short form is the presentation's ``display_title`` +
+        ``display_summary`` when a ``memory_presentations`` row exists; memories
+        without one (or with both fields blank) fall back to their full
+        ``content``, so every recallable memory has indexable short-form text
+        and no memory is left without a second view.
+
+        Ids that no longer exist are simply absent; an empty ``memory_ids``
+        returns ``{}`` without touching the database.
+        """
+
+        ids = list(dict.fromkeys(str(mid) for mid in memory_ids if mid))
+        if not ids:
+            return {}
+        texts: dict[str, str] = {}
+        with self._lock:
+            for start in range(0, len(ids), _EMBEDDING_ID_CHUNK):
+                chunk = ids[start : start + _EMBEDDING_ID_CHUNK]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = self._conn.execute(
+                    f"""SELECT m.id AS id, m.content AS content,
+                               p.display_title AS display_title,
+                               p.display_summary AS display_summary
+                        FROM memories m
+                        LEFT JOIN memory_presentations p ON p.memory_id=m.id
+                        WHERE m.id IN ({placeholders})""",
+                    tuple(chunk),
+                ).fetchall()
+                for row in rows:
+                    parts: list[str] = []
+                    for key in ("display_title", "display_summary"):
+                        value = row[key]
+                        value = str(value).strip() if value else ""
+                        # A presentation often repeats the title as the summary
+                        # for short records; embedding it twice only adds noise.
+                        if value and value not in parts:
+                            parts.append(value)
+                    text = "\n".join(parts)
+                    if not text:
+                        content = row["content"]
+                        text = content if isinstance(content, str) else ""
+                    texts[str(row["id"])] = text
+        return texts
+
+    def memory_ids_missing_short_embeddings(
+        self, model_id: str, limit: int = 500
+    ) -> list[str]:
+        """Recallable memories that still need a short-form embedding.
+
+        Mirrors :meth:`memory_ids_missing_embeddings` for the view-discriminated
+        key ``f"{model_id}#short"``; ids that already have that row are
+        excluded. Newest-first with the id as a deterministic tie-break.
+        """
+
+        bounded = max(1, int(limit))
+        short_id = short_view_model_id(model_id)
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT m.id FROM memories m
+                   LEFT JOIN memory_embeddings e
+                     ON e.memory_id=m.id AND e.model_id=?
+                   WHERE m.state IN ('active','cold') AND e.memory_id IS NULL
+                   ORDER BY m.updated_at DESC, m.id
+                   LIMIT ?""",
+                (short_id, bounded),
+            ).fetchall()
+        return [str(row["id"]) for row in rows]
+
+    def short_semantic_top_ids(
+        self, query_vector: Sequence[float], model_id: str, limit: int = 50
+    ) -> list[tuple[str, float]]:
+        """``[(memory_id, cosine)]`` from the short-form view only."""
+
+        return self.semantic_top_ids(
+            query_vector, short_view_model_id(model_id), limit=limit
+        )
+
+    def semantic_top_ids_merged(
+        self,
+        query_vector: Sequence[float],
+        model_id: str,
+        limit: int = 50,
+        short_limit: int | None = None,
+    ) -> list[tuple[str, float]]:
+        """Top ids across the full-text **and** short-form views, one row per memory.
+
+        Short queries match the title+summary view far better than the long
+        full-text vectors, while long queries still win on full text, so a
+        caller wants one pool rather than a choice between views. Results are
+        deduped by memory id keeping the **best** (highest cosine) similarity,
+        then re-sorted descending — a memory found by both views appears once
+        and cannot outrank itself.
+
+        ``short_limit`` bounds the short-view scan independently (defaults to
+        ``limit``). Returns ``[]`` when neither view has usable vectors, so a
+        caller can treat that exactly like ``semantic_top_ids`` returning ``[]``.
+        """
+
+        if limit <= 0:
+            return []
+        full = self.semantic_top_ids(query_vector, model_id, limit=limit)
+        short_bound = int(short_limit) if short_limit is not None else int(limit)
+        short = self.semantic_top_ids(
+            query_vector, short_view_model_id(model_id), limit=max(1, short_bound)
+        )
+        if not full and not short:
+            return []
+        best: dict[str, float] = {}
+        for memory_id, similarity in (*full, *short):
+            value = float(similarity)
+            if memory_id not in best or value > best[memory_id]:
+                best[memory_id] = value
+        ranked = sorted(best.items(), key=lambda item: (-item[1], item[0]))
+        return ranked[: int(limit)]
 
     def semantic_top_ids(
         self, query_vector: Sequence[float], model_id: str, limit: int = 50
@@ -10537,7 +10733,7 @@ class CortexStore:
         return [(ids[int(i)], float(similarities[int(i)])) for i in top]
 
     def _embedding_matrix(self, model_id: str):
-        """Cached ``(ids, L2-normalised float32 matrix)`` for one model.
+        """Cached ``(ids, L2-normalised float32 matrix)`` for one model/view.
 
         Validity is keyed on the retrieval revision (local write trigger +
         ``data_version`` for other connections), so an INSERT, UPDATE, or
@@ -10545,14 +10741,21 @@ class CortexStore:
         reflected on the next call. Reading the revision before the rows means
         a write that lands in between can only cause a needless rebuild, never
         a stale matrix.
+
+        The cache holds a few views rather than one slot: a merged short-form
+        query alternates between ``model_id`` and ``f"{model_id}#short"`` on
+        every call, and a single slot would rebuild both matrices each time.
         """
         import numpy as np
 
         with self._lock:
             revision = self.retrieval_revision()
-            cached = getattr(self, "_embedding_cache", None)
-            if cached and cached[0] == model_id and cached[1] == revision:
-                return cached[2], cached[3]
+            cache = getattr(self, "_embedding_cache", None)
+            if cache is None:
+                cache = self._embedding_cache = {}
+            cached = cache.get(model_id)
+            if cached and cached[0] == revision:
+                return cached[1], cached[2]
             rows = self._conn.execute(
                 "SELECT memory_id, vector FROM memory_embeddings WHERE model_id=?",
                 (model_id,),
@@ -10569,7 +10772,16 @@ class CortexStore:
             matrix = matrix / np.clip(norms, 1e-12, None)
 
         with self._lock:
-            self._embedding_cache = (model_id, revision, ids, matrix)
+            cache = getattr(self, "_embedding_cache", None)
+            if cache is None:
+                cache = self._embedding_cache = {}
+            # Only the current revision is useful; drop every other generation
+            # so a long-lived store cannot accumulate matrices.
+            for stale in [key for key, value in cache.items() if value[0] != revision]:
+                cache.pop(stale, None)
+            if len(cache) >= _EMBEDDING_CACHE_VIEWS and model_id not in cache:
+                cache.pop(next(iter(cache)), None)
+            cache[model_id] = (revision, ids, matrix)
         return ids, matrix
 
     def memory_ids_missing_embeddings(
