@@ -3,8 +3,35 @@ name = "cortex-http"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "HTTP daemon for the read-only Cortex service. Stub until the server crate is filled in."
+description = "Loopback HTTP daemon: /api/pulse, static files, dashboard auth, and a proxy to Python."
+
+[lib]
+name = "cortex_http"
+path = "src/lib.rs"
 
 [[bin]]
 name = "cortex-http"
 path = "src/main.rs"
+
+[dependencies]
+# Pinned below the Rust 1.85 / edition2024 line. This workspace builds with
+# the toolchain that ships with the repo's CI image (1.83).
+axum = "=0.7.9"
+base64 = "=0.22.1"
+bytes = "=1.9.0"
+cortex-store = { path = "../cortex-store" }
+getrandom = "=0.2.15"
+hmac = "=0.12.1"
+http = "=1.2.0"
+http-body-util = "=0.1.2"
+hyper = { version = "=1.5.2", features = ["client", "http1"] }
+hyper-util = { version = "=0.1.10", features = ["client", "client-legacy", "http1", "tokio"] }
+pbkdf2 = "=0.12.2"
+serde = { version = "=1.0.217", features = ["derive"] }
+serde_json = "=1.0.138"
+sha2 = "=0.10.8"
+subtle = "=2.6.1"
+tokio = { version = "=1.43.1", features = ["io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }
