@@ -1,4 +1,10 @@
+#![forbid(unsafe_code)]
+
+use std::io::Write;
+
 fn main() {
-    eprintln!("not implemented");
-    std::process::exit(2);
+    let code = cortex_cli::run(std::env::args_os().skip(1));
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    std::process::exit(code);
 }
