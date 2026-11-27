@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090b10">
+  <meta name="theme-color" content="#f4f5f8" media="(prefers-color-scheme: light)">
+  <title>cortex</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b10;
+      --text: #f5f6f8;
+      --muted: #8993a5;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        color-scheme: light;
+        --bg: #f4f5f8;
+        --text: #171a22;
+        --muted: #707b8e;
+      }
+    }
+    * { box-sizing: border-box; }
+    [hidden] { display: none !important; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+    }
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: clamp(14px, 3.6vw, 18px);
+      line-height: 1.35;
+      font-variant-ligatures: none;
+      font-feature-settings: "liga" 0, "calt" 0;
+    }
+    .tile {
+      container-type: inline-size;
+      box-sizing: border-box;
+      width: min(100%, 960px);
+      height: 100%;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      gap: clamp(10px, 2.2vh, 22px);
+      padding:
+        max(clamp(16px, 4vh, 48px), env(safe-area-inset-top))
+        max(clamp(14px, 4vw, 48px), env(safe-area-inset-right))
+        max(clamp(16px, 4vh, 48px), env(safe-area-inset-bottom))
+        max(clamp(14px, 4vw, 48px), env(safe-area-inset-left));
+    }
+    pre {
+      margin: 0;
+      font: inherit;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #grid {
+      white-space: pre;
+      overflow-wrap: normal;
+      letter-spacing: 0;
+      /* A monospace cell is about 0.6em, so 40 columns are 24em.
+         Block glyphs draw past the em box; the line box has to hold them. */
+      line-height: 1.7;
+      font-size: clamp(12px, calc((100cqw - 6px) / 24), 26px);
+    }
+    .grey { color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main class="tile">
+    <pre id="notice" hidden aria-live="polite"></pre>
+    <pre id="status">no data yet</pre>
+    <pre id="asof" hidden></pre>
+    <pre id="grid" hidden></pre>
+  </main>
+  <script>
+    "use strict";
+
+    const GLYPHS = ["·", "░", "▒", "▓", "█"];
+    const COLS = 40;
+    const ROWS = 6;
+    const INTERVAL_MS = 2000;
+    const NO_DATA = "no data yet";
+    const UNREACHABLE = "server unreachable";
+    const NOT_MEASURABLE = "not measurable yet";
+    const DREAM = {
+      "not run yet": "not run yet",
+      no_data: "not run yet",
+      running: "running",
+      stale: "stale",
+      fresh: "fresh",
+      failed: "failed"
+    };
+
+    const noticeEl = document.getElementById("notice");
+    const statusEl = document.getElementById("status");
+    const asofEl = document.getElementById("asof");
+    const gridEl = document.getElementById("grid");
+
+    let timer = 0;
+    let inflight = null;
+    let epoch = 0;
+    let requestId = 0;
+    let last = null;
+
+    function isLevel(n) {
+      return typeof n === "number" && n === (n | 0) && n >= 0 && n <= 4;
+    }
+
+    function glyph(level) {
+      return GLYPHS[level];
+    }
+
+    function gridText(buckets) {
+      const lines = [];
+      let row = "";
+      for (let i = 0; i < buckets.length; i++) {
+        row += glyph(buckets[i]);
+        if (row.length === COLS || i === buckets.length - 1) {
+          lines.push(row);
+          row = "";
+        }
+      }
+      return lines.join("\n");
+    }
+
+    function memoryTotal(memories) {
+      if (!memories || typeof memories !== "object") return null;
+      const keys = ["active", "cold", "archived", "other"];
+      let sum = 0;
+      let saw = false;
+      for (let i = 0; i < keys.length; i++) {
+        if (!Object.prototype.hasOwnProperty.call(memories, keys[i])) continue;
+        const value = memories[keys[i]];
+        if (value === null || typeof value === "undefined") continue;
+        if (typeof value !== "number") return null;
+        sum += value;
+        saw = true;
+      }
+      return saw ? sum : null;
+    }
+
+    function hourMinute(at) {
+      if (typeof at !== "string") return "";
+      const match = /T(\d{2}:\d{2})/.exec(at);
+      return match ? match[1] : "";
+    }
+
+    function statusLine(payload) {
+      const status = payload.status || {};
+      const total = memoryTotal(status.memories);
+      const dream = status.last_dream || {};
+      const state = DREAM[dream.state] || "not run yet";
+      const parts = ["cortex", (total === null ? "n/a" : String(total)) + " mem"];
+      if (payload.note === "the store is empty") parts.push("the store is empty");
+      const recalled = status.recalled_7d;
+      parts.push("recalled " + (typeof recalled === "number" ? String(recalled) : NOT_MEASURABLE));
+      let dreamText = "last dream " + state;
+      if (state !== "not run yet" && state !== "running") {
+        const when = hourMinute(dream.at);
+        if (when) dreamText += " " + when;
+      }
+      parts.push(dreamText);
+      return parts.join("  ");
+    }
+
+    function stamp(date) {
+      const p = function (n) { return String(n).padStart(2, "0"); };
+      return date.getFullYear() + "-" + p(date.getMonth() + 1) + "-" + p(date.getDate())
+        + " " + p(date.getHours()) + ":" + p(date.getMinutes()) + ":" + p(date.getSeconds());
+    }
+
+    function paint(frame, banner) {
+      const stale = Boolean(banner) && Boolean(frame);
+      noticeEl.hidden = !banner;
+      noticeEl.textContent = banner || "";
+      if (frame) {
+        statusEl.textContent = frame.statusText;
+        gridEl.textContent = frame.gridText;
+        asofEl.textContent = stale ? "as of " + frame.stamp : "";
+      } else {
+        statusEl.textContent = NO_DATA;
+        gridEl.textContent = "";
+        asofEl.textContent = "";
+      }
+      gridEl.hidden = !frame || frame.gridText.length === 0;
+      asofEl.hidden = !stale;
+      statusEl.classList.toggle("grey", stale);
+      gridEl.classList.toggle("grey", stale);
+      asofEl.classList.toggle("grey", stale);
+      if (!gridEl.hidden) fitGrid();
+    }
+
+    function fitGrid() {
+      gridEl.style.fontSize = "";
+      const avail = gridEl.clientWidth;
+      const needed = gridEl.scrollWidth;
+      if (needed > avail + 1 && avail > 0) {
+        const size = parseFloat(getComputedStyle(gridEl).fontSize);
+        gridEl.style.fontSize = (size * avail / needed) + "px";
+      }
+    }
+
+    function hold(banner) {
+      paint(last, banner);
+    }
+
+    function remember(payload) {
+      // Level 0 is a calm idle grid. NO_DATA is only used when no frame has ever arrived.
+      last = {
+        statusText: statusLine(payload),
+        gridText: gridText(payload.buckets),
+        stamp: stamp(new Date())
+      };
+      paint(last, "");
+    }
+
+    function lineFromError(body) {
+      if (body && typeof body.error === "string" && body.error) return body.error;
+      if (body && typeof body.note === "string" && body.note) return body.note;
+      return UNREACHABLE;
+    }
+
+    function accept(payload) {
+      const bucketsOk = payload && payload.schema_version === 1
+        && Array.isArray(payload.buckets) && payload.buckets.every(isLevel);
+      if (!bucketsOk) {
+        const banner = payload && typeof payload.error === "string" ? payload.error : "";
+        if (banner) hold(banner);
+        else if (!last) paint(null, "");
+        return;
+      }
+      remember(payload);
+    }
+
+    function live(ticket, generation, signal) {
+      return ticket === requestId && generation === epoch && !signal.aborted;
+    }
+
+    function pull() {
+      if (document.visibilityState === "hidden") return;
+      if (inflight) inflight.abort();
+      const ticket = ++requestId;
+      const generation = epoch;
+      const controller = new AbortController();
+      inflight = controller;
+      const signal = controller.signal;
+      fetch("/api/pulse?cols=" + COLS + "&rows=" + ROWS, {
+        signal: signal,
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: { Accept: "application/json" }
+      }).then(function (res) {
+        if (!live(ticket, generation, signal)) return null;
+        if (!res.ok) {
+          return res.json().then(function (body) {
+            if (live(ticket, generation, signal)) hold(lineFromError(body));
+          }, function () {
+            if (live(ticket, generation, signal)) hold(UNREACHABLE);
+          });
+        }
+        return res.json().then(function (payload) {
+          if (!live(ticket, generation, signal)) return;
+          accept(payload);
+        });
+      }).catch(function (err) {
+        if (err && err.name === "AbortError") return;
+        if (!live(ticket, generation, signal)) return;
+        hold(UNREACHABLE);
+      });
+    }
+
+    function stop() {
+      epoch += 1;
+      if (timer) {
+        clearInterval(timer);
+        timer = 0;
+      }
+      if (inflight) {
+        inflight.abort();
+        inflight = null;
+      }
+    }
+
+    function arm() {
+      if (timer || document.visibilityState === "hidden") return;
+      timer = setInterval(pull, INTERVAL_MS);
+    }
+
+    function start() {
+      if (document.visibilityState === "hidden") return;
+      pull();
+      arm();
+    }
+
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "hidden") stop();
+      else start();
+    });
+    window.addEventListener("pagehide", stop);
+    window.addEventListener("resize", function () {
+      if (!gridEl.hidden) fitGrid();
+    });
+    start();
+  </script>
+</body>
+</html>
