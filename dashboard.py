@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import gzip
 import hmac
 import json
 import os
@@ -287,6 +288,46 @@ def _normalize_allowed_hosts(value: str) -> set[str]:
     return normalized
 
 
+_STATIC_CACHE = "public, max-age=86400"
+
+
+def _dashboard_static(url_path: str) -> tuple[str, Path | None] | None:
+    """Resolve a public split asset.
+
+    ``/dashboard.css``, ``/dashboard.js``, and ``/vendor/<file>.js`` are served
+    without authentication. Anything else returns None so the API router keeps
+    its existing paths. A vendor path that escapes the directory, is not a
+    single JavaScript file, or is missing still counts as this route and is
+    answered with a plain 404.
+    """
+
+    root = Path(__file__).resolve().parent
+    if url_path == "/dashboard.css":
+        return ("text/css; charset=utf-8", root / "dashboard.css")
+    if url_path == "/dashboard.js":
+        return ("text/javascript; charset=utf-8", root / "dashboard.js")
+    prefix = "/vendor/"
+    if not url_path.startswith(prefix):
+        return None
+    name = url_path[len(prefix) :]
+    vendor_root = (root / "vendor").resolve()
+    safe_name = (
+        bool(name)
+        and name == Path(name).name
+        and name.endswith(".js")
+        and not name.startswith(".")
+    )
+    if not safe_name or ".." in name:
+        return ("text/javascript; charset=utf-8", None)
+    try:
+        resolved = (vendor_root / name).resolve()
+    except OSError:
+        return ("text/javascript; charset=utf-8", None)
+    if resolved.parent != vendor_root:
+        return ("text/javascript; charset=utf-8", None)
+    return ("text/javascript; charset=utf-8", resolved)
+
+
 def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool = True) -> None:
     """Serve the dashboard on localhost until interrupted.
 
@@ -548,8 +589,12 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not self._host_allowed():
                 self._headers_only(HTTPStatus.FORBIDDEN, "application/json; charset=utf-8", 0)
                 return
+            static = _dashboard_static(parsed.path)
+            if static is not None:
+                self._serve_asset(static, write_body=False)
+                return
             if parsed.path == "/":
-                self._headers_only(HTTPStatus.OK, "text/html; charset=utf-8", len(html))
+                self._serve_html(write_body=False)
                 return
             if parsed.path in public_assets:
                 content_type, payload = public_assets[parsed.path]
@@ -578,8 +623,12 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             if not self._host_allowed():
                 self._json(HTTPStatus.FORBIDDEN, {"error": "host not allowed"})
                 return
+            static = _dashboard_static(parsed.path)
+            if static is not None:
+                self._serve_asset(static, write_body=True)
+                return
             if parsed.path == "/":
-                self._send(HTTPStatus.OK, "text/html; charset=utf-8", html)
+                self._serve_html(write_body=True)
                 return
             if parsed.path in public_assets:
                 content_type, payload = public_assets[parsed.path]
@@ -1606,6 +1655,45 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
         def _expired_cookie() -> str:
             return f"{SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0"
 
+        def _encode_body(self, payload: bytes) -> tuple[bytes, str | None]:
+            accept = (self.headers.get("Accept-Encoding") or "").casefold()
+            if "gzip" in accept and len(payload) >= 256:
+                return gzip.compress(payload, compresslevel=6), "gzip"
+            return payload, None
+
+        def _serve_html(self, *, write_body: bool) -> None:
+            body, encoding = self._encode_body(html)
+            self._headers_only(
+                HTTPStatus.OK,
+                "text/html; charset=utf-8",
+                len(body),
+                content_encoding=encoding,
+            )
+            if write_body:
+                self.wfile.write(body)
+
+        def _serve_asset(self, spec: tuple[str, Path | None], *, write_body: bool) -> None:
+            content_type, path = spec
+            if path is None or not path.is_file():
+                payload = b"not found"
+                self._headers_only(HTTPStatus.NOT_FOUND, "text/plain; charset=utf-8", len(payload))
+                if write_body:
+                    self.wfile.write(payload)
+                return
+            payload = path.read_bytes()
+            stat = path.stat()
+            body, encoding = self._encode_body(payload)
+            self._headers_only(
+                HTTPStatus.OK,
+                content_type,
+                len(body),
+                cache_control=_STATIC_CACHE,
+                etag=f'"{stat.st_mtime_ns}-{stat.st_size}"',
+                content_encoding=encoding,
+            )
+            if write_body:
+                self.wfile.write(body)
+
         def _json(self, status: HTTPStatus, payload: object, *, set_cookie: str | None = None) -> None:
             self._send(
                 status,
@@ -1632,13 +1720,21 @@ def serve_dashboard(db_path: str | Path, *, port: int = 8765, open_browser: bool
             content_length: int,
             *,
             set_cookie: str | None = None,
+            cache_control: str = "no-store",
+            etag: str | None = None,
+            content_encoding: str | None = None,
         ) -> None:
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(content_length))
             if set_cookie:
                 self.send_header("Set-Cookie", set_cookie)
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache_control)
+            if etag:
+                self.send_header("ETag", etag)
+            if content_encoding:
+                self.send_header("Content-Encoding", content_encoding)
+                self.send_header("Vary", "Accept-Encoding")
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("X-Frame-Options", "DENY")
             self.send_header("Referrer-Policy", "no-referrer")
