@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 from . import saved_views  # (#163) named filters
@@ -50,6 +51,15 @@ def main() -> int:
     review.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
     review.add_argument("--limit", type=int, default=50)
     review.add_argument("--reason", default="local CLI review")
+    sub.add_parser(
+        "status",
+        help="A short plain-language answer to 'is it working?'",
+    )
+    why = sub.add_parser(
+        "why",
+        help="Explain one memory in plain English: what it is, when it was recalled, why it ranked",
+    )
+    why.add_argument("memory_id", help="A memory id, or the first few characters of one")
     views = sub.add_parser("views", help="Saved views: list, install presets, run or explain one")
     views.add_argument("action", nargs="?", default="list",
                        choices=["list", "install", "run", "explain"])
@@ -379,6 +389,12 @@ def main() -> int:
 
         print(json.dumps(harness_contract_manifest(tool_name=args.tool_name), indent=2, ensure_ascii=False))
         return 0
+    if args.command == "status":
+        # Plain-language, read-only: never opens a write connection, so a wrong
+        # --db cannot create an empty store that reads as a working one.
+        return _plain_status(args.db)
+    if args.command == "why":
+        return _plain_why(args.db, args.memory_id)
 
     store = CortexStore(args.db)
     try:
@@ -748,6 +764,53 @@ def main() -> int:
         return 0
     finally:
         store.close()
+
+
+def _plain_status(db: str) -> int:
+    """`cortex-memory status` - four counts and a timestamp, in words."""
+
+    from . import plain_summary  # noqa: PLC0415 - only these two commands need it
+
+    conn = _open_plain(db)
+    if conn is None:
+        return 0
+    try:
+        print(plain_summary.render_status(conn))
+    finally:
+        conn.close()
+    return 0
+
+
+def _plain_why(db: str, memory_id: str) -> int:
+    """`cortex-memory why <id>` - one memory explained, or one honest refusal."""
+
+    from . import plain_summary  # noqa: PLC0415
+
+    conn = _open_plain(db)
+    if conn is None:
+        return 1
+    try:
+        lines = plain_summary.why_lines(conn, memory_id)
+    finally:
+        conn.close()
+    print("\n".join(lines))
+    return 0 if lines and lines[0].startswith("Memory ") else 1
+
+
+def _open_plain(db: str):
+    """Open the store read-only, or say plainly why there is nothing to read."""
+
+    from . import plain_summary  # noqa: PLC0415
+
+    try:
+        conn = plain_summary.open_read_only(db)
+    except sqlite3.Error as exc:
+        print(f"Cortex could not read the database at {db}: {exc}")
+        return None
+    if conn is None:
+        print(f"No Cortex database at {db} yet - nothing to measure.")
+        return None
+    return conn
 
 
 def _review(store: CortexStore, args: argparse.Namespace) -> object:
