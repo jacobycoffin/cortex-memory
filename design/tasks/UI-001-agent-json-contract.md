@@ -1,9 +1,13 @@
 ---
 task_id: UI-001
 assignee: cursor-cloud
-status: unassigned
+status: superseded
 layer: headless
-owner_files: [cli.py, tests/test_cli_agent_contract.py]
+wave: null
+superseded_by: RS-002
+owner_files:
+  - cli.py
+  - tests/test_cli_agent_contract.py
 depends_on: []
 verify:
   - python3 -m pytest tests/test_cli_agent_contract.py -q
@@ -11,6 +15,8 @@ verify:
 ---
 
 # Give a headless agent a stable contract
+
+> **Do not implement this brief.** It is superseded by [RS-002](RS-002-headless-json-contract.md). The original text stays so the intent is not lost. The Amendment at the bottom is the routing decision.
 
 ## Why
 
@@ -48,3 +54,16 @@ Requirements:
 ## Out of scope
 
 Do not change recall behaviour, scoring, or what the store records. This task adds a contract, not a capability.
+
+## Amendment
+
+Superseded by RS-002 on 2026-11-27. Do not dispatch this task and do not edit `cli.py`.
+
+The contract above is still the intent, with these corrections from the real code (`design/RUST-SERVICE.md` is the spec):
+
+- Python `cortex-memory` has `search`, `status`, and `remember`. It has no `recall` subcommand and no `sleep-status` subcommand. `status` today is prose and exits 0 when the database file is missing. Adding `--json` there would go through `CortexStore`, which rewrites `meta.schema_version` on open.
+- The JSON field `schema_version` is contract version `1`. The database version is the TEXT column `meta.value` for key `schema_version`, reported as `health.store_schema_version`. Rust must not write it.
+- `why` keys are the plain words in `plain_summary.COMPONENT_WORDS` (`wording match`, `found by meaning`, `past usefulness`), not the snake_case keys in the example table above.
+- Memory text may contain non-ASCII. The "no non-ASCII" rule applies to CLI chrome, not to `content` strings.
+- `remember` stays a Python write, invoked as a subprocess. `proposal` is `false` for that CLI path.
+- Phase-1 recall is the lexical FTS read model (`ranker: "lexical"`). Semantic fusion stays in the Python retriever.

@@ -1,16 +1,23 @@
 ---
 task_id: UI-002
 assignee: cursor-cloud
-status: unassigned
+status: superseded
 layer: glanceable
-owner_files: [pulse_tui.py, tests/test_pulse_tui.py]
-depends_on: [UI-001]
+wave: null
+superseded_by: RS-004
+owner_files:
+  - pulse_tui.py
+  - tests/test_pulse_tui.py
+depends_on:
+  - UI-001
 verify:
   - python3 -m pytest tests/test_pulse_tui.py -q
   - python3 scripts/check_repository.py
 ---
 
 # The dot view: a terminal live pane
+
+> **Do not implement this brief.** It is superseded by [RS-004](RS-004-terminal-dot-views.md). The original text stays so the intent is not lost. The Amendment at the bottom is the routing decision.
 
 ## Why
 
@@ -52,3 +59,9 @@ or unreadable, print one line — `store unavailable: <reason>` — and keep the
 ## Out of scope
 
 No browser, no images, no animation beyond redrawing. Do not touch `dashboard.html`.
+
+## Amendment
+
+Superseded by RS-004 on 2026-11-27. Do not dispatch this task and do not create `pulse_tui.py`.
+
+The pane above is still the intent. Implement it in `rust/crates/cortex-view/` as `cortex-rs pulse`. Glyphs and thresholds are `design/dot-glyphs.json`. The status line uses the four state words (`not run yet`, `running`, `stale`, `fresh`, `failed`) rather than a checkmark. A missing rate is `n/a`, not `0.0/s`. RS-004 does not depend on this task; the glyph file replaced that dependency.

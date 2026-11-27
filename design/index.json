@@ -1,50 +1,94 @@
 {
   "schema_version": 1,
-  "purpose": "Task briefs for Cursor cloud design agents working on Cortex surfaces. Cortex is a memory store for AI agents: one glanceable dot/ASCII view for humans and screen-bearing agents, one stable JSON contract for headless agents, one deep-dive dashboard. See design/README.md for constraints.",
+  "schema_version_note": "This integer versions the design index only. It is not cortex.db meta.schema_version and must never be written into the database.",
+  "purpose": "Task briefs for Cursor cloud agents working on Cortex surfaces and the phase-1 Rust service. Cortex is a memory store for AI agents: one glanceable dot/ASCII view for humans and screen-bearing agents, one stable JSON contract for headless agents, one deep-dive dashboard. Phase 1 adds a read-only Rust service beside the Python writer. See design/README.md and design/RUST-SERVICE.md.",
   "convention": {
-    "available_when": "status == 'unassigned' and all depends_on are done",
+    "available_when": "status == 'unassigned' and every depends_on is done and task_id is in dispatch_order",
     "claim_commit": "design: claim <task_id>",
     "branch": "item/<task_id>-<slug>",
-    "pr_title": "<task_id>: <short description>"
+    "pr_title": "<task_id>: <short description>",
+    "amendment_wins": "An ## Amendment section at the bottom of a brief overrides any conflicting sentence above it.",
+    "owner_directory": "An owner_files entry that ends with / allows any file under that directory."
   },
   "dispatch_order": [
-    "UI-001",
-    "UI-002",
+    "RS-001",
     "UI-003",
-    "UI-004",
     "UI-005",
-    "UI-006"
+    "RS-002",
+    "RS-003",
+    "RS-004",
+    "UI-006",
+    "RS-005"
+  ],
+  "waves": [
+    {
+      "wave": 1,
+      "parallel": [
+        "RS-001",
+        "UI-003",
+        "UI-005"
+      ],
+      "note": "No shared files. Nothing else has to be done first."
+    },
+    {
+      "wave": 2,
+      "parallel": [
+        "RS-002",
+        "RS-003",
+        "RS-004",
+        "UI-006"
+      ],
+      "note": "RS-002, RS-003, and RS-004 each depend only on RS-001 and own different crates. UI-006 depends on UI-003 and UI-005."
+    },
+    {
+      "wave": 3,
+      "parallel": [
+        "RS-005"
+      ],
+      "note": "Depends on RS-002, RS-003, and RS-004."
+    }
   ],
   "tasks": [
     {
       "task_id": "META-000",
-      "title": "GROKBOT \u2014 routing instructions",
+      "title": "GROKBOT — routing instructions",
       "assignee": "grokbot",
       "status": "reference",
       "layer": "routing",
+      "wave": null,
+      "superseded_by": null,
       "file": "design/tasks/GROKBOT-routing.md",
       "owner_files": [],
-      "depends_on": []
+      "depends_on": [],
+      "verify": []
     },
     {
       "task_id": "UI-001",
       "title": "Give a headless agent a stable contract",
       "assignee": "cursor-cloud",
-      "status": "unassigned",
+      "status": "superseded",
       "layer": "headless",
+      "wave": null,
+      "superseded_by": "RS-002",
       "file": "design/tasks/UI-001-agent-json-contract.md",
       "owner_files": [
         "cli.py",
         "tests/test_cli_agent_contract.py"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "verify": [
+        "python3 -m pytest tests/test_cli_agent_contract.py -q",
+        "python3 scripts/check_repository.py"
+      ]
     },
     {
       "task_id": "UI-002",
       "title": "The dot view: a terminal live pane",
       "assignee": "cursor-cloud",
-      "status": "unassigned",
+      "status": "superseded",
       "layer": "glanceable",
+      "wave": null,
+      "superseded_by": "RS-004",
       "file": "design/tasks/UI-002-live-dot-view-terminal.md",
       "owner_files": [
         "pulse_tui.py",
@@ -52,6 +96,10 @@
       ],
       "depends_on": [
         "UI-001"
+      ],
+      "verify": [
+        "python3 -m pytest tests/test_pulse_tui.py -q",
+        "python3 scripts/check_repository.py"
       ]
     },
     {
@@ -60,22 +108,27 @@
       "assignee": "cursor-cloud",
       "status": "unassigned",
       "layer": "glanceable",
+      "wave": 1,
+      "superseded_by": null,
       "file": "design/tasks/UI-003-glanceable-web-tile.md",
       "owner_files": [
         "pulse.html",
-        "dashboard.py",
         "tests/test_pulse_page.py"
       ],
-      "depends_on": [
-        "UI-002"
+      "depends_on": [],
+      "verify": [
+        "python3 -m pytest tests/test_pulse_page.py -q",
+        "python3 scripts/check_repository.py"
       ]
     },
     {
       "task_id": "UI-004",
       "title": "Watch a dream happen",
       "assignee": "cursor-cloud",
-      "status": "unassigned",
+      "status": "superseded",
       "layer": "glanceable",
+      "wave": null,
+      "superseded_by": "RS-004",
       "file": "design/tasks/UI-004-dream-monitor.md",
       "owner_files": [
         "pulse_dream.py",
@@ -83,6 +136,10 @@
       ],
       "depends_on": [
         "UI-002"
+      ],
+      "verify": [
+        "python3 -m pytest tests/test_pulse_dream.py -q",
+        "python3 scripts/check_repository.py"
       ]
     },
     {
@@ -91,12 +148,23 @@
       "assignee": "cursor-cloud",
       "status": "unassigned",
       "layer": "deep-dive",
+      "wave": 1,
+      "superseded_by": null,
       "file": "design/tasks/UI-005-dashboard-mobile-and-speed.md",
       "owner_files": [
         "dashboard.html",
+        "dashboard.css",
+        "dashboard.js",
+        "dashboard.py",
+        "pyproject.toml",
+        "vendor/",
         "tests/test_dashboard_mobile.py"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "verify": [
+        "python3 -m pytest tests/test_dashboard_mobile.py -q",
+        "python3 scripts/check_repository.py"
+      ]
     },
     {
       "task_id": "UI-006",
@@ -104,15 +172,139 @@
       "assignee": "cursor-cloud",
       "status": "unassigned",
       "layer": "glanceable + deep-dive",
+      "wave": 2,
+      "superseded_by": null,
       "file": "design/tasks/UI-006-states-and-truthfulness.md",
       "owner_files": [
         "pulse.html",
         "dashboard.html",
+        "dashboard.js",
         "tests/test_ui_states.py"
       ],
       "depends_on": [
         "UI-003",
         "UI-005"
+      ],
+      "verify": [
+        "python3 -m pytest tests/test_ui_states.py -q",
+        "python3 scripts/check_repository.py"
+      ]
+    },
+    {
+      "task_id": "RS-001",
+      "title": "Rust workspace and read-only SQLite layer",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "service",
+      "wave": 1,
+      "superseded_by": null,
+      "file": "design/tasks/RS-001-workspace-sqlite.md",
+      "owner_files": [
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/cortex-store/",
+        "rust/crates/cortex-cli/Cargo.toml",
+        "rust/crates/cortex-cli/src/main.rs",
+        "rust/crates/cortex-http/Cargo.toml",
+        "rust/crates/cortex-http/src/main.rs",
+        "rust/crates/cortex-view/Cargo.toml",
+        "rust/crates/cortex-view/src/main.rs"
+      ],
+      "depends_on": [],
+      "verify": [
+        "cargo test --manifest-path rust/Cargo.toml -p cortex-store",
+        "cargo check --manifest-path rust/Cargo.toml",
+        "python3 scripts/check_repository.py"
+      ]
+    },
+    {
+      "task_id": "RS-002",
+      "title": "Headless `--json` contract",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "headless",
+      "wave": 2,
+      "superseded_by": null,
+      "file": "design/tasks/RS-002-headless-json-contract.md",
+      "owner_files": [
+        "rust/Cargo.lock",
+        "rust/crates/cortex-cli/"
+      ],
+      "depends_on": [
+        "RS-001"
+      ],
+      "verify": [
+        "cargo test --manifest-path rust/Cargo.toml -p cortex-cli",
+        "python3 scripts/check_repository.py"
+      ]
+    },
+    {
+      "task_id": "RS-003",
+      "title": "HTTP daemon, `/api/pulse`, static files, auth parity",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "service",
+      "wave": 2,
+      "superseded_by": null,
+      "file": "design/tasks/RS-003-http-daemon.md",
+      "owner_files": [
+        "rust/Cargo.lock",
+        "rust/crates/cortex-http/"
+      ],
+      "depends_on": [
+        "RS-001"
+      ],
+      "verify": [
+        "cargo test --manifest-path rust/Cargo.toml -p cortex-http",
+        "python3 scripts/check_repository.py"
+      ]
+    },
+    {
+      "task_id": "RS-004",
+      "title": "Terminal dot views: `pulse` and `dream`",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "glanceable",
+      "wave": 2,
+      "superseded_by": null,
+      "file": "design/tasks/RS-004-terminal-dot-views.md",
+      "owner_files": [
+        "rust/Cargo.lock",
+        "rust/crates/cortex-view/"
+      ],
+      "depends_on": [
+        "RS-001"
+      ],
+      "verify": [
+        "cargo test --manifest-path rust/Cargo.toml -p cortex-view",
+        "python3 scripts/check_repository.py"
+      ]
+    },
+    {
+      "task_id": "RS-005",
+      "title": "One binary, a user unit, and a coexistence smoke test",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "service",
+      "wave": 3,
+      "superseded_by": null,
+      "file": "design/tasks/RS-005-systemd-and-smoke.md",
+      "owner_files": [
+        "rust/Cargo.toml",
+        "rust/Cargo.lock",
+        "rust/crates/cortex/",
+        "scripts/cortex-serve.service.in",
+        "scripts/install_cortex_serve.sh"
+      ],
+      "depends_on": [
+        "RS-002",
+        "RS-003",
+        "RS-004"
+      ],
+      "verify": [
+        "cargo test --manifest-path rust/Cargo.toml -p cortex",
+        "cargo build --manifest-path rust/Cargo.toml --release -p cortex",
+        "python3 scripts/check_repository.py"
       ]
     }
   ],

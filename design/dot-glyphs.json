@@ -1,0 +1,20 @@
+{
+  "grid": {
+    "glyphs": ["·", "░", "▒", "▓", "█"],
+    "ascii": [".", ":", "+", "*", "#"],
+    "meanings": ["empty", "low", "medium", "high", "saturated"],
+    "used_fraction": "used_rows / rows for one usage_records.task_id bucket",
+    "level": "0 when used_fraction is 0; 1 when used_fraction <= 0.25; 2 when <= 0.50; 3 when <= 0.75; 4 otherwise"
+  },
+  "sparkline": {
+    "glyphs": ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"],
+    "ascii": [".", ":", "-", "~", "=", "+", "*", "#"],
+    "buckets": 60,
+    "level": "min(7, floor(8 * count / max_count)) when max_count > 0; every bucket is the empty glyph when no bucket has a count"
+  },
+  "layout": {
+    "cols": 40,
+    "rows": 6,
+    "order": "row-major, oldest filled cell at the top-left, newest at the bottom-right, empty padding on the left"
+  }
+}
