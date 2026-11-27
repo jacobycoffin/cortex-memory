@@ -2279,4 +2279,3 @@
     }
     setInterval(pollIfVisible, 60000);
     document.addEventListener("visibilitychange", pollIfVisible);
-  
