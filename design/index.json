@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "purpose": "Task briefs for Cursor cloud design agents working on Cortex surfaces. Cortex is a memory store for AI agents: one glanceable dot/ASCII view for humans and screen-bearing agents, one stable JSON contract for headless agents, one deep-dive dashboard. See design/README.md for constraints.",
+  "convention": {
+    "available_when": "status == 'unassigned' and all depends_on are done",
+    "claim_commit": "design: claim <task_id>",
+    "branch": "item/<task_id>-<slug>",
+    "pr_title": "<task_id>: <short description>"
+  },
+  "dispatch_order": [
+    "UI-001",
+    "UI-002",
+    "UI-003",
+    "UI-004",
+    "UI-005",
+    "UI-006"
+  ],
+  "tasks": [
+    {
+      "task_id": "META-000",
+      "title": "GROKBOT \u2014 routing instructions",
+      "assignee": "grokbot",
+      "status": "reference",
+      "layer": "routing",
+      "file": "design/tasks/GROKBOT-routing.md",
+      "owner_files": [],
+      "depends_on": []
+    },
+    {
+      "task_id": "UI-001",
+      "title": "Give a headless agent a stable contract",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "headless",
+      "file": "design/tasks/UI-001-agent-json-contract.md",
+      "owner_files": [
+        "cli.py",
+        "tests/test_cli_agent_contract.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "task_id": "UI-002",
+      "title": "The dot view: a terminal live pane",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "glanceable",
+      "file": "design/tasks/UI-002-live-dot-view-terminal.md",
+      "owner_files": [
+        "pulse_tui.py",
+        "tests/test_pulse_tui.py"
+      ],
+      "depends_on": [
+        "UI-001"
+      ]
+    },
+    {
+      "task_id": "UI-003",
+      "title": "The dot view: a phone tile",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "glanceable",
+      "file": "design/tasks/UI-003-glanceable-web-tile.md",
+      "owner_files": [
+        "pulse.html",
+        "dashboard.py",
+        "tests/test_pulse_page.py"
+      ],
+      "depends_on": [
+        "UI-002"
+      ]
+    },
+    {
+      "task_id": "UI-004",
+      "title": "Watch a dream happen",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "glanceable",
+      "file": "design/tasks/UI-004-dream-monitor.md",
+      "owner_files": [
+        "pulse_dream.py",
+        "tests/test_pulse_dream.py"
+      ],
+      "depends_on": [
+        "UI-002"
+      ]
+    },
+    {
+      "task_id": "UI-005",
+      "title": "Make the deep-dive dashboard usable on a phone, and faster to open",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "deep-dive",
+      "file": "design/tasks/UI-005-dashboard-mobile-and-speed.md",
+      "owner_files": [
+        "dashboard.html",
+        "tests/test_dashboard_mobile.py"
+      ],
+      "depends_on": []
+    },
+    {
+      "task_id": "UI-006",
+      "title": "States that tell the truth",
+      "assignee": "cursor-cloud",
+      "status": "unassigned",
+      "layer": "glanceable + deep-dive",
+      "file": "design/tasks/UI-006-states-and-truthfulness.md",
+      "owner_files": [
+        "pulse.html",
+        "dashboard.html",
+        "tests/test_ui_states.py"
+      ],
+      "depends_on": [
+        "UI-003",
+        "UI-005"
+      ]
+    }
+  ],
+  "blockers": []
+}
