@@ -36,6 +36,7 @@ from .refinery import (
 )
 from .security import normalize_text, neutralize_role_tags, sanitize_memory
 from .embeddings import pack_vector, unpack_vector
+from .recall_timing import sanitize_stage_ms
 from .semantics import feature_similarity, semantic_features
 from .serializers import (
     _trace_json,
@@ -5197,14 +5198,16 @@ class CortexStore:
         rendered_tokens: int = 0,
     ) -> str:
         recall_id = str(uuid.uuid4())
+        # Sanitised at the boundary, not trusted: a non-finite or non-numeric value is dropped
+        # instead of written as invalid JSON, and a mapping that cannot be read at all costs the
+        # row its stage payload rather than costing the recall its record.
         stage_payload = "{}"
-        if stage_ms:
-            try:
-                stage_payload = json.dumps(
-                    {str(key): max(0.0, float(value)) for key, value in dict(stage_ms).items()}
-                )
-            except (TypeError, ValueError):
-                stage_payload = "{}"
+        try:
+            cleaned = sanitize_stage_ms(stage_ms)
+            if cleaned:
+                stage_payload = json.dumps(cleaned)
+        except Exception:  # noqa: BLE001 - timing may never break a recall record
+            stage_payload = "{}"
         with self.transaction() as conn:
             conn.execute(
                 """INSERT INTO recall_runs(

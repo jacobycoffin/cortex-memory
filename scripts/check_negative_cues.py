@@ -33,7 +33,7 @@ from cortex.store import CortexStore  # noqa: E402
 
 def run(store: CortexStore, retriever: MemoryRetriever, query: str) -> list[tuple[str, float, str]]:
     results, diagnostics = retriever.search_detailed(query, limit=5)
-    suppressed = (getattr(diagnostics, "stage_ms", {}) or {}).get("negative_cue_suppressed")
+    suppressed = (getattr(diagnostics, "stage_ms", {}) or {}).get("negative_cue_suppressed_count")
     rows = []
     for result in results:
         content = str((result.memory or {}).get("content") or "")[:60].replace("\n", " ")
