@@ -538,6 +538,36 @@ fn missing_database_exits_three_and_creates_nothing() {
 }
 
 #[test]
+fn status_reports_stored_procedures_when_nothing_grades_them() {
+    // The box this shipped on had no procedure_outcomes table at all: the grading loop was never
+    // deployed. Reporting only the grading count made a 246-procedure library read as "not
+    // measurable yet", i.e. as if there were no procedures. `known` is the count that survives.
+    let scratch = Scratch::new();
+    let path = scratch.path().join("cortex.db");
+    {
+        let conn = create_required(&path, Some("34"));
+        insert_memory(&conn, "m-proc-1", "procedure", "run the suite with -n 4", "active");
+        insert_memory(&conn, "m-proc-2", "procedure", "cut branches from origin/main", "active");
+        // Archived procedures are not part of the live library.
+        insert_memory(&conn, "m-proc-old", "procedure", "retired procedure", "archived");
+        insert_memory(&conn, "m-fact", "semantic", "not a procedure", "active");
+    }
+
+    let run = invoke_db(&path, &["status", "--json"]);
+    assert_eq!(run.code, EXIT_OK, "{}", String::from_utf8_lossy(&run.stderr));
+    assert_contract_stdout(&run);
+    let body = parse_json(&run);
+
+    assert_eq!(body["procedures"]["known"], 2);
+    assert!(body["procedures"]["total"].is_null());
+    assert!(body["procedures"]["graded"].is_null());
+    assert_eq!(
+        body["health"]["note"],
+        "procedures are stored but none has been graded yet"
+    );
+}
+
+#[test]
 fn status_of_a_measured_store_reports_schema_34_and_leaves_it_there() {
     let scratch = Scratch::new();
     let path = scratch.path().join("cortex.db");

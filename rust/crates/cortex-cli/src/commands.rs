@@ -8,6 +8,7 @@ use std::process::Command;
 use cortex_store::{
     LexicalError, Measurement, Presence, Store, UtcTime, CONTRACT_SCHEMA_VERSION, LEXICAL_RANKER,
     NOTE_NEXT_SCHEDULED, NOTE_NOT_MEASURABLE, NOTE_NO_DREAM, NOTE_NO_MATCH,
+    NOTE_PROCEDURES_UNGRADED,
 };
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
@@ -103,13 +104,17 @@ fn load_status(store: &Store) -> Result<StatusOut, cortex_store::StoreError> {
     let procedures = store.procedures()?;
     let total = measurement(procedures.total);
     let graded_procedures = measurement(procedures.graded);
-    let health_note =
-        if recalled.is_none() || graded.is_none() || total.is_none() || graded_procedures.is_none()
-        {
-            Some(NOTE_NOT_MEASURABLE.to_string())
-        } else {
-            None
-        };
+    let procedures_known = measurement(procedures.known);
+    let health_note = if total.is_none() && procedures_known.is_some() {
+        // The library exists; the grading loop is what is missing. Say that, instead of the
+        // generic "not measurable yet" that makes a populated store look empty.
+        Some(NOTE_PROCEDURES_UNGRADED.to_string())
+    } else if recalled.is_none() || graded.is_none() || total.is_none() || graded_procedures.is_none()
+    {
+        Some(NOTE_NOT_MEASURABLE.to_string())
+    } else {
+        None
+    };
     Ok(StatusOut {
         schema_version: CONTRACT_SCHEMA_VERSION,
         memories: MemoryCountsJson {
@@ -123,6 +128,7 @@ fn load_status(store: &Store) -> Result<StatusOut, cortex_store::StoreError> {
         procedures: ProceduresJson {
             total,
             graded: graded_procedures,
+            known: procedures_known,
         },
         health: HealthJson {
             readable: true,
@@ -148,6 +154,7 @@ fn unreadable_status(note: String) -> StatusOut {
         procedures: ProceduresJson {
             total: None,
             graded: None,
+            known: None,
         },
         health: HealthJson {
             readable: false,
@@ -370,8 +377,12 @@ struct MemoryCountsJson {
 
 #[derive(Serialize)]
 struct ProceduresJson {
+    /// Distinct procedures with a recorded outcome.
     total: Option<i64>,
     graded: Option<i64>,
+    /// Procedure memories in the store — measurable even when nothing grades them, so a missing
+    /// grading table cannot make a full procedure library look like an empty one.
+    known: Option<i64>,
 }
 
 #[derive(Serialize)]

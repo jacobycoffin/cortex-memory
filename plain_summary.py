@@ -248,14 +248,69 @@ def _last_recall(conn: Any) -> str:
 def status_lines(conn: Any) -> list[str]:
     """The short answer to "is it working?", from stored rows only."""
 
-    return [
+    lines = [
         "Cortex, in plain numbers:",
         f"  memories: {_memories(conn)}",
         f"  recalled in the last {WINDOW_DAYS} days: {_recalled_last_week(conn)}",
         f"  answers graded: {_answers_graded(conn)}",
         f"  procedures graded: {_procedures_graded(conn)}",
         f"  last recall: {_last_recall(conn)}",
+        f"  waiting for review: {_review_queue(conn)}",
+        f"  expired unreviewed: {_expired_unreviewed(conn)}",
     ]
+    return lines
+
+
+# ------------------------------------------------------------------ review queue
+
+QUEUE_WINDOW_DAYS = 30
+
+
+def _review_rows(conn: Any, sql: str, params: tuple[Any, ...] = ()) -> list[Any] | None:
+    try:
+        return conn.execute(sql, params).fetchall()
+    except sqlite3.Error:
+        return None
+
+
+def _review_queue(conn: Any) -> str:
+    """How many Sleep proposals are waiting, and of what. Silent expiry is the failure mode:
+    a queue nobody looks at is the same as no queue, so this line must never read zero when
+    proposals are actually piling up."""
+
+    rows = _review_rows(
+        conn,
+        "SELECT kind, COUNT(*) n FROM sleep_proposals WHERE status='proposed' GROUP BY kind"
+        " ORDER BY n DESC",
+    )
+    if rows is None:
+        return "not measurable yet (no proposal table)"
+    total = sum(int(row[1]) for row in rows)
+    if not total:
+        return "0 - nothing is waiting"
+    top = ", ".join(f"{row[0]} {int(row[1])}" for row in rows[:3])
+    return f"{total} proposals ({top}) - run `cortex-memory proposals` to see them"
+
+
+def _expired_unreviewed(conn: Any) -> str:
+    """Expiry is housekeeping, but a pile of expired proposals means nobody was ever offered them.
+    That is worth saying out loud rather than letting it read as a clean queue."""
+
+    rows = _review_rows(
+        conn,
+        "SELECT COUNT(*) FROM sleep_proposals WHERE status='expired'"
+        f" AND substr(created_at,1,10) >= date('now', '-{QUEUE_WINDOW_DAYS} days')",
+    )
+    if rows is None:
+        return "not measurable yet (no proposal table)"
+    count = int(rows[0][0])
+    if not count:
+        return f"0 in the last {QUEUE_WINDOW_DAYS} days"
+    return (
+        f"{count} in the last {QUEUE_WINDOW_DAYS} days"
+        " - they timed out without a decision; review sooner to keep them"
+    )
+
 
 
 # --------------------------------------------------------------------------- why

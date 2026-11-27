@@ -38,6 +38,8 @@ pub const DREAM_FRESH_HOURS: i64 = 36;
 pub const CONTRACT_SCHEMA_VERSION: i64 = 1;
 
 pub const NOTE_NOT_MEASURABLE: &str = "not measurable yet";
+/// Procedures exist but nothing has graded one: the library is populated, the grading loop is not running.
+pub const NOTE_PROCEDURES_UNGRADED: &str = "procedures are stored but none has been graded yet";
 pub const NOTE_EMPTY_STORE: &str = "the store is empty";
 pub const NOTE_NO_MATCH: &str = "no match";
 pub const NOTE_NO_DREAM: &str = "no dream has run yet";

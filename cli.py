@@ -51,6 +51,26 @@ def main() -> int:
     review.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
     review.add_argument("--limit", type=int, default=50)
     review.add_argument("--reason", default="local CLI review")
+    proposals = sub.add_parser(
+        "proposals",
+        help="See and decide the dream's proposals - the queue that used to expire unseen",
+    )
+    proposals.add_argument(
+        "action",
+        nargs="?",
+        default="list",
+        choices=["list", "approve", "skip", "undo"],
+    )
+    proposals.add_argument("proposal_ids", nargs="*", help="Proposal ids (unique prefixes accepted)")
+    proposals.add_argument("--kind", help="Only show one kind, e.g. association or lifecycle")
+    proposals.add_argument("--limit", type=int, default=20)
+    proposals.add_argument("--reason", default="", help="Why, recorded with the decision")
+    proposals.add_argument(
+        "--action",
+        dest="decide_action",
+        help="Required for kinds that change what memory is kept: archive, trash, quarantine, or keep",
+    )
+    proposals.add_argument("--json", action="store_true", help="Print the queue as JSON")
     sub.add_parser(
         "status",
         help="A short plain-language answer to 'is it working?'",
@@ -395,6 +415,8 @@ def main() -> int:
         return _plain_status(args.db)
     if args.command == "why":
         return _plain_why(args.db, args.memory_id)
+    if args.command == "proposals":
+        return _proposals(args)
 
     store = CortexStore(args.db)
     try:
@@ -811,6 +833,158 @@ def _open_plain(db: str):
         print(f"No Cortex database at {db} yet - nothing to measure.")
         return None
     return conn
+
+
+# Kinds whose decision is a plain yes/no on a connection between two memories.
+_CONNECTION_KINDS = frozenset({"association", "association_reinforcement", "edge_downscale"})
+# Kinds whose decision changes what memory is kept. "approve" is deliberately not shorthand for these:
+# archiving or trashing a memory is destructive, so the operator has to name the action.
+_MEMORY_STATE_ACTIONS = ("archive", "trash", "quarantine", "keep")
+
+_PROPOSAL_SQL = """
+    SELECT p.proposal_id, p.kind, p.score, p.evidence_count, p.rationale, p.created_at,
+           p.src_id, p.dst_id,
+           substr(coalesce(s.content, ''), 1, 90) AS src_text,
+           substr(coalesce(d.content, ''), 1, 90) AS dst_text
+      FROM sleep_proposals p
+      LEFT JOIN memories s ON s.id = p.src_id
+      LEFT JOIN memories d ON d.id = p.dst_id
+     WHERE p.status = 'proposed'
+"""
+
+
+def _proposals(args: argparse.Namespace) -> int:
+    """`cortex-memory proposals` - the dream reviews what it noticed, or it is not reviewing at all.
+
+    The nightly cycle writes Sleep proposals into `sleep_proposals` and stops. Until this command
+    existed the only surface that could decide one was the dashboard, so the queue sat untouched
+    until `cortex_sleep_retention.py` expired it: 1,829 proposals timed out between July and
+    September 2026 without a single decision. Listing is read-only; only a decision writes.
+    """
+
+    from . import plain_summary  # noqa: PLC0415 - keeps the read path free of write machinery
+
+    with_store = args.action != "list" and args.action != "undo"
+    store = None
+    conn = None
+    try:
+        if with_store or args.action == "undo":
+            store = CortexStore(args.db)
+        else:
+            try:
+                conn = plain_summary.open_read_only(args.db)
+            except sqlite3.Error as exc:
+                print(f"Cortex could not read the database at {args.db}: {exc}")
+                return 3
+            if conn is None:
+                print(f"No Cortex database at {args.db} yet - nothing to review.")
+                return 1
+
+        if args.action == "list":
+            assert conn is not None  # list is the read-only path
+            sql = _PROPOSAL_SQL
+            params: list[object] = []
+            if args.kind:
+                sql += " AND p.kind = ?"
+                params.append(args.kind)
+            sql += " ORDER BY p.created_at DESC, p.score DESC LIMIT ?"
+            params.append(max(1, args.limit))
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            items = [
+                {
+                    "proposal_id": row[0],
+                    "kind": row[1],
+                    "score": row[2],
+                    "evidence_count": row[3],
+                    "rationale": row[4],
+                    "created_at": row[5],
+                    "src": {"id": row[6], "text": row[8]},
+                    "dst": {"id": row[7], "text": row[9]},
+                }
+                for row in rows
+            ]
+            if args.json:
+                print(json.dumps({"schema_version": 1, "count": len(items), "proposals": items},
+                                 indent=2, ensure_ascii=False, default=str))
+                return 0
+            if not items:
+                print("Nothing is waiting for review." if not args.kind
+                      else f"Nothing of kind {args.kind!r} is waiting for review.")
+                return 0
+            print(f"{len(items)} proposal(s) waiting" + (f" of kind {args.kind}" if args.kind else "") + ":")
+            for item in items:
+                print(f"  {item['proposal_id'][:8]}  {item['kind']:<24} score {item['score'] or 0:.2f}")
+                print(f"      {(item['rationale'] or '').strip()[:150]}")
+                if item["src"]["text"] or item["dst"]["text"]:
+                    print(f"      a: {item['src']['text'][:70]}")
+                    print(f"      b: {item['dst']['text'][:70]}")
+            print("\n  approve: cortex-memory proposals approve <id>")
+            print("  skip:    cortex-memory proposals skip <id>")
+            return 0
+
+        if args.action == "undo":
+            assert store is not None
+            if not args.proposal_ids:
+                print("proposals undo needs a review id")
+                return 2
+            restored = store.undo_review_decision(args.proposal_ids[0], actor="cli-operator")
+            print(json.dumps(restored, indent=2, ensure_ascii=False, default=str))
+            return 0
+
+        if not args.proposal_ids:
+            print(f"proposals {args.action} needs one or more proposal ids (see: proposals list)")
+            return 2
+
+        # Resolve prefixes against the pending queue, so a truncated id cannot hit a decided row.
+        assert store is not None
+        pending = {
+            str(row[0]): str(row[1])
+            for row in store._conn.execute(
+                "SELECT proposal_id, kind FROM sleep_proposals WHERE status='proposed'"
+            ).fetchall()
+        }
+        decided = []
+        for raw in args.proposal_ids:
+            matches = [pid for pid in pending if pid.startswith(raw)]
+            if len(matches) != 1:
+                print(f"{raw!r} matches {len(matches)} pending proposals; give a longer prefix")
+                return 2
+            proposal_id = matches[0]
+            kind = pending[proposal_id]
+            if args.action == "approve":
+                if kind in _CONNECTION_KINDS:
+                    decision = "approve"
+                elif args.decide_action in _MEMORY_STATE_ACTIONS:
+                    decision = str(args.decide_action)
+                else:
+                    print(
+                        f"{kind} proposals change which memory is kept - name the action: "
+                        f"--action {'|'.join(_MEMORY_STATE_ACTIONS)}"
+                    )
+                    return 2
+            else:
+                decision = "deny" if kind in _CONNECTION_KINDS else "keep"
+            result = store.decide_review_proposal(
+                proposal_id,
+                decision,
+                reason_code=(args.reason or "cli_review")[:80],
+                reason_text=args.reason or "",
+                actor="cli-operator",
+            )
+            decided.append({"proposal_id": proposal_id, "kind": kind,
+                            "decision": decision, "review_id": result.get("review_id")})
+        if args.json:
+            print(json.dumps({"schema_version": 1, "decided": decided}, indent=2, ensure_ascii=False, default=str))
+        else:
+            for item in decided:
+                print(f"  {item['proposal_id'][:8]}  {item['kind']:<24} -> {item['decision']}")
+            print(f"\n  undo with: cortex-memory proposals undo <review_id>")
+        return 0
+    finally:
+        if store is not None:
+            store.close()
+        if conn is not None:
+            conn.close()
 
 
 def _review(store: CortexStore, args: argparse.Namespace) -> object:

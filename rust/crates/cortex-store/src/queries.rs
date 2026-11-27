@@ -47,6 +47,8 @@ impl MemoryCounts {
 pub struct Procedures {
     pub total: Measurement,
     pub graded: Measurement,
+    /// Procedure memories present in the store, whether or not anything grades them.
+    pub known: Measurement,
 }
 
 /// One `sleep_runs` row. Counter columns stay at their insert defaults until
@@ -263,6 +265,23 @@ impl Store {
         Ok(Measurement::from_required_count(count))
     }
 
+    /// How many procedure memories the store holds, regardless of grading.
+    ///
+    /// `procedures()` measures the *grading* pipeline, and that table is optional: on a box where
+    /// the grading loop was never deployed it does not exist at all, so `total` and `graded` are
+    /// both "not present". Reporting only that reads as "no procedures", which is wrong — the
+    /// procedures are there, nothing is grading them. This count is always available.
+    pub fn procedures_known(&self) -> Result<Measurement, StoreError> {
+        if !self.has_table("memories")? {
+            return Ok(Measurement::NotPresent);
+        }
+        let count = self.count(
+            "SELECT COUNT(*) AS n FROM memories WHERE kind = 'procedure' AND state = 'active'",
+            (),
+        )?;
+        Ok(Measurement::from_required_count(count))
+    }
+
     /// `procedures.total` and `procedures.graded` are the same distinct count.
     ///
     /// The table is optional. Absence is [`Measurement::NotPresent`]. A present
@@ -272,6 +291,7 @@ impl Store {
             return Ok(Procedures {
                 total: Measurement::NotPresent,
                 graded: Measurement::NotPresent,
+                known: self.procedures_known()?,
             });
         }
         let count = self.count(
@@ -282,6 +302,7 @@ impl Store {
         Ok(Procedures {
             total: measurement,
             graded: measurement,
+            known: self.procedures_known()?,
         })
     }
 
