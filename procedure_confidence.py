@@ -112,6 +112,90 @@ def record(store: Any, procedure_id: str, outcome: str, *, at: datetime | None =
     return {"ok": True, "procedure_id": pid, "outcome": outcome, "at": moment}
 
 
+TASK_OUTCOME_TO_RUN = {
+    "validated": SUCCESS,
+    "helpful": SUCCESS,
+    "corrected": FAILURE,
+    "harmful": FAILURE,
+}
+
+
+def backfill_from_usage(store: Any, *, apply: bool = True) -> dict[str, Any]:
+    """Grade every procedure whose use was already graded as part of a recalled task.
+
+    `apply_task_outcome` bridges the two records, but it is not the only way an outcome gets written
+    (the dashboard's own labelling path writes it too), so procedures used in those tasks stayed at
+    `untested` while the task itself carried a helpful/harmful label - 318 tasks in the live store had
+    used a procedure and `procedure_outcomes` did not exist at all. This is the reconciler: it reads
+    the outcomes that are already on disk and records the runs they imply, idempotently, using the
+    usage row's own timestamp as the moment so a second pass writes nothing.
+
+    Returns counts only - never memory text.
+    """
+
+    found = _rows(
+        store,
+        """SELECT u.task_id, u.memory_id, u.outcome,
+                  COALESCE(u.resolved_at, u.created_at) AS at
+             FROM usage_records u JOIN memories m ON m.id = u.memory_id
+            WHERE u.used = 1 AND m.kind = 'procedure'
+              AND u.outcome IN ('helpful','harmful','validated','corrected')""",
+    )
+    if found is None:
+        return {"ok": False, "reason": "the store could not be read for usage outcomes"}
+
+    candidates = [row for row in found if TASK_OUTCOME_TO_RUN.get(str(row["outcome"]))]
+    already = 0
+    recorded = 0
+    skipped: list[str] = []
+    for row in candidates:
+        run_outcome = TASK_OUTCOME_TO_RUN[str(row["outcome"])]
+        at_text = str(row.get("at") or "").strip()
+        if not at_text:
+            skipped.append(f"{row['memory_id']}: no timestamp to anchor the run")
+            continue
+        try:
+            moment = datetime.fromisoformat(at_text.replace("Z", "+00:00")).replace(microsecond=0)
+        except ValueError:
+            skipped.append(f"{row['memory_id']}: unreadable timestamp {at_text[:24]}")
+            continue
+        existing = _rows(
+            store,
+            f"SELECT 1 FROM {OUTCOME_TABLE} WHERE procedure_id=? AND outcome=? AND at=?",
+            (str(row["memory_id"]), run_outcome, moment.isoformat()),
+        )
+        if existing is None:
+            # The table is created on first write; nothing to compare against yet.
+            existing = []
+        if existing:
+            already += 1
+            continue
+        if not apply:
+            recorded += 1  # would-record, in a dry run
+            continue
+        result = record(
+            store,
+            str(row["memory_id"]),
+            run_outcome,
+            at=moment,
+            note=f"task {row['task_id']}: {row['outcome']}",
+        )
+        if result.get("ok"):
+            recorded += 1
+        else:
+            skipped.append(f"{row['memory_id']}: {result.get('reason')}")
+
+    return {
+        "ok": True,
+        "applied": bool(apply),
+        "candidates": len(candidates),
+        "already_recorded": already,
+        "newly_recorded": recorded,
+        "skipped": skipped[:20],
+        "skipped_total": len(skipped),
+    }
+
+
 def _table_exists(store: Any) -> bool | None:
     """True/False when the store answered, None when it could not be asked at all."""
     rows = _rows(store, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", (OUTCOME_TABLE,))

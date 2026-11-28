@@ -76,6 +76,11 @@ def main() -> int:
         action="store_true",
         help="Bulk approve: actually write (default is a preview of exactly what would change)",
     )
+    procedure_sync = sub.add_parser(
+        "procedures-sync",
+        help="Grade procedures from task outcomes already on disk (dry run unless --apply)",
+    )
+    procedure_sync.add_argument("--apply", action="store_true", help="Record the runs (default: dry run)")
     sub.add_parser(
         "status",
         help="A short plain-language answer to 'is it working?'",
@@ -769,6 +774,10 @@ def main() -> int:
                 for item in result["experiences"]:
                     print(json.dumps(item, ensure_ascii=False, default=str))
                 return 0
+        elif args.command == "procedures-sync":
+            from . import procedure_confidence  # noqa: PLC0415
+
+            result = procedure_confidence.backfill_from_usage(store, apply=bool(args.apply))
         elif args.command == "quality-report":
             result = store.memory_quality_report()
         elif args.command == "scoring-trend":
