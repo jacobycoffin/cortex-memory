@@ -134,8 +134,27 @@ class ReviewCliTests(unittest.TestCase):
 
 @unittest.skipIf(shutil.which("bash") is None, "bash required")
 class DetectionTests(unittest.TestCase):
+    def tools(self, root: Path) -> Path:
+        """A bin directory holding only the utilities the script needs to parse.
+
+        The detection PATH must not contain the real system bin: on a machine where `claude` or
+        `hermes` is genuinely installed (e.g. /usr/bin/claude), the matrix silently tests the host
+        instead of the fake bins it just created - `[hermes]` then reported "both installed" and the
+        assertion failed for a reason that had nothing to do with the code.
+        """
+        directory = root / "bin-tools"
+        if not directory.exists():
+            directory.mkdir()
+            for name in ("dirname", "basename", "uname", "pwd", "sh", "bash"):
+                found = shutil.which(name)
+                if found:
+                    (directory / name).symlink_to(found)
+        return directory
+
     def detect(self, home: Path, path_dirs: list[Path], **env: str) -> subprocess.CompletedProcess:
-        base = {"HOME": str(home), "PATH": ":".join([*map(str, path_dirs), "/usr/bin", "/bin"]), "TERM": "dumb"}
+        # Hermetic: fake bins + a minimal tools dir. No /usr/bin, so a real claude/hermes cannot leak in.
+        tools = self.tools(home.parent)
+        base = {"HOME": str(home), "PATH": ":".join([*map(str, path_dirs), str(tools)]), "TERM": "dumb"}
         base.update(env)
         return subprocess.run(["bash", str(ROOT / "scripts" / "install.sh"), "--detect"],
                               env=base, capture_output=True, text=True, timeout=60)
