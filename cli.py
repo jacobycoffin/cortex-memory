@@ -1054,8 +1054,11 @@ def _proposals(args: argparse.Namespace) -> int:
             for item in items:
                 print(f"  {item['proposal_id'][:8]}  {item['kind']:<24} score {item['score'] or 0:.2f}")
                 print(f"      {(item['rationale'] or '').strip()[:150]}")
-                if item["src"]["text"] or item["dst"]["text"]:
+                # Only label a side that exists: `context_review` proposals are single-memory by
+                # design, and printing an empty "b:" made them look like broken pairs.
+                if item["src"]["text"]:
                     print(f"      a: {item['src']['text'][:70]}")
+                if item["dst"]["text"]:
                     print(f"      b: {item['dst']['text'][:70]}")
             print("\n  approve: cortex-memory proposals approve <id>")
             print("  skip:    cortex-memory proposals skip <id>")
