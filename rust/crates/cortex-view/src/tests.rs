@@ -327,6 +327,7 @@ fn store_error_once_exits_3_and_the_loop_stays_alive() {
     assert_eq!(out, b"store unavailable: unreadable: gone\n");
     assert!(!out.contains(&0x1b));
 
+    // A live terminal keeps retrying: a transient lock clears, and the line repaints in place.
     let mut errors = 0;
     let mut out = Vec::new();
     let code = run_frames(
@@ -343,14 +344,35 @@ fn store_error_once_exits_3_and_the_loop_stays_alive() {
         &RunOpts {
             once: false,
             interval: Duration::from_millis(1),
-            tty: false,
+            tty: true,
         },
         &stop,
     );
     assert_eq!(code, 0);
+    let paints = String::from_utf8_lossy(&out).matches("store unavailable").count();
+    assert_eq!(paints, 2, "an interactive terminal retries");
+
+    // A pipe cannot recover, so it fails once with a code a supervisor can see. It used to repaint
+    // the same line every interval and never exit.
+    let mut out = Vec::new();
+    let code = run_frames(
+        &mut out,
+        || {
+            Err(cortex_store::StoreError::Unavailable {
+                message: "locked".to_string(),
+            })
+        },
+        &RunOpts {
+            once: false,
+            interval: Duration::from_millis(1),
+            tty: false,
+        },
+        &AtomicBool::new(false),
+    );
+    assert_eq!(code, 3);
     assert_eq!(
         std::str::from_utf8(&out).unwrap(),
-        "store unavailable: unavailable: locked\nstore unavailable: unavailable: locked\n"
+        "store unavailable: unavailable: locked\n"
     );
 }
 
