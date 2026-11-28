@@ -59,5 +59,8 @@ three, and deleting them would have destroyed working maintenance tooling. **Alw
   rows. It was *not* deleted, because pruning is the one pass that removes memory — deleting it is a data-lifecycle
   decision, not a dead-code one. What it needs is honesty: a zero-candidate streak surfaced as a warning instead of a
   clean `completed`.
-- **The `memory_creation_feedback` table** has a live call site and no readers. `sum(positive_feedback_count)` is 0
-  across 1,452 proposals, so the insert has never executed. Wire or drop; either is honest, leaving it is not.
+- **The `memory_creation_feedback` table** is *not* dead — an earlier pass said it had "a call site and no readers",
+  which was wrong: `jev.py:657-658` reads `strong_feedback_count` and `positive_feedback_count` off the proposal record,
+  and `hermes_provider.py:1414` populates `_creation_proposals_by_session`, so the path is complete. It has simply never
+  fired, because it needs positive feedback in the turn immediately after a staged proposal. `sum(positive_feedback_count)`
+  being 0 across 1,452 proposals is a fact about behaviour, not about wiring. Nothing to fix; do not delete it.
