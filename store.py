@@ -7243,6 +7243,15 @@ class CortexStore:
                 now,
                 source="dashboard",
             )
+        # Label a task here and the procedure it used must learn from it too. `apply_task_outcome`
+        # has carried this bridge since it was written; this path did not, so a procedure used in a
+        # task labelled from the dashboard stayed `untested` while the task itself was graded.
+        # Written after the label transaction commits, like the other path: a failure to grade the
+        # procedure must never cost the task label itself.
+        try:
+            self._record_procedure_outcomes(memory_ids, outcome, task_id=task_id)
+        except Exception:  # noqa: BLE001 - the label is the record that matters, not this side effect
+            logger.warning("procedure grading failed for dashboard label on task %s", task_id, exc_info=True)
         return {
             "changed": True,
             "label_id": label_id,
