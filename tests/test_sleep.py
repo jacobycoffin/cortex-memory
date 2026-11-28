@@ -234,6 +234,59 @@ class CortexSleepTests(unittest.TestCase):
         repeated = run_sleep(self.store, SleepConfig(mode="shadow", min_episode_age_hours=12))
         self.assertEqual(repeated["episodes_replayed"], 0)
 
+    def test_an_edge_already_at_the_floor_is_never_proposed_again(self) -> None:
+        """The live bug: 250 proposals every night, 0 ever applied.
+
+        Candidates were selected with ``weight <= 0.45`` while the target was
+        ``max(0.05, weight * 0.95)``, so an edge already at 0.05 produced a proposal whose
+        ``next_weight`` equalled its current weight: the apply branch could never run, the
+        downscale state table stayed empty (it is only written when a decay applies), and nothing
+        deduped it. Every nightly run re-proposed the same dead edges forever.
+        """
+        first, second = self._memory_pair()
+        self.store.add_edge(first, second, "related", weight=0.05)
+        old = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+        with self.store.transaction() as conn:
+            conn.execute("UPDATE edges SET last_reinforced_at=? WHERE relation='related'", (old,))
+
+        for attempt in range(3):
+            report = run_sleep(self.store, SleepConfig(mode="apply", decay_after_days=120))
+            self.assertEqual(report["edge_decay_proposals"], 0,
+                             f"attempt {attempt + 1} re-proposed an edge already at the floor")
+        with self.store._lock:
+            weight = self.store._conn.execute(
+                "SELECT weight FROM edges WHERE relation='related'"
+            ).fetchone()["weight"]
+        self.assertAlmostEqual(weight, 0.05)
+
+    def test_an_edge_above_the_floor_decays_toward_it_and_then_falls_silent(self) -> None:
+        """Decay is multiplicative (5% per pass) down to a hard floor, so an edge needs a few passes
+        to arrive - the bug was that arriving at the floor did not stop it being proposed."""
+        first, second = self._memory_pair()
+        self.store.add_edge(first, second, "related", weight=0.06)
+        old = (datetime.now(timezone.utc) - timedelta(days=180)).isoformat()
+        with self.store.transaction() as conn:
+            conn.execute("UPDATE edges SET last_reinforced_at=? WHERE relation='related'", (old,))
+
+        first_run = run_sleep(self.store, SleepConfig(mode="apply", decay_after_days=120))
+        self.assertEqual(first_run["edge_decay_proposals"], 1)
+        with self.store._lock:
+            weight = self.store._conn.execute(
+                "SELECT weight FROM edges WHERE relation='related'"
+            ).fetchone()["weight"]
+        self.assertAlmostEqual(weight, 0.057)
+
+        # One decay per reinforcement epoch: the downscale state row now matches this edge, so the
+        # next run must not touch it again (without a new reinforcement).
+        for _ in range(3):
+            repeat = run_sleep(self.store, SleepConfig(mode="apply", decay_after_days=120))
+            self.assertEqual(repeat["edge_decay_proposals"], 0)
+        with self.store._lock:
+            weight_after = self.store._conn.execute(
+                "SELECT weight FROM edges WHERE relation='related'"
+            ).fetchone()["weight"]
+        self.assertAlmostEqual(weight_after, 0.057)
+
     def test_stale_weak_edge_downscales_without_deletion_and_undo_restores_it(self) -> None:
         first, second = self._memory_pair()
         self.store.add_edge(first, second, "related", weight=0.3)
