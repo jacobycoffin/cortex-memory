@@ -2,7 +2,8 @@
 //!
 //! `--db` is global and comes before the subcommand. The default path matches
 //! `cli.py`: `$CORTEX_DB` if set, otherwise `$HERMES_HOME/cortex/cortex.db`,
-//! otherwise `~/.hermes/cortex/cortex.db`.
+//! otherwise `~/.hermes/cortex/cortex.db`. The first path that exists wins, so a profile
+//! `HERMES_HOME` still finds the shared brain.
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -192,14 +193,26 @@ pub fn default_db(env: &DbEnv) -> PathBuf {
     if let Some(path) = &env.cortex_db {
         return PathBuf::from(path);
     }
+    let home_root = match &env.home {
+        Some(home) if !home.is_empty() => PathBuf::from(home),
+        _ => PathBuf::from("."),
+    };
     let root = match &env.hermes_home {
         Some(path) if !path.is_empty() => expand_user(path, env.home.as_deref()),
-        _ => match &env.home {
-            Some(home) if !home.is_empty() => PathBuf::from(home).join(".hermes"),
-            _ => PathBuf::from(".hermes"),
-        },
+        _ => home_root.join(".hermes"),
     };
-    root.join("cortex").join("cortex.db")
+    let primary = root.join("cortex").join("cortex.db");
+    // The same rule as `cortex-cli`: a profile `HERMES_HOME` (`.../profiles/<name>`) holds no
+    // `cortex/` directory, and the brain lives in the shared `~/.hermes/cortex/cortex.db`. The
+    // documented fallback was missing here too, so the unified binary could not read the store while
+    // the service (given `CORTEX_DB`) could.
+    if !primary.exists() {
+        let shared = home_root.join(".hermes").join("cortex").join("cortex.db");
+        if shared.exists() {
+            return shared;
+        }
+    }
+    primary
 }
 
 fn expand_user(path: &OsStr, home: Option<&OsStr>) -> PathBuf {
