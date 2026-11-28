@@ -249,7 +249,8 @@ class BulkApproveTests(_Base):
         self.edge_proposal(src, dst, prior=0.05, nxt=0.05, proposal_id="dup-second")
         code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
         self.assertEqual(code, 0, out)
-        self.assertIn("appear twice with the same target", out)
+        self.assertIn("repeat a connection with the same target", out)
+        self.assertIn("2 edge_downscale proposal(s) over 1 distinct connection(s)", out)
         self.assertEqual(self.weight(src, dst), 0.05)
 
     def test_conflicting_targets_for_one_connection_are_refused(self) -> None:

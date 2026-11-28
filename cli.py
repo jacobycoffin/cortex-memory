@@ -933,13 +933,15 @@ def _bulk_approve(store: CortexStore, args: argparse.Namespace) -> int:
 
     # --- preview or apply ----------------------------------------------------------------------
     target = weights_seen[0]
-    affected = len({(p[0], p[1]) for p in targets})
+    # Count by (src, dst, relation): the same memory pair can hold two edges with different
+    # relations, and calling that "one connection proposed twice" would be a false label.
+    affected = len(targets)
     duplicate_pairs = len(rows) - affected
     print(f"{len(rows)} {kind} proposal(s) over {affected} distinct connection(s)")
     print(f"  every one sets its connection weight to {target:g} (currently "
           f"{', '.join(sorted({str(json.loads(r[3] or '{}').get('prior_weight')) for r in rows}))})")
     if duplicate_pairs:
-        print(f"  {duplicate_pairs} connection(s) appear twice with the same target; applying is idempotent")
+        print(f"  {duplicate_pairs} row(s) repeat a connection with the same target; applying is idempotent")
     if not args.apply:
         print("\n[preview] nothing written. Re-run with --apply to approve these.")
         return 0
