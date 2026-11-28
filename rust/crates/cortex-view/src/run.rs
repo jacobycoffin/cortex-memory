@@ -92,7 +92,11 @@ pub fn run_frames(
                 if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
                     return finish(out, hid_cursor);
                 }
-                if opts.once {
+                // A piped run cannot recover: the store is missing or unreadable, and re-reading it
+                // every interval painted 20+ identical lines and never exited. Fail once, with the
+                // exit code `--once` already uses, so a supervisor sees the fault. An interactive
+                // terminal keeps retrying, where a transient lock clears on its own.
+                if opts.once || !live {
                     finish(out, hid_cursor);
                     return 3;
                 }

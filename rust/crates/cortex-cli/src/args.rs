@@ -234,18 +234,36 @@ fn utf8(arg: &OsStr) -> Result<&str, Usage> {
 /// `$CORTEX_DB`, else `$HERMES_HOME/cortex/cortex.db`, else `~/.hermes/cortex/cortex.db`.
 ///
 /// An empty variable is unset, matching `cli.py`. `~` is expanded only on
-/// `HERMES_HOME`, which is the path `cli.py` passes through `expanduser`.
+/// `HERMES_HOME`, which is the path `cli.py` passes through `expanduser`. The first path that
+/// exists wins, so the shared brain is found from a profile `HERMES_HOME` as well.
 fn default_db() -> PathBuf {
-    if let Some(value) = std::env::var_os("CORTEX_DB") {
-        if !value.is_empty() {
-            return PathBuf::from(value);
+    let cortex_db = std::env::var_os("CORTEX_DB").filter(|value| !value.is_empty());
+    let hermes_home = std::env::var_os("HERMES_HOME").filter(|value| !value.is_empty());
+    pick_db(cortex_db, hermes_home, home_dir())
+}
+
+/// The resolution rule as a function of the environment, so it can be tested without mutating
+/// process-wide variables.
+fn pick_db(cortex_db: Option<OsString>, hermes_home: Option<OsString>, home_root: PathBuf) -> PathBuf {
+    if let Some(value) = cortex_db {
+        return PathBuf::from(value);
+    }
+    let base = match hermes_home {
+        Some(value) => expand_home(PathBuf::from(value)),
+        None => home_root.clone().join(".hermes"),
+    };
+    let primary = base.join("cortex").join("cortex.db");
+    // A profile `HERMES_HOME` (`.../profiles/<name>`) has no `cortex/` directory: the brain lives in
+    // the shared `~/.hermes/cortex/cortex.db`. Without this fallback a hand-run CLI - exactly what a
+    // headless agent does - reports "database file does not exist" while the service, which receives
+    // `CORTEX_DB` from its environment file, works fine.
+    if !primary.exists() {
+        let shared = home_root.join(".hermes").join("cortex").join("cortex.db");
+        if shared.exists() {
+            return shared;
         }
     }
-    let home = match std::env::var_os("HERMES_HOME") {
-        Some(value) if !value.is_empty() => expand_home(PathBuf::from(value)),
-        _ => home_dir().join(".hermes"),
-    };
-    home.join("cortex").join("cortex.db")
+    primary
 }
 
 fn home_dir() -> PathBuf {
@@ -266,4 +284,68 @@ fn expand_home(path: PathBuf) -> PathBuf {
         return home_dir().join(rest);
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_db;
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!("cortex-args-{}-{}", std::process::id(), name));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).expect("scratch root");
+        root
+    }
+
+    fn touch_shared(home: &PathBuf) -> PathBuf {
+        let shared = home.join(".hermes").join("cortex");
+        fs::create_dir_all(&shared).expect("shared dir");
+        let db = shared.join("cortex.db");
+        fs::write(&db, b"x").expect("shared db");
+        db
+    }
+
+    #[test]
+    fn cortex_db_wins_over_everything() {
+        let home = scratch("explicit");
+        touch_shared(&home);
+        let picked = pick_db(
+            Some(OsString::from("/explicit/cortex.db")),
+            Some(OsString::from("/some/profile")),
+            home,
+        );
+        assert_eq!(picked, PathBuf::from("/explicit/cortex.db"));
+    }
+
+    #[test]
+    fn a_profile_hermes_home_falls_back_to_the_shared_brain() {
+        // The lifeboat layout: HERMES_HOME points at .../profiles/<name>, which holds no cortex/ dir.
+        let home = scratch("profile");
+        let shared = touch_shared(&home);
+        let profile = home.join("lifeboat").join("profiles").join("teknium");
+        fs::create_dir_all(&profile).expect("profile dir");
+        let picked = pick_db(None, Some(OsString::from(profile.to_str().unwrap())), home);
+        assert_eq!(picked, shared);
+    }
+
+    #[test]
+    fn with_nothing_on_disk_the_profile_path_is_reported() {
+        // The error should name the path the operator configured, not a path they never set.
+        let home = scratch("empty");
+        let profile = home.join("lifeboat").join("profiles").join("teknium");
+        fs::create_dir_all(&profile).expect("profile dir");
+        let picked = pick_db(None, Some(OsString::from(profile.to_str().unwrap())), home);
+        assert_eq!(picked, profile.join("cortex").join("cortex.db"));
+    }
+
+    #[test]
+    fn without_hermes_home_the_default_is_dot_hermes() {
+        let home = scratch("default");
+        let shared = touch_shared(&home);
+        let picked = pick_db(None, None, home);
+        assert_eq!(picked, shared);
+    }
 }
