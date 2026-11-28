@@ -763,6 +763,12 @@ def _propose_interference(store: CortexStore, run_id: str) -> int:
     return proposed
 
 
+# The lowest weight an edge can decay to. The candidate query and the arithmetic below must agree on
+# it: when they did not, every edge already at the floor was re-proposed as a no-op every single
+# night (250 rows per run, 0 applied, `sleep_edge_downscale_state` empty, so nothing ever deduped it).
+EDGE_WEIGHT_FLOOR = 0.05
+
+
 def _propose_edge_decay(store: CortexStore, run_id: str, config: SleepConfig) -> dict[str, int]:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=config.decay_after_days)).isoformat(timespec="milliseconds")
     with store._lock:
@@ -771,19 +777,24 @@ def _propose_edge_decay(store: CortexStore, run_id: str, config: SleepConfig) ->
                LEFT JOIN sleep_edge_downscale_state s
                  ON s.src_id=e.src_id AND s.dst_id=e.dst_id AND s.relation=e.relation
                WHERE e.relation IN ('related','co_used','co_observed','sleep_replay')
-                 AND e.weight<=0.45 AND e.evidence_count<=2 AND e.last_reinforced_at<=?
+                 AND e.weight<=0.45 AND e.weight>? AND e.evidence_count<=2
+                 AND e.last_reinforced_at<=?
                  AND (s.src_id IS NULL OR s.source_last_reinforced_at<>e.last_reinforced_at)
                ORDER BY e.weight ASC,e.last_reinforced_at ASC LIMIT 250""",
-            (cutoff,),
+            (EDGE_WEIGHT_FLOOR, cutoff),
         ).fetchall()
     proposed = 0
     applied = 0
     for row in rows:
+        # Shadow mode dedupes against open proposals. Apply mode deliberately does not: an open
+        # proposal from a shadow run is exactly what apply is meant to act on, and skipping it would
+        # strand the decay. What stops the nightly no-op loop is the floor in the candidate query
+        # above - an edge already at EDGE_WEIGHT_FLOOR is never selected again.
         if config.mode == "shadow" and _has_open_proposal(
             store, "edge_downscale", str(row["src_id"]), str(row["dst_id"])
         ):
             continue
-        next_weight = max(0.05, float(row["weight"]) * 0.95)
+        next_weight = max(EDGE_WEIGHT_FLOOR, float(row["weight"]) * 0.95)
         proposal_id = _insert_proposal(
             store,
             run_id,

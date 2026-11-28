@@ -68,7 +68,11 @@ def _sleep_schedule_status() -> dict[str, object]:
         "enabled": None,
         "next_run": os.environ.get("CORTEX_SLEEP_NEXT_RUN") or None,
         "last_trigger": None,
-        "detail": "Starts at 03:00 local time with up to two hours of randomized delay; missed runs catch up.",
+        # This tile used to ask systemd about `cortex-sleep.timer`, a unit that does not exist, in the
+        # user scope - so it reported inactive/disabled/never for a scheduler that was running fine,
+        # and read identically whether the dream was healthy or dead. The real unit is the system
+        # timer `cortex-dream.timer`.
+        "detail": "Nightly at 04:15 local time with up to 5 minutes of randomized delay; missed runs catch up.",
     }
     systemctl = shutil.which("systemctl")
     if not systemctl:
@@ -79,9 +83,8 @@ def _sleep_schedule_status() -> dict[str, object]:
         result = subprocess.run(
             [
                 systemctl,
-                "--user",
                 "show",
-                "cortex-sleep.timer",
+                "cortex-dream.timer",
                 "--property=ActiveState",
                 "--property=UnitFileState",
                 "--property=NextElapseUSecRealtime",
