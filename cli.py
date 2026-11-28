@@ -71,6 +71,11 @@ def main() -> int:
         help="Required for kinds that change what memory is kept: archive, trash, quarantine, or keep",
     )
     proposals.add_argument("--json", action="store_true", help="Print the queue as JSON")
+    proposals.add_argument(
+        "--apply",
+        action="store_true",
+        help="Bulk approve: actually write (default is a preview of exactly what would change)",
+    )
     sub.add_parser(
         "status",
         help="A short plain-language answer to 'is it working?'",
@@ -853,6 +858,129 @@ _PROPOSAL_SQL = """
 """
 
 
+# Only these kinds may be approved as a batch, and only because their effect is a single absolute
+# number written to one row. Everything else needs a per-item decision: an association approval
+# picks a relation from the operator's reason, and a memory-state approval picks a new state, so
+# batching them would be guessing on the operator's behalf and recording the guess as their choice.
+BULK_APPROVE_KINDS = frozenset({"edge_downscale"})
+
+
+def _bulk_approve(store: CortexStore, args: argparse.Namespace) -> int:
+    """Approve every pending proposal of one kind, after proving the batch is coherent."""
+
+    kind = str(args.kind)
+    if kind not in BULK_APPROVE_KINDS:
+        print(
+            f"bulk approve is only implemented for {', '.join(sorted(BULK_APPROVE_KINDS))}: "
+            f"its effect is one absolute number on one row. {kind} proposals each need their own "
+            "decision, so approve them by id."
+        )
+        return 2
+
+    with store._lock:
+        rows = store._conn.execute(
+            "SELECT proposal_id, src_id, dst_id, details_json, created_at"
+            " FROM sleep_proposals WHERE status='proposed' AND kind=? ORDER BY created_at",
+            (kind,),
+        ).fetchall()
+    if not rows:
+        print(f"Nothing of kind {kind} is waiting.")
+        return 0
+
+    # --- preflight: the batch must be uniform, complete, and non-conflicting -------------------
+    problems: list[str] = []
+    targets: dict[tuple[str, str, str], float] = {}
+    pairs: dict[tuple[str, str], set[float]] = {}
+    for proposal_id, src_id, dst_id, details_json, _created in rows:
+        try:
+            details = json.loads(details_json or "{}")
+        except (TypeError, ValueError):
+            problems.append(f"{proposal_id[:8]}: unreadable details")
+            continue
+        next_weight = details.get("next_weight")
+        if not isinstance(next_weight, (int, float)):
+            problems.append(f"{proposal_id[:8]}: no absolute next_weight (only relative changes cannot be batched)")
+            continue
+        relation = str(details.get("relation") or "related")
+        with store._lock:
+            edge = store._conn.execute(
+                "SELECT 1 FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                (src_id, dst_id, relation),
+            ).fetchone()
+        if not edge:
+            problems.append(f"{proposal_id[:8]}: the connection no longer exists")
+            continue
+        targets[(str(src_id), str(dst_id), relation)] = float(next_weight)
+        pairs.setdefault((str(src_id), str(dst_id)), set()).add(float(next_weight))
+
+    for (_src, _dst), weights in pairs.items():
+        if len(weights) > 1:
+            problems.append("two proposals for one connection name different targets "
+                            f"({', '.join(sorted(str(w) for w in weights))}); order would matter")
+    weights_seen = sorted({w for w in targets.values()})
+    if len(weights_seen) > 1:
+        problems.append(f"targets are not uniform ({len(weights_seen)} distinct weights); "
+                        "this batch does not describe one change")
+
+    if problems:
+        print(f"Refusing to batch {len(rows)} {kind} proposal(s) — {len(problems)} problem(s):")
+        for problem in problems[:10]:
+            print(f"  {problem}")
+        if len(problems) > 10:
+            print(f"  ... and {len(problems) - 10} more")
+        print("\nNothing was written. Decide these by id instead.")
+        return 2
+
+    # --- preview or apply ----------------------------------------------------------------------
+    target = weights_seen[0]
+    affected = len({(p[0], p[1]) for p in targets})
+    duplicate_pairs = len(rows) - affected
+    print(f"{len(rows)} {kind} proposal(s) over {affected} distinct connection(s)")
+    print(f"  every one sets its connection weight to {target:g} (currently "
+          f"{', '.join(sorted({str(json.loads(r[3] or '{}').get('prior_weight')) for r in rows}))})")
+    if duplicate_pairs:
+        print(f"  {duplicate_pairs} connection(s) appear twice with the same target; applying is idempotent")
+    if not args.apply:
+        print("\n[preview] nothing written. Re-run with --apply to approve these.")
+        return 0
+
+    approved, failed = 0, []
+    for proposal_id, *_rest in rows:
+        try:
+            store.decide_review_proposal(
+                proposal_id,
+                "approve",
+                reason_code="bulk_kind_approve",
+                reason_text=f"bulk approve: every connection set to weight {target:g}",
+                actor="cli-operator",
+            )
+            approved += 1
+        except Exception as exc:  # noqa: BLE001 - one failure must not hide the rest
+            failed.append((proposal_id, str(exc)))
+
+    # Verify the effect rather than trusting the call: every connection must actually read `target`.
+    wrong = []
+    for (src_id, dst_id, relation) in targets:
+        with store._lock:
+            row = store._conn.execute(
+                "SELECT weight FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                (src_id, dst_id, relation),
+            ).fetchone()
+        if row is None or abs(float(row[0]) - target) > 1e-9:
+            wrong.append(f"{src_id[:8]}/{dst_id[:8]} {relation}")
+
+    print(f"\napproved: {approved} of {len(rows)}")
+    if failed:
+        print(f"failed:   {len(failed)}")
+        for proposal_id, reason in failed[:5]:
+            print(f"  {proposal_id[:8]}: {reason}")
+    if wrong:
+        print(f"verified wrong: {len(wrong)} connection(s) did not end at {target:g}: {', '.join(wrong[:5])}")
+        return 1
+    print(f"verified: {len(targets)} connection(s) now read weight {target:g}")
+    return 0
+
+
 def _proposals(args: argparse.Namespace) -> int:
     """`cortex-memory proposals` - the dream reviews what it noticed, or it is not reviewing at all.
 
@@ -930,6 +1058,14 @@ def _proposals(args: argparse.Namespace) -> int:
             restored = store.undo_review_decision(args.proposal_ids[0], actor="cli-operator")
             print(json.dumps(restored, indent=2, ensure_ascii=False, default=str))
             return 0
+
+        # Bulk approve by kind. Deliberately narrow: a batch is only honest when every proposal in
+        # it has the same absolute effect and no two of them fight over the same row. That is
+        # checked here rather than assumed, because a batch that quietly double-applies, applies a
+        # stale target, or dies halfway through would label work as done that is not done.
+        if args.action == "approve" and args.kind and not args.proposal_ids:
+            assert store is not None
+            return _bulk_approve(store, args)
 
         if not args.proposal_ids:
             print(f"proposals {args.action} needs one or more proposal ids (see: proposals list)")

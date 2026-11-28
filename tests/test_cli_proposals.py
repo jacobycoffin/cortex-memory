@@ -179,6 +179,137 @@ class DecisionTests(_Base):
         self.assertIn("needs one or more proposal ids", out)
 
 
+class BulkApproveTests(_Base):
+    """Bulk approve is only allowed where it is provably the same as deciding each item.
+
+    Jacoby's rule: nothing may be labelled done that is not done. So every refusal below is a
+    test, not a comment — a batch that double-applies, applies a stale target, or dies halfway
+    would look like work that happened.
+    """
+
+    def edge_proposal(self, src: str, dst: str, *, prior: float, nxt: float,
+                      relation: str = "co_observed", proposal_id: str | None = None) -> str:
+        proposal_id = proposal_id or f"edge-{src[-4:]}-{dst[-4:]}"
+        with self.store._lock:
+            self.store._conn.execute(
+                "INSERT OR IGNORE INTO sleep_runs(run_id,mode,status,cutoff_at,started_at)"
+                " VALUES('run-edge','shadow','completed','2026-11-27T10:00:00+00:00',"
+                "'2026-11-27T10:00:00+00:00')"
+            )
+            self.store._conn.execute(
+                """INSERT OR REPLACE INTO sleep_proposals(proposal_id,run_id,kind,src_id,dst_id,
+                       status,score,evidence_count,rationale,details_json,created_at)
+                   VALUES(?,?,?,?,?,'proposed',0.25,1,'weak co-use',?,?)""",
+                (proposal_id, "run-edge", "edge_downscale", src, dst,
+                 json.dumps({"next_weight": nxt, "prior_weight": prior, "relation": relation}),
+                 "2026-11-27T10:00:00+00:00"),
+            )
+            self.store._conn.execute(
+                """INSERT INTO edges(src_id,dst_id,relation,weight,evidence_count,created_at,
+                       last_reinforced_at)
+                   VALUES(?,?,?,?,1,'2026-11-27T10:00:00+00:00','2026-11-27T10:00:00+00:00')
+                   ON CONFLICT(src_id,dst_id,relation) DO UPDATE SET weight=excluded.weight""",
+                (src, dst, relation, prior),
+            )
+            self.store._conn.commit()
+        return proposal_id
+
+    def weight(self, src: str, dst: str, relation: str = "co_observed") -> float:
+        with self.store._lock:
+            return self.store._conn.execute(
+                "SELECT weight FROM edges WHERE src_id=? AND dst_id=? AND relation=?",
+                (src, dst, relation),
+            ).fetchone()[0]
+
+    def pair(self, tag: str) -> tuple[str, str]:
+        return self.memory(f"memory A {tag}"), self.memory(f"memory B {tag}")
+
+    def test_preview_writes_nothing(self) -> None:
+        src, dst = self.pair("one")
+        self.edge_proposal(src, dst, prior=0.4, nxt=0.05)
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale")
+        self.assertEqual(code, 0, out)
+        self.assertIn("preview", out)
+        self.assertEqual(self.weight(src, dst), 0.4)  # untouched
+
+    def test_apply_sets_every_connection_and_verifies_it(self) -> None:
+        a = self.pair("a")
+        b = self.pair("b")
+        self.edge_proposal(*a, prior=0.4, nxt=0.05)
+        self.edge_proposal(*b, prior=0.3, nxt=0.05)
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.weight(*a), 0.05)
+        self.assertEqual(self.weight(*b), 0.05)
+        self.assertIn("verified: 2 connection(s) now read weight 0.05", out)
+
+    def test_two_proposals_for_one_connection_with_one_target_are_idempotent(self) -> None:
+        src, dst = self.pair("dup")
+        self.edge_proposal(src, dst, prior=0.4, nxt=0.05, proposal_id="dup-first")
+        self.edge_proposal(src, dst, prior=0.05, nxt=0.05, proposal_id="dup-second")
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 0, out)
+        self.assertIn("appear twice with the same target", out)
+        self.assertEqual(self.weight(src, dst), 0.05)
+
+    def test_conflicting_targets_for_one_connection_are_refused(self) -> None:
+        """Order would decide the outcome here, so a batch cannot honestly describe it."""
+        src, dst = self.pair("conflict")
+        self.edge_proposal(src, dst, prior=0.4, nxt=0.05, proposal_id="conf-a")
+        self.edge_proposal(src, dst, prior=0.4, nxt=0.02, proposal_id="conf-b")
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("name different targets", out)
+        self.assertEqual(self.weight(src, dst), 0.4)  # nothing written
+
+    def test_non_uniform_targets_are_refused(self) -> None:
+        a = self.pair("n1")
+        b = self.pair("n2")
+        self.edge_proposal(*a, prior=0.4, nxt=0.05)
+        self.edge_proposal(*b, prior=0.4, nxt=0.01)
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("not uniform", out)
+
+    def test_a_missing_connection_is_refused_not_silently_skipped(self) -> None:
+        src, dst = self.pair("gone")
+        self.edge_proposal(src, dst, prior=0.4, nxt=0.05)
+        with self.store._lock:
+            self.store._conn.execute("DELETE FROM edges")
+            self.store._conn.commit()
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("no longer exists", out)
+
+    def test_a_relative_change_cannot_be_batched(self) -> None:
+        src, dst = self.pair("rel")
+        with self.store._lock:
+            self.store._conn.execute(
+                "INSERT OR IGNORE INTO sleep_runs(run_id,mode,status,cutoff_at,started_at)"
+                " VALUES('run-edge','shadow','completed','2026-11-27T10:00:00+00:00',"
+                "'2026-11-27T10:00:00+00:00')"
+            )
+            self.store._conn.execute(
+                """INSERT INTO sleep_proposals(proposal_id,run_id,kind,src_id,dst_id,status,score,
+                       evidence_count,rationale,details_json,created_at)
+                   VALUES('rel-1','run-edge','edge_downscale',?,?,'proposed',0.25,1,'x',
+                          '{"relation":"co_observed","factor":0.5}','2026-11-27T10:00:00+00:00')""",
+                (src, dst),
+            )
+            self.store._conn.commit()
+        code, out = self.cli("proposals", "approve", "--kind", "edge_downscale", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("no absolute next_weight", out)
+
+    def test_kinds_that_need_a_per_item_decision_are_refused(self) -> None:
+        """An association approval picks a relation from the operator's reason; batching it
+        would record a guess as the operator's choice."""
+        self.proposal(kind="association")
+        code, out = self.cli("proposals", "approve", "--kind", "association", "--apply")
+        self.assertEqual(code, 2)
+        self.assertIn("each need their own decision", out)
+
+
 class StatusVisibilityTests(_Base):
     def test_status_reports_the_waiting_queue_and_how_to_see_it(self) -> None:
         self.proposal()
