@@ -763,6 +763,27 @@ fn default_db_matches_cli_py() {
 }
 
 #[test]
+fn a_profile_hermes_home_finds_the_shared_brain() {
+    // The lifeboat layout: HERMES_HOME is .../profiles/<name>, which has no cortex/ dir. The store
+    // is the shared ~/.hermes/cortex/cortex.db, and the documented fallback used to be missing, so
+    // the unified binary reported "database file does not exist" on the machine that has the brain.
+    let root = std::env::temp_dir().join(format!("cortex-view-db-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".hermes").join("cortex")).expect("shared dir");
+    let shared = root.join(".hermes").join("cortex").join("cortex.db");
+    std::fs::write(&shared, b"x").expect("shared db");
+    let profile = root.join("lifeboat").join("profiles").join("teknium");
+    std::fs::create_dir_all(&profile).expect("profile dir");
+
+    let env = DbEnv {
+        cortex_db: None,
+        hermes_home: Some(profile.to_str().unwrap().into()),
+        home: Some(root.to_str().unwrap().into()),
+    };
+    assert_eq!(default_db(&env), shared);
+}
+
+#[test]
 fn colour_follows_the_tty_and_no_color() {
     assert!(!use_color(false, None));
     assert!(!use_color(false, Some("")));
